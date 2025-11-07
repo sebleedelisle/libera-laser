@@ -123,9 +123,22 @@ int main() {
         return 1;
     }
 
-    auto* info = dynamic_cast<etherdream::EtherDreamDeviceInfo*>(results.front().get());
+    logInfo("Discovered DACs:\n");
+    for (std::size_t idx = 0; idx < results.size(); ++idx) {
+        const auto& entry = results[idx];
+        logInfo("  [", idx, "] ", entry->labelValue(), " (", entry->type(), ")\n");
+    }
+
+    std::size_t choice = 0;
+    logInfo("Select DAC index: ");
+    if (!(std::cin >> choice) || choice >= results.size()) {
+        logError("Invalid selection.\n");
+        return 1;
+    }
+
+    auto* info = dynamic_cast<etherdream::EtherDreamDeviceInfo*>(results[choice].get());
     if (!info) {
-        logError("First discovery result is not an EtherDream device.\n");
+        logError("Selected entry is not an EtherDream device.\n");
         return 1;
     }
 
