@@ -21,6 +21,10 @@ public:
 
     std::vector<std::unique_ptr<core::DiscoveredDac>> discover() override;
 
+    static inline core::DiscovererRegistry registrar{
+        [] { return std::make_unique<EtherDreamDiscoverer>(); }
+    };
+
 private:
     using Clock = std::chrono::steady_clock;
 

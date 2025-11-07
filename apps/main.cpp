@@ -1,3 +1,4 @@
+#include "libera/core/DacDiscovery.hpp"
 #include "libera/etherdream/EtherDreamDevice.hpp"
 #include "libera/etherdream/EtherDreamDiscoverer.hpp"
 #include "libera/etherdream/EtherDreamDeviceInfo.hpp"
@@ -106,11 +107,11 @@ int main() {
     etherdream::EtherDreamDevice etherdream;
     installCirclePointsCallback(etherdream);
 
-    etherdream::EtherDreamDiscoverer discoverer;
+    core::DacDiscoveryManager discoveryManager;
     const auto discoveryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     std::vector<std::unique_ptr<core::DiscoveredDac>> results;
     while (std::chrono::steady_clock::now() < discoveryDeadline) {
-        results = discoverer.discover();
+        results = discoveryManager.discoverAll();
         if (!results.empty()) {
             break;
         }
