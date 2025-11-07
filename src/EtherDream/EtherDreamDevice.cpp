@@ -32,6 +32,11 @@ EtherDreamDevice::EtherDreamDevice() {
     setLatency(latencyMsValue());
 }
 
+EtherDreamDevice::EtherDreamDevice(EtherDreamDeviceInfo info)
+: deviceInfo(std::move(info)) {
+    setLatency(latencyMsValue());
+}
+
 EtherDreamDevice::~EtherDreamDevice() {
     // Orderly shutdown: stop the worker thread and close the TCP connection.
     stop();
@@ -46,38 +51,39 @@ void EtherDreamDevice::setLatency(long long latencyMillisValue) {
 }
 
 expected<void>
-EtherDreamDevice::connect(const ip::address& address, unsigned short port) {
-
-    libera::net::tcp::endpoint endpoint(address, port);
-
-    std::error_code ec = tcpClient.connect(endpoint);
-    if (ec) {
-        logError("[EtherDreamDevice] connect failed: ", ec.message(),
-                 " (to ", address.to_string(), ":", port, ")",
-                 " timeout=", tcpClient.defaultTimeout().count(), "ms\n");
-        return unexpected(ec);
-    }
-
-    tcpClient.setLowLatency(); // Enable low jitter for realtime-ish streams.
-
-    rememberedAddress = address;
-
-    logInfo("[EtherDreamDevice] connected to ",
-            address.to_string(), ":", port, "\n");
-
-    return {};
+EtherDreamDevice::connect(const EtherDreamDeviceInfo& info) {
+    deviceInfo = info;
+    return connect();
 }
 
 expected<void>
-EtherDreamDevice::connect(const std::string& addressstring, unsigned short port) {
+EtherDreamDevice::connect() {
+    if (!deviceInfo) {
+        return unexpected(make_error_code(std::errc::invalid_argument));
+    }
+
     std::error_code ec;
-    auto ip = libera::net::asio::ip::make_address(addressstring, ec);
+    auto ip = libera::net::asio::ip::make_address(deviceInfo->ip(), ec);
     if (ec) {
         logError("Invalid IP: ", ec.message(), "\n");
         return unexpected(ec);
     }
 
-    return connect(ip, port);
+    libera::net::tcp::endpoint endpoint(ip, deviceInfo->port());
+
+    if (auto connectError = tcpClient.connect(endpoint); connectError) {
+        logError("[EtherDreamDevice] connect failed: ", connectError.message(),
+                 " (to ", deviceInfo->ip(), ":", deviceInfo->port(), ")",
+                 " timeout=", tcpClient.defaultTimeout().count(), "ms\n");
+        return unexpected(connectError);
+    }
+
+    tcpClient.setLowLatency();
+
+    logInfo("[EtherDreamDevice] connected to ",
+            deviceInfo->ip(), ":", deviceInfo->port(), "\n");
+
+    return {};
 }
 
 
@@ -85,12 +91,10 @@ void EtherDreamDevice::close() {
     logInfo("[EtherDreamDevice] close()\n");
     // Keep the operation idempotent so repeated calls are harmless.
     if (!tcpClient.is_open()) {
-        rememberedAddress.reset();
         return;
     }
     // Future improvement: cancel outstanding async operations before closing.
     tcpClient.close();
-    rememberedAddress.reset();
     clearNetworkError();
 }
 

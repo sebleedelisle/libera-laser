@@ -105,10 +105,11 @@ int main() {
 
     libera::etherdream::EtherDreamDevice device;
     device.setLatency(75); // ensure timeouts are reasonable
+    libera::etherdream::EtherDreamDeviceInfo info{"loopback", "Loopback", "127.0.0.1", server.port()};
 
     constexpr int kTries = 3000;
     for (int i = 0; i < kTries; ++i) {
-        auto connected = device.connect("127.0.0.1", server.port());
+        auto connected = device.connect(info);
         ASSERT_TRUE(connected, "connect should succeed");
 
         device.close();

@@ -1,4 +1,6 @@
 #include "libera/etherdream/EtherDreamDevice.hpp"
+#include "libera/etherdream/EtherDreamDiscoverer.hpp"
+#include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include "libera/log/Log.hpp"
 #include <chrono>
 #include <thread>
@@ -7,14 +9,10 @@
 
 using namespace libera;
 
-int main() {
-    // libera::net::TimeoutConfig::setDefault(std::chrono::seconds{5}); // Optional global timeout override.
+namespace {
 
-    etherdream::EtherDreamDevice etherdream;
-
-    // Step 3: Install the point-generation callback required by LaserDeviceBase.
-    //         Append points without reallocating (avoid reserve/resize here).
-    etherdream.setRequestPointsCallback(
+void installCirclePointsCallback(etherdream::EtherDreamDevice& device) {
+    device.setRequestPointsCallback(
         [](const core::PointFillRequest& req, std::vector<core::LaserPoint>& out) {
             static const std::vector<core::LaserPoint> circle = []{
                 constexpr std::size_t kCirclePoints = 500;
@@ -100,16 +98,38 @@ int main() {
                 produced += chunk;
             }
         });
+}
 
-    // Step 4 (optional): Connect to a real EtherDream on your LAN.
-    //                    If you are only testing the callback flow, skip this.
-    //                    Replace the IP below with your device address when ready.
-    //                    On macOS you may need to allow the app in firewall prompts.
-    // Example alternatives for local testing:
-    // if (auto r = etherdream.connect("192.168.1.203"); !r) {
-   if (auto r = etherdream.connect("192.168.1.76"); !r) {
-   // if (auto r = etherdream.connect("127.0.0.1"); !r) {
-        const auto err = r.error();
+} // namespace
+
+int main() {
+    etherdream::EtherDreamDevice etherdream;
+    installCirclePointsCallback(etherdream);
+
+    etherdream::EtherDreamDiscoverer discoverer;
+    const auto discoveryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    std::vector<std::unique_ptr<core::DiscoveredDac>> results;
+    while (std::chrono::steady_clock::now() < discoveryDeadline) {
+        results = discoverer.discover();
+        if (!results.empty()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+
+    if (results.empty()) {
+        logError("No EtherDream devices discovered after timeout.\n");
+        return 1;
+    }
+
+    auto* info = dynamic_cast<etherdream::EtherDreamDeviceInfo*>(results.front().get());
+    if (!info) {
+        logError("First discovery result is not an EtherDream device.\n");
+        return 1;
+    }
+
+    if (auto result = etherdream.connect(*info); !result) {
+        const auto err = result.error();
         logError("Connect failed: ", err.message(),
                                 " (", err.category().name(), ":", err.value(), ")\n");
     } else { 

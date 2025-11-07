@@ -14,6 +14,8 @@ namespace libera::etherdream::config {
 
 // Networking ------------------------------------------------------------------
 constexpr unsigned short ETHERDREAM_DAC_PORT_DEFAULT = 7765;
+constexpr unsigned short ETHERDREAM_DISCOVERY_PORT = 7654;
+constexpr std::chrono::seconds ETHERDREAM_DISCOVERY_TIMEOUT{3};
 constexpr std::uint16_t ETHERDREAM_TARGET_POINT_RATE = 30000;
 
 // Streaming behaviour ---------------------------------------------------------

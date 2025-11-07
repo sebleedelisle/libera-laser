@@ -6,6 +6,7 @@
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/etherdream/EtherDreamCommand.hpp"
 #include "libera/etherdream/EtherDreamResponse.hpp"
+#include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include <memory>
 #include <string_view>
 #include <optional>
@@ -33,6 +34,7 @@ namespace ip = libera::net::asio::ip;
 class EtherDreamDevice : public libera::core::LaserDeviceBase {
 public:
     EtherDreamDevice();
+    explicit EtherDreamDevice(EtherDreamDeviceInfo info);
     ~EtherDreamDevice();
 
     void setLatency(long long latencyMillisValue) override;
@@ -49,23 +51,8 @@ public:
     };
 
 
-    /**
-     * @brief Connect to the DAC using a resolved IP address.
-     * @param address Target address.
-     * @param port EtherDream TCP port (defaults to 7765).
-     */
-    expected<void>
-    connect(const ip::address& address,
-            unsigned short port = config::ETHERDREAM_DAC_PORT_DEFAULT);
-
-    /**
-     * @brief Convenience overload that parses dotted quad strings.
-     * @param addressstring IPv4 string (e.g. "192.168.0.50").
-     * @param port EtherDream TCP port (defaults to 7765).
-     */
-    expected<void>
-    connect(const std::string& addressstring,
-            unsigned short port = config::ETHERDREAM_DAC_PORT_DEFAULT);
+    expected<void> connect();
+    expected<void> connect(const EtherDreamDeviceInfo& info);
 
     void close();                        // idempotent
     bool isConnected() const;           // const-safe
@@ -125,7 +112,7 @@ private:
     EtherDreamStatus lastKnownStatus{};
     std::chrono::steady_clock::time_point lastReceiveTime{};
     libera::net::TcpClient tcpClient;
-    std::optional<libera::net::asio::ip::address> rememberedAddress{};
+    std::optional<EtherDreamDeviceInfo> deviceInfo;
     bool rateChangePending = false;
     bool clearRequired = false;
     bool prepareRequired = false;
