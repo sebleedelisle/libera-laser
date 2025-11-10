@@ -30,11 +30,13 @@ namespace asio = libera::net::asio;
 
 EtherDreamDevice::EtherDreamDevice() {
     setLatency(latencyMsValue());
+    startReconnectSupervisor();
 }
 
 EtherDreamDevice::EtherDreamDevice(EtherDreamDeviceInfo info)
 : deviceInfo(std::move(info)) {
     setLatency(latencyMsValue());
+    startReconnectSupervisor();
 }
 
 EtherDreamDevice::~EtherDreamDevice() {
@@ -47,17 +49,20 @@ void EtherDreamDevice::setLatency(long long latencyMillisValue) {
     LaserDeviceBase::setLatency(latencyMillisValue);
     const auto timeout = std::chrono::milliseconds{latencyMsValue()};
     tcpClient.setDefaultTimeout(timeout);
-    tcpClient.setConnectTimeout(timeout * 4);
+    tcpClient.setConnectTimeout(2s);
 }
 
 expected<void>
 EtherDreamDevice::connect(const EtherDreamDeviceInfo& info) {
     deviceInfo = info;
-    return connect();
+    return connectUsingStoredInfo();
 }
 
-expected<void>
-EtherDreamDevice::connect() {
+bool EtherDreamDevice::hasConnectionInfo() const {
+    return deviceInfo.has_value();
+}
+
+expected<void> EtherDreamDevice::connectUsingStoredInfo() {
     if (!deviceInfo) {
         return unexpected(make_error_code(std::errc::invalid_argument));
     }
@@ -298,6 +303,7 @@ void EtherDreamDevice::handleNetworkFailure(std::string_view where,
     running = false;
     failureEncountered = true;
     lastError = ec;
+    scheduleReconnect();
 }
 
 
@@ -503,6 +509,7 @@ int EtherDreamDevice::millisToPoints(double millis, std::uint32_t rate) {
     return static_cast<int>(std::min<long long>(rounded, std::numeric_limits<int>::max()));
 }
 
+
 long long EtherDreamDevice::latencyMsValue() const {
     auto value = latencyMillis.load(std::memory_order_relaxed);
     return value < 0 ? 0 : value;
@@ -514,6 +521,10 @@ std::optional<std::error_code> EtherDreamDevice::lastNetworkError() const {
 
 void EtherDreamDevice::clearNetworkError() {
     lastError.reset();
+}
+
+void EtherDreamDevice::onReconnectFailed(const std::error_code& ec) {
+    logError("[EtherDreamDevice] reconnect attempt failed: ", ec.message(), "\n");
 }
 
 } // namespace libera::etherdream

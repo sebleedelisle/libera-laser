@@ -1,6 +1,6 @@
 #pragma once
 #include "libera/core/Expected.hpp"
-#include "libera/core/LaserDeviceBase.hpp"
+#include "libera/core/NetworkLaserDevice.hpp"
 #include "libera/net/NetConfig.hpp"
 #include "libera/net/TcpClient.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
@@ -31,13 +31,14 @@ namespace ip = libera::net::asio::ip;
  * - Request points from the user callback and stream device-formatted frames.
  * - Drive the worker loop supplied by the base class.
  */
-class EtherDreamDevice : public libera::core::LaserDeviceBase {
+class EtherDreamDevice : public libera::core::NetworkLaserDevice {
 public:
     EtherDreamDevice();
     explicit EtherDreamDevice(EtherDreamDeviceInfo info);
     ~EtherDreamDevice();
 
     void setLatency(long long latencyMillisValue) override;
+    void enableAutoReconnect(bool enable);
 
     // non-copyable / non-movable
     EtherDreamDevice(const EtherDreamDevice&) = delete;
@@ -60,6 +61,10 @@ public:
     
 protected:
     void run() override;
+
+    bool hasConnectionInfo() const override;
+    expected<void> connectUsingStoredInfo() override;
+    void onReconnectFailed(const std::error_code& ec) override;
 
 
 private:

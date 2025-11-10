@@ -22,12 +22,18 @@ public:
     std::error_code open_v4() {
         std::error_code ec;
         sock_.open(udp::v4(), ec);
+        if (ec) {
+            logError("[UdpSocket] open_v4 failed: ", ec.message(), "\n");
+        }
         return ec;
     }
 
     std::error_code bind_any(uint16_t port) {
         std::error_code ec;
         sock_.bind(udp::endpoint(udp::v4(), port), ec);
+        if (ec) {
+            logError("[UdpSocket] bind_any failed on port ", port, ": ", ec.message(), "\n");
+        }
         return ec;
     }
 
