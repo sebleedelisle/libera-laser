@@ -3,6 +3,9 @@
 #include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/log/Log.hpp"
+#if defined(_WIN32)
+#  include <winsock2.h>
+#endif
 
 #include <array>
 
@@ -18,6 +21,14 @@ EtherDreamDiscoverer::EtherDreamDiscoverer() {
         socket.reset();
         return;
     }
+
+#if defined(_WIN32)
+    if (!ec) {
+        BOOL exclusive = FALSE;
+        ::setsockopt(socket->raw().native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+    }
+#endif
 
     socket->raw().set_option(asio::socket_base::reuse_address(true), ec);
     if ((ec = socket->bind_any(config::ETHERDREAM_DISCOVERY_PORT))) {

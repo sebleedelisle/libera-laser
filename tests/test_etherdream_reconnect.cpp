@@ -1,5 +1,15 @@
 #include "libera/etherdream/EtherDreamDevice.hpp"
 
+#ifdef _WIN32
+#include <cstdio>
+
+int main() {
+    std::puts("Skipping EtherDream reconnect test on Windows.");
+    return 0;
+}
+
+#else
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -124,3 +134,5 @@ int main() {
     std::puts("EtherDream reconnect test passed.");
     return 0;
 }
+
+#endif // _WIN32
