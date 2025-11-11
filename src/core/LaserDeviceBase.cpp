@@ -1,6 +1,9 @@
 #include "libera/core/LaserDeviceBase.hpp"
 #include "libera/log/Log.hpp"
 #include <cassert>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace libera::core {
 
@@ -56,4 +59,45 @@ void LaserDeviceBase::stop() {
         worker.join();
     }
 }
+
+double LaserDeviceBase::pointsToMillis(std::size_t pointCount) const {
+    return pointsToMillis(pointCount, getPointRate());
+}
+
+double LaserDeviceBase::pointsToMillis(std::size_t pointCount, std::uint32_t rate) const {
+    if (rate == 0 || pointCount == 0) {
+        return 0.0;
+    }
+
+    const double millis =
+        (static_cast<double>(pointCount) * 1000.0) / static_cast<double>(rate);
+
+    return std::max(millis, 0.0);
+}
+
+int LaserDeviceBase::millisToPoints(double millis) const {
+    const auto rate = getPointRate();
+    if (rate == 0 || millis <= 0.0) {
+        return 0;
+    }
+
+    const double seconds = millis / 1000.0;
+    const double rawPoints = seconds * static_cast<double>(rate);
+    const auto rounded = static_cast<long long>(std::llround(rawPoints));
+
+    if (rounded <= 0) {
+        return 0;
+    }
+
+    return static_cast<int>(std::min<long long>(rounded, std::numeric_limits<int>::max()));
+}
+
+void LaserDeviceBase::setPointRate(std::uint32_t pointRateValue) {
+    pointRate.store(pointRateValue, std::memory_order_relaxed);
+}
+
+std::uint32_t LaserDeviceBase::getPointRate() const {
+    return pointRate.load(std::memory_order_relaxed);
+}
+
 } // namespace libera::core

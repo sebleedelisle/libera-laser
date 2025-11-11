@@ -449,7 +449,13 @@ void EtherDreamDevice::sleepUntilNextPoints() {
     // we calculate this using the point rate as it needs to be 
     // time based rather than buffer size based
 
-    const int minPointsInBuffer = millisToPoints(config::ETHERDREAM_MIN_BUFFER_MS);
+    int minPointsInBuffer = millisToPoints(config::ETHERDREAM_MIN_BUFFER_MS);
+    const int bufferSize = getBufferSize();
+    const int minPacketPoints = static_cast<int>(config::ETHERDREAM_MIN_PACKET_POINTS);
+
+    if ((bufferSize - minPointsInBuffer) < minPacketPoints) {
+        minPointsInBuffer = bufferSize - minPacketPoints;
+    }
 
     // Estimate how long until the buffer drains to that minimum.
     const int fullness = static_cast<int>(estimateBufferFullness());

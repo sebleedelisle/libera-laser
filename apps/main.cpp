@@ -16,6 +16,7 @@ namespace {
 void installCirclePointsCallback(etherdream::EtherDreamDevice& device) {
     device.setRequestPointsCallback(
         [](const core::PointFillRequest& req, std::vector<core::LaserPoint>& out) {
+            
             static const std::vector<core::LaserPoint> circle = []{
                 constexpr std::size_t kCirclePoints = 500;
                 std::vector<core::LaserPoint> pts;

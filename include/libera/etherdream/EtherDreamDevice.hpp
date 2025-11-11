@@ -51,6 +51,8 @@ public:
     expected<void> connect();
     expected<void> connect(const EtherDreamDeviceInfo& info);
 
+    void setPointRate(std::uint32_t pointRate) override;
+
     void close();                        // idempotent
     bool isConnected() const;           // const-safe
 
@@ -84,12 +86,7 @@ private:
 
     void resetPoints();
 
-    double pointsToMillis(std::size_t pointCount,
-                          std::uint32_t rate);
-    int millisToPoints(double millis,
-                       std::uint32_t rate);
-
-    std::uint16_t estimateBufferFullness() const;
+    int estimateBufferFullness() const;
 
     void updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked);
     core::PointFillRequest getFillRequest();
@@ -100,10 +97,10 @@ private:
     expected<DacAck> sendPing();
     void ensureTargetPointRate();
 
-    long long latencyMsValue() const;
+    int getBufferSize() const;
+
     std::optional<std::error_code> lastNetworkError() const;
     void clearNetworkError();
-
     EtherDreamCommand commandBuffer;
 
     EtherDreamStatus lastKnownStatus{};
@@ -114,7 +111,8 @@ private:
     bool clearRequired = false;
     bool prepareRequired = false;
     bool beginRequired = false;
-    std::size_t minBuffer = 256; // EtherDream 3+ cannot report below this buffer depth.
+
+   //std::size_t minBuffer = 256; // EtherDream 3+ cannot report below this buffer depth.
 
     bool networkFailureEncountered = false;
     std::optional<std::error_code> lastError;

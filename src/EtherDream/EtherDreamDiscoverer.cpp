@@ -8,8 +8,35 @@
 #endif
 
 #include <array>
+#include <cstdio>
 
 namespace libera::etherdream {
+namespace {
+
+constexpr std::size_t kMinDiscoveryPacketBytes = 36;
+
+std::uint16_t read_le_u16(const std::uint8_t* data) {
+    return static_cast<std::uint16_t>(data[0]) |
+           (static_cast<std::uint16_t>(data[1]) << 8);
+}
+
+std::uint32_t read_le_u32(const std::uint8_t* data) {
+    return static_cast<std::uint32_t>(data[0]) |
+           (static_cast<std::uint32_t>(data[1]) << 8) |
+           (static_cast<std::uint32_t>(data[2]) << 16) |
+           (static_cast<std::uint32_t>(data[3]) << 24);
+}
+
+std::string format_mac_id(std::uint64_t mac) {
+    std::array<char, 32> buffer{};
+    std::snprintf(buffer.data(), buffer.size(), "%04X%04X%04X",
+                  static_cast<unsigned>((mac >> 32) & 0xFFFFu),
+                  static_cast<unsigned>((mac >> 16) & 0xFFFFu),
+                  static_cast<unsigned>(mac & 0xFFFFu));
+    return std::string(buffer.data());
+}
+
+} // namespace
 
 EtherDreamDiscoverer::EtherDreamDiscoverer() {
     io = net::shared_io_context();
@@ -99,10 +126,35 @@ void EtherDreamDiscoverer::threadedFunction() {
         std::string ip = sender.address().to_string();
         unsigned short dacPort = config::ETHERDREAM_DAC_PORT_DEFAULT; // Broadcast packets omit TCP port; use default.
 
-        std::string id = "etherdream-" + ip;
-        std::string label = "EtherDream @ " + ip;
+        if (received < kMinDiscoveryPacketBytes) {
+            continue;
+        }
 
-        EtherDreamDeviceInfo info{id, label, ip, dacPort};
+        const std::uint8_t* data = buffer.data();
+        std::uint64_t mac = 0;
+        for (int i = 0; i < 6; ++i) {
+            mac = (mac << 8) | static_cast<std::uint64_t>(data[i]);
+        }
+        const std::uint8_t* cursor = data + 6;
+        const auto hardwareRevision = read_le_u16(cursor); cursor += 2;
+        const auto softwareRevision = read_le_u16(cursor); cursor += 2;
+        const auto bufferCapacity = read_le_u16(cursor); cursor += 2;
+        const auto maxPointRate = read_le_u32(cursor); cursor += 4;
+        (void)cursor; // remaining status bytes are currently unused.
+
+        std::string id = mac ? format_mac_id(mac) : ("etherdream-" + ip);
+        std::string label = "EtherDream @ " + ip;
+        std::string hardwareVersion =
+            "hw" + std::to_string(hardwareRevision) + "-sw" + std::to_string(softwareRevision);
+
+        EtherDreamDeviceInfo info{
+            id,
+            label,
+            ip,
+            dacPort,
+            static_cast<int>(bufferCapacity),
+            std::move(hardwareVersion),
+            maxPointRate};
 
         {
             std::lock_guard lock(devicesMutex);

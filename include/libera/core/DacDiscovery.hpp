@@ -5,25 +5,30 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <cstdint>
 
 namespace libera::core {
 
 class DacInfo {
 public:
-    DacInfo(std::string id, std::string label) {
+    DacInfo(std::string id, std::string label, std::uint32_t maxPointRateValue = 0) {
         this->id = std::move(id);
         this->label = std::move(label);
+        this->maxPointRateValue = maxPointRateValue;
     }
 
     virtual ~DacInfo() = default;
 
     const std::string& idValue() const { return id; }
     const std::string& labelValue() const { return label; }
+    std::uint32_t maxPointRate() const { return maxPointRateValue; }
+    void setMaxPointRate(std::uint32_t value) { maxPointRateValue = value; }
     virtual const std::string& type() const = 0;
 
 protected:
     std::string id;
     std::string label;
+    std::uint32_t maxPointRateValue = 0;
 };
 
 class DacDiscovererBase {

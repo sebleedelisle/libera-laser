@@ -2,9 +2,11 @@
 
 #include <vector>
 #include <functional>
-#include <chrono>
 #include <thread>
 #include <atomic>
+#include <cstdint>
+#include <type_traits>
+#include <chrono>
 #include "LaserPoint.hpp"
 
 namespace libera::core {
@@ -98,12 +100,39 @@ public:
     /// Request the thread to stop and wait for it to finish.
     void stop();
 
+    /**
+     * @brief Configure the desired output point rate (points per second).
+     *
+     * The base implementation simply stores the value; subclasses can override
+     * to validate, clamp, or immediately propagate the change to hardware.
+     */
+    virtual void setPointRate(std::uint32_t pointRateValue);
+
+    /**
+     * @brief Retrieve the last configured point rate (points per second).
+     */
+    virtual std::uint32_t getPointRate() const;
+
 protected:
     /// Worker loop implemented by subclasses.
     virtual void run() = 0;
 
+    double pointsToMillis(std::size_t pointCount) const;
+    double pointsToMillis(std::size_t pointCount, std::uint32_t rate) const;
+    int millisToPoints(double millis) const;
+    int millisToPoints(float millis) const { return millisToPoints(static_cast<double>(millis)); }
+    int millisToPoints(std::int64_t millis) const { return millisToPoints(static_cast<double>(millis)); }
+
+    template <typename Rep, typename Period>
+    int millisToPoints(const std::chrono::duration<Rep, Period>& duration) const {
+        const auto millis = std::chrono::duration<double, std::milli>(duration).count();
+        return millisToPoints(millis);
+    }
+
     std::thread worker;
     std::atomic<bool> running{false};
+    
+    std::atomic<std::uint32_t> pointRate{30000};
 
     /// The installed callback that generates points (may be empty if not set).
     RequestPointsCallback requestPointsCallback{};
