@@ -110,7 +110,7 @@ int main() {
 
     core::DacDiscoveryManager discoveryManager;
     const auto discoveryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    std::vector<std::unique_ptr<core::DiscoveredDac>> results;
+    std::vector<std::unique_ptr<core::DacInfo>> results;
     while (std::chrono::steady_clock::now() < discoveryDeadline) {
         results = discoveryManager.discoverAll();
         if (!results.empty()) {

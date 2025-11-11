@@ -49,7 +49,8 @@ public:
         auto ex = sock_.get_executor();
         return with_deadline(ex, timeout,
             [&](auto cb){ sock_.async_send_to(asio::buffer(data, n), ep, 0, cb); },
-            [&]{ sock_.cancel(); });
+            [&]{ sock_.cancel(); },
+            "udp_send");
     }
 
     // Receive one datagram, with timeout. Returns ec + fills out_ep + out_n.
@@ -65,7 +66,8 @@ public:
                         out_n = n; cb(ec);
                     });
             },
-            [&]{ sock_.cancel(); });
+            [&]{ sock_.cancel(); },
+            "udp_recv");
     }
 
     udp::socket& raw() { return sock_; }

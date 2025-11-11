@@ -39,7 +39,8 @@ std::error_code with_deadline(
     asio::any_io_executor ex,
     std::chrono::milliseconds timeout,
     StartAsync start_async,
-    Cancel cancel)
+    Cancel cancel,
+    const char* label = "")
 {
     //std::cout << "[with_deadline] start timeout=" << timeout.count() << "ms\n";
     struct State {
@@ -69,7 +70,7 @@ std::error_code with_deadline(
 
     // Arm the deadline
     timer->expires_after(timeout);
-    timer->async_wait([st, cancel, timer, timeout](const std::error_code& tec){
+    timer->async_wait([st, cancel, timer, timeout, label](const std::error_code& tec){
         if (tec == asio::error::operation_aborted) {
             // Cancelled because the operation finished first, so nothing to do.
             return;
@@ -86,7 +87,7 @@ std::error_code with_deadline(
         }
         if (notify) {
             logInfo("[with_deadline] timeout fired after ",
-                    timeout.count(), "ms\n");
+                    timeout.count(), "ms [", label, "]\n");
             cancel();
             st->cv.notify_one();
         }

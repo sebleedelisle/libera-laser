@@ -5,8 +5,6 @@
 namespace libera::core {
 
 LaserDeviceBase::LaserDeviceBase() {
-    // Pre-reserve a large capacity so vectors can be reused without reallocating.
-    // Thirty thousand points is intentionally generous and remains safe for most DACs.
     pointsToSend.reserve(30000);
 }
 
@@ -47,12 +45,11 @@ void LaserDeviceBase::start() {
     if (running) return; // Already running.
     running = true;
     worker = std::thread([this] {
-        this->run(); // Calls the virtual run(), so subclass overrides execute.
+        this->run();
     });
 }
 
 void LaserDeviceBase::stop() {
-    // Signal the worker loop to exit and wait until the background thread finishes.
     logInfo("[EtherDreamDevice] stop()\n");
     running = false;
     if (worker.joinable()) {

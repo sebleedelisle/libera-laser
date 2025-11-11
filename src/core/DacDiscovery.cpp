@@ -27,8 +27,8 @@ DacDiscoveryManager::DacDiscoveryManager() {
     }
 }
 
-std::vector<std::unique_ptr<DiscoveredDac>> DacDiscoveryManager::discoverAll() {
-    std::vector<std::unique_ptr<DiscoveredDac>> results;
+std::vector<std::unique_ptr<DacInfo>> DacDiscoveryManager::discoverAll() {
+    std::vector<std::unique_ptr<DacInfo>> results;
     for (auto& discoverer : discoverers) {
         if (!discoverer) continue;
         auto subset = discoverer->discover();

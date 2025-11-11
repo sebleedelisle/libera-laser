@@ -112,7 +112,8 @@ public:
                         completion(op_ec);
                     });
             },
-            [&]{ socket_.cancel(); }
+            [&]{ socket_.cancel(); },
+            "tcp_read"
         );
         if (bytesTransferredOut) {
             *bytesTransferredOut = bytesTransferred;
@@ -130,7 +131,8 @@ public:
                         completion(op_ec);
                     });
             },
-            [&]{ socket_.cancel(); }
+            [&]{ socket_.cancel(); },
+            "tcp_write"
         );
         return ec;
     }
@@ -185,7 +187,8 @@ private:
         const auto effectiveTimeout = sanitize(timeout);
         return with_deadline(ex, effectiveTimeout,
             [&](auto completion){ socket_.async_connect(ep, completion); },
-            [&]{ socket_.cancel(); }
+            [&]{ socket_.cancel(); },
+            "tcp_connect"
         );
     }
 

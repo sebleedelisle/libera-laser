@@ -19,7 +19,7 @@ public:
     EtherDreamDiscoverer();
     ~EtherDreamDiscoverer() override;
 
-    std::vector<std::unique_ptr<core::DiscoveredDac>> discover() override;
+    std::vector<std::unique_ptr<core::DacInfo>> discover() override;
 
     static inline core::DiscovererRegistry registrar{
         [] { return std::make_unique<EtherDreamDiscoverer>(); }

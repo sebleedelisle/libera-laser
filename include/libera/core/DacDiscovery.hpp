@@ -8,14 +8,14 @@
 
 namespace libera::core {
 
-class DiscoveredDac {
+class DacInfo {
 public:
-    DiscoveredDac(std::string id, std::string label) {
+    DacInfo(std::string id, std::string label) {
         this->id = std::move(id);
         this->label = std::move(label);
     }
 
-    virtual ~DiscoveredDac() = default;
+    virtual ~DacInfo() = default;
 
     const std::string& idValue() const { return id; }
     const std::string& labelValue() const { return label; }
@@ -30,7 +30,7 @@ class DacDiscovererBase {
 public:
     virtual ~DacDiscovererBase() = default;
 
-    virtual std::vector<std::unique_ptr<DiscoveredDac>> discover() = 0;
+    virtual std::vector<std::unique_ptr<DacInfo>> discover() = 0;
 };
 
 // Convenience alias for a callable that constructs a discoverer.
@@ -51,7 +51,7 @@ class DacDiscoveryManager {
 public:
     DacDiscoveryManager();
 
-    std::vector<std::unique_ptr<DiscoveredDac>> discoverAll();
+    std::vector<std::unique_ptr<DacInfo>> discoverAll();
 
 private:
     std::vector<std::unique_ptr<DacDiscovererBase>> discoverers;

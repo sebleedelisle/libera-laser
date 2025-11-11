@@ -52,9 +52,9 @@ EtherDreamDiscoverer::~EtherDreamDiscoverer() {
     }
 }
 
-std::vector<std::unique_ptr<core::DiscoveredDac>>
+std::vector<std::unique_ptr<core::DacInfo>>
 EtherDreamDiscoverer::discover() {
-    std::vector<std::unique_ptr<core::DiscoveredDac>> results;
+    std::vector<std::unique_ptr<core::DacInfo>> results;
     const auto now = Clock::now();
     std::lock_guard lock(devicesMutex);
     pruneStaleUnlocked(now);

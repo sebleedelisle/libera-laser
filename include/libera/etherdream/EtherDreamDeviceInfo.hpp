@@ -6,13 +6,13 @@
 
 namespace libera::etherdream {
 
-class EtherDreamDeviceInfo : public core::DiscoveredDac {
+class EtherDreamDeviceInfo : public core::DacInfo {
 public:
     EtherDreamDeviceInfo(std::string id,
                          std::string label,
                          std::string ip,
                          unsigned short port)
-    : DiscoveredDac(std::move(id), std::move(label))
+    : DacInfo(std::move(id), std::move(label))
     , ipAddress(std::move(ip))
     , portNumber(port) {}
 

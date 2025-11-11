@@ -114,9 +114,8 @@ public:
 protected:
     /// Worker loop implemented by subclasses.
     virtual void run() = 0;
-
     /// Latency (defaults to 50 ms).
-    std::atomic<long long> latencyMillis{50};
+    std::atomic<long long> latencyMillis{200};
 
     std::thread worker;
     std::atomic<bool> running{false};
