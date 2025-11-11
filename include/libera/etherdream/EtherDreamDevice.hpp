@@ -20,10 +20,9 @@ namespace ip = libera::net::asio::ip;
 /**
  * @brief Streaming controller that talks to an EtherDream DAC.
  *
- * The device inherits latency management, worker thread lifecycle, and point
- * buffering from `LaserDeviceBase`. The latency budget exposed by the base
- * class feeds both refill sizing and the per-operation TCP deadlines enforced
- * by `libera::net::TcpClient`.
+ * The device inherits the worker thread lifecycle and point buffering from
+ * `LaserDeviceBase`. Streaming-specific timing (minimum refill sizes, sleep
+ * cadence, etc.) is handled entirely within this class.
  *
  * Responsibilities:
  * - Maintain the TCP connection to the DAC.
@@ -36,8 +35,6 @@ public:
     EtherDreamDevice();
     explicit EtherDreamDevice(EtherDreamDeviceInfo info);
     ~EtherDreamDevice();
-
-    void setLatency(long long latencyMillisValue) override;
 
     // non-copyable / non-movable
     EtherDreamDevice(const EtherDreamDevice&) = delete;
@@ -119,7 +116,7 @@ private:
     bool beginRequired = false;
     std::size_t minBuffer = 256; // EtherDream 3+ cannot report below this buffer depth.
 
-    bool failureEncountered = false;
+    bool networkFailureEncountered = false;
     std::optional<std::error_code> lastError;
 };
 

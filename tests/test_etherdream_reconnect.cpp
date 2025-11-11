@@ -114,7 +114,6 @@ int main() {
     DummyTcpServer server;
 
     libera::etherdream::EtherDreamDevice device;
-    device.setLatency(75); // ensure timeouts are reasonable
     libera::etherdream::EtherDreamDeviceInfo info{"loopback", "Loopback", "127.0.0.1", server.port()};
 
     constexpr int kTries = 3000;

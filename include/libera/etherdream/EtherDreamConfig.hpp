@@ -24,5 +24,6 @@ constexpr std::size_t ETHERDREAM_BUFFER_CAPACITY = 1799;   // device FIFO depth 
 constexpr std::size_t ETHERDREAM_MIN_PACKET_POINTS = 150;  // minimum batch we want to ship
 constexpr std::chrono::milliseconds ETHERDREAM_MIN_SLEEP{1};
 constexpr std::chrono::milliseconds ETHERDREAM_MAX_SLEEP{50};
+constexpr std::chrono::milliseconds ETHERDREAM_STREAM_LATENCY{200};
 
 } // namespace libera::etherdream::config

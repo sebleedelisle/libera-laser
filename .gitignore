@@ -2,8 +2,14 @@
 *.DS_Store
 
 build/
+build-debug/
+build-asan/
+out/
 CMakeFiles/
 CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+build.ninja
 
 # Prerequisites
 *.d
