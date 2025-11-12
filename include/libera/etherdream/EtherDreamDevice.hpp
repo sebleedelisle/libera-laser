@@ -97,6 +97,9 @@ private:
     expected<DacAck> sendPing();
     void ensureTargetPointRate();
 
+    bool ensureConnected();
+    bool performHandshake();
+
     int getBufferSize() const;
 
     std::optional<std::error_code> lastNetworkError() const;
@@ -111,6 +114,7 @@ private:
     bool clearRequired = false;
     bool prepareRequired = false;
     bool beginRequired = false;
+    bool connectionActive = false;
 
    //std::size_t minBuffer = 256; // EtherDream 3+ cannot report below this buffer depth.
 

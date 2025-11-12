@@ -73,8 +73,8 @@ expected<void> EtherDreamDevice::connect() {
     // also sets SO_KEEPALIVE which probes the TCP connection 
     tcpClient.setLowLatency();
 
-    tcpClient.setDefaultTimeout(1s);
-    tcpClient.setConnectTimeout(3s);
+    tcpClient.setDefaultTimeout(200ms);
+    tcpClient.setConnectTimeout(1s);
 
 
     logInfo("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
@@ -83,47 +83,55 @@ expected<void> EtherDreamDevice::connect() {
 }
 
 void EtherDreamDevice::run() {
-
+    constexpr auto retryDelay = std::chrono::milliseconds(50);
     networkFailureEncountered = false;
 
-    if (!tcpClient.is_open()) {
-        logError("[EtherDreamDevice] run() called without an active connection.");
-        running = false;
-        return;
-    }
-
-    auto initialAck = waitForResponse('?');
-    if (!initialAck) {
-        if (auto pingAck = sendPing(); !pingAck) {
-            handleNetworkFailure("initial ping", pingAck.error());
-            return;
-        }
-    }
- 
     while (running) {
-        if (clearRequired) {
-            sendClear();
+        if (!deviceInfo) {
+            std::this_thread::sleep_for(retryDelay);
+            continue;
         }
 
-        if (prepareRequired) {
-            sendPrepare();
+        if (!ensureConnected()) {
+            std::this_thread::sleep_for(retryDelay);
+            continue;
         }
 
-        sleepUntilNextPoints();
+        connectionActive = true;
 
-        auto req = getFillRequest();
-        if (req.needsPoints(config::ETHERDREAM_MIN_PACKET_POINTS)) {
-            requestPoints(req);
-            sendPoints();
+        if (!performHandshake()) {
+            close();
+            std::this_thread::sleep_for(retryDelay);
+            continue;
+        }
+ 
+        while (running && connectionActive) {
+            if (clearRequired) {
+                sendClear();
+            }
+
+            if (prepareRequired) {
+                sendPrepare();
+            }
+
+            sleepUntilNextPoints();
+
+            auto req = getFillRequest();
+            if (req.needsPoints(config::ETHERDREAM_MIN_PACKET_POINTS)) {
+                requestPoints(req);
+                sendPoints();
+            }
+
+            if (beginRequired) {
+                sendBegin();
+            }
         }
 
-        if (beginRequired) {
-            sendBegin();
+        close();
+        if (running) {
+            std::this_thread::sleep_for(retryDelay);
         }
     }
-
-   
-    close();
 }
 
 expected<DacAck>
@@ -182,6 +190,7 @@ EtherDreamDevice::waitForResponse(char command) {
 
 void EtherDreamDevice::close() {
     logInfo("[EtherDreamDevice] close()");
+    connectionActive = false;
     // Keep the operation idempotent so repeated calls are harmless.
     if (!tcpClient.is_open()) {
         return;
@@ -257,12 +266,8 @@ std::size_t EtherDreamDevice::calculateMinimumPoints() {
 
 void EtherDreamDevice::handleNetworkFailure(std::string_view where,
                                      const std::error_code& ec) {
-    if (!running.load(std::memory_order_relaxed)) {
-        return; // Already stopping or stopped; no need to signal another failure.
-    }
-
     logError("[EtherDreamDevice] failure", where, ec.message());
-    running = false;
+    connectionActive = false;
     networkFailureEncountered = true;
     lastError = ec;
 }
@@ -490,7 +495,37 @@ int EtherDreamDevice::getBufferSize() const {
             return size;
         }
     }
-    return static_cast<int>(0);
+    return static_cast<int>(config::ETHERDREAM_BUFFER_CAPACITY);
+}
+
+bool EtherDreamDevice::ensureConnected() {
+    if (tcpClient.is_open()) {
+        return true;
+    }
+
+    auto result = connect();
+    if (!result) {
+        networkFailureEncountered = true;
+        lastError = result.error();
+        return false;
+    }
+
+    networkFailureEncountered = false;
+    lastError.reset();
+    return true;
+}
+
+bool EtherDreamDevice::performHandshake() {
+    if (auto initialAck = waitForResponse('?'); initialAck) {
+        return true;
+    }
+
+    if (auto pingAck = sendPing(); pingAck) {
+        return true;
+    }
+
+    handleNetworkFailure("initial ping", pingAck.error());
+    return false;
 }
 
 std::optional<std::error_code> EtherDreamDevice::lastNetworkError() const {

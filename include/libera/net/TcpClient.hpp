@@ -164,7 +164,7 @@ public:
     }
 
         void close() {
-            logInfo("[TcpClient] close()\n");
+            logInfo("[TcpClient] close()");
         if (!socket_.is_open()) return;
         std::error_code ec;
         // Proactively cancel outstanding operations first (pattern: cancel -> shutdown -> close).
