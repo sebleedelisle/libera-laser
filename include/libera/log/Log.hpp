@@ -27,7 +27,7 @@ inline std::string buildLogMessage(Args&&... args) {
     bool first = true;
     auto append = [&](auto&& value) {
         if (!first) {
-            oss << ", ";
+            oss << " ";
         } else {
             first = false;
         }

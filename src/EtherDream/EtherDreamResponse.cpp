@@ -63,14 +63,14 @@ const char* EtherDreamStatus::toString(PlaybackState state) {
 
 std::string EtherDreamStatus::describe() const {
     std::ostringstream os;
-    os << "light=" << toString(lightEngineState)
-       << " playback=" << toString(playbackState)
-       << " buffer=" << bufferFullness
-       << " rate=" << pointRate
-       << " count=" << pointCount
-       << " flags{L=0x" << std::hex << std::uppercase << lightEngineFlags
-       << " P=0x" << playbackFlags
-       << " S=0x" << sourceFlags << std::dec << std::nouppercase << "}";
+    os << "lt=" << toString(lightEngineState)
+       << " pb=" << toString(playbackState)
+       << " buffer=" << bufferFullness; 
+     //  << " rate=" << pointRate
+     //  << " count=" << pointCount
+     //  << " flags{L=0x" << std::hex << std::uppercase << lightEngineFlags
+     //  << " P=0x" << playbackFlags
+    //   << " S=0x" << sourceFlags << std::dec << std::nouppercase << "}";
     return os.str();
 }
 

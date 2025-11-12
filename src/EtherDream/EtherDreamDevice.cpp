@@ -43,8 +43,44 @@ EtherDreamDevice::~EtherDreamDevice() {
     close();
 }
 
+expected<void> EtherDreamDevice::connect(const EtherDreamDeviceInfo& info) {
+    deviceInfo = info;
+    return connect();
+}
+
+expected<void> EtherDreamDevice::connect() {
+    if (!deviceInfo) {
+        return unexpected(make_error_code(std::errc::invalid_argument));
+    }
+
+    std::error_code ec;
+    auto ip = libera::net::asio::ip::make_address(deviceInfo->ip(), ec);
+    if (ec) {
+        logError("Invalid IP", ec.message());
+        return unexpected(ec);
+    }
+
+    libera::net::tcp::endpoint endpoint(ip, deviceInfo->port());
+
+    if (auto connectError = tcpClient.connect(endpoint); connectError) {
+        logError("[EtherDreamDevice] connect failed", connectError.message(),
+                 "target", deviceInfo->ip(), deviceInfo->port(),
+                 "timeout_ms", tcpClient.defaultTimeout().count());
+        return unexpected(connectError);
+    }
+    // setLowLatency()
+    // sets TCP_NODELAY, stops the system holding small packets and combining them
+    // also sets SO_KEEPALIVE which probes the TCP connection 
+    tcpClient.setLowLatency();
+
+    tcpClient.setDefaultTimeout(1s);
+    tcpClient.setConnectTimeout(3s);
 
 
+    logInfo("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
+
+    return {};
+}
 
 void EtherDreamDevice::run() {
 
@@ -122,9 +158,9 @@ EtherDreamDevice::waitForResponse(char command) {
 
         updatePlaybackRequirements(response.status, ackMatched);
 
-        logInfo("[EtherDream] RX response", static_cast<char>(response.response),
-                 "command", command, "status", response.status.describe(),
-                 "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
+        logInfo("[EtherDream] RX", static_cast<char>(response.response),
+                 "cmd", command, "sts", response.status.describe()); 
+//                 "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
 
         if (response.response == 'I') {
             continue; // status frame only; wait for actual ACK
@@ -141,43 +177,7 @@ EtherDreamDevice::waitForResponse(char command) {
         return DacAck{response.status, static_cast<char>(response.command)};
     }
 }
-expected<void>
-EtherDreamDevice::connect(const EtherDreamDeviceInfo& info) {
-    deviceInfo = info;
-    return connect();
-}
 
-expected<void>
-EtherDreamDevice::connect() {
-    if (!deviceInfo) {
-        return unexpected(make_error_code(std::errc::invalid_argument));
-    }
-
-    std::error_code ec;
-    auto ip = libera::net::asio::ip::make_address(deviceInfo->ip(), ec);
-    if (ec) {
-        logError("Invalid IP", ec.message());
-        return unexpected(ec);
-    }
-
-    libera::net::tcp::endpoint endpoint(ip, deviceInfo->port());
-
-    if (auto connectError = tcpClient.connect(endpoint); connectError) {
-        logError("[EtherDreamDevice] connect failed", connectError.message(),
-                 "target", deviceInfo->ip(), deviceInfo->port(),
-                 "timeout_ms", tcpClient.defaultTimeout().count());
-        return unexpected(connectError);
-    }
-
-    tcpClient.setLowLatency();
-    tcpClient.setDefaultTimeout(1s);
-    tcpClient.setConnectTimeout(3s);
-
-
-    logInfo("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
-
-    return {};
-}
 
 
 void EtherDreamDevice::close() {
@@ -306,7 +306,7 @@ core::PointFillRequest EtherDreamDevice::getFillRequest() {
     req.estimatedFirstPointRenderTime =
         std::chrono::steady_clock::now() + bufferLead; 
 
-    logInfo("[EtherDreamDevice :: getFillRequest]", "buffer : ", bufferFullness, "min : ", req.minimumPointsRequired, "max : ", req.maximumPointsRequired); 
+    logInfo("[EtherDreamDevice :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
    //logInfo("[EtherDreamDevice Point fill request ", bufferFullness, ',',bufferCapacity,',', req.minimumPointsRequired,
    //          ' ', req.maximumPointsRequired, "\n");
 
