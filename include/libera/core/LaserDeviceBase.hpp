@@ -116,6 +116,9 @@ public:
     void setScannerSync(double offsetTenThousandths); 
     double getScannerSync(); 
 
+    /// Reset the startup blanking window to 1 ms worth of points.
+    void resetStartupBlank();
+
 protected:
     /// Worker loop implemented by subclasses.
     virtual void run() = 0;
@@ -145,6 +148,7 @@ protected:
     // Stores 1/10,000th of a second units so we match legacy colour-shift semantics.
     std::atomic<double> scannerSyncTime{2.0}; // in 1/10,000 of a second
     std::deque<LaserPoint> scannerSyncColourDelayLine;
+    std::atomic<int> startupBlankPointsRemaining{0};
 };
 
 } // namespace libera::core

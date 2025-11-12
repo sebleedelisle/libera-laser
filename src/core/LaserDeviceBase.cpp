@@ -53,6 +53,22 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
 
 
 
+    // Apply startup blanking (first N points forced to black).
+    int blankPointsRemaining = startupBlankPointsRemaining.load(std::memory_order_relaxed);
+    if (blankPointsRemaining > 0) {
+        for (auto &point : pointsToSend) {
+            if (blankPointsRemaining <= 0) {
+                break;
+            }
+            point.r = 0.0f;
+            point.g = 0.0f;
+            point.b = 0.0f;
+            point.i = 0.0f;
+            --blankPointsRemaining;
+        }
+        startupBlankPointsRemaining.store(blankPointsRemaining, std::memory_order_relaxed);
+    }
+
     // applies scanner sync
     const double syncTenThousandths =
         std::max(scannerSyncTime.load(std::memory_order_relaxed), 0.0);
@@ -136,6 +152,12 @@ void LaserDeviceBase::setPointRate(std::uint32_t pointRateValue) {
 
 std::uint32_t LaserDeviceBase::getPointRate() const {
     return pointRate.load(std::memory_order_relaxed);
+}
+
+void LaserDeviceBase::resetStartupBlank() {
+    const int blankPoints = millisToPoints(1.0f);
+    startupBlankPointsRemaining.store(blankPoints, std::memory_order_relaxed);
+    scannerSyncColourDelayLine.clear();
 }
 
 void LaserDeviceBase::setScannerSync(double offsetTenThousandths) {

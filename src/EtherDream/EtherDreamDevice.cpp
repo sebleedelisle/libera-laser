@@ -104,7 +104,9 @@ void EtherDreamDevice::run() {
             std::this_thread::sleep_for(retryDelay);
             continue;
         }
- 
+        // make sure to blank points if reconnecting
+        resetStartupBlank(); 
+
         while (running && connectionActive) {
             if (clearRequired) {
                 sendClear();
