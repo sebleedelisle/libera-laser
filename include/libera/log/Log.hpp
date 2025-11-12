@@ -24,7 +24,16 @@ namespace detail {
 template<typename... Args>
 inline std::string buildLogMessage(Args&&... args) {
     std::ostringstream oss;
-    (oss << ... << std::forward<Args>(args));
+    bool first = true;
+    auto append = [&](auto&& value) {
+        if (!first) {
+            oss << ", ";
+        } else {
+            first = false;
+        }
+        oss << std::forward<decltype(value)>(value);
+    };
+    (append(std::forward<Args>(args)), ...);
     return oss.str();
 }
 

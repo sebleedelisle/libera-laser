@@ -86,8 +86,7 @@ std::error_code with_deadline(
             notify = true;
         }
         if (notify) {
-            logInfo("[with_deadline] timeout fired after ",
-                    timeout.count(), "ms [", label, "]\n");
+            logInfo("[with_deadline] timeout fired after", timeout.count(), "ms", label);
             cancel();
             st->cv.notify_one();
         }

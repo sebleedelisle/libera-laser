@@ -23,6 +23,6 @@ int main() {
     req.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
 
     const bool ok = ctl.requestPoints(req);
-    logInfo("Smoke test: requestPoints returned ", (ok ? "true" : "false"), "\n");
+    logInfo("Smoke test: requestPoints returned", ok ? "true" : "false");
     return ok ? 0 : 1;
 }

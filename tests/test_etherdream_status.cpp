@@ -10,13 +10,13 @@ using namespace libera::etherdream;
 static int g_failures = 0;
 
 #define ASSERT_TRUE(cond, msg) \
-    do { if (!(cond)) { logError("ASSERT TRUE FAILED: ", (msg), \
-        "  @ ", __FILE__, ":", __LINE__, "\n"); ++g_failures; } } while(0)
+    do { if (!(cond)) { logError("ASSERT TRUE FAILED", (msg), "@", __FILE__, __LINE__); ++g_failures; } } while(0)
 
 #define ASSERT_EQ(a,b,msg) \
-    do { auto _va=(a); auto _vb=(b); if (!((_va)==(_vb))) { logError("ASSERT EQ FAILED: ", (msg), \
-        "  (", +_va, " != ", +_vb, ")" \
-        "  @ ", __FILE__, ":", __LINE__, "\n"); ++g_failures; } } while(0)
+    do { auto _va=(a); auto _vb=(b); if (!((_va)==(_vb))) { \
+        logError("ASSERT EQ FAILED", (msg), "lhs", +_va, "rhs", +_vb, "@", __FILE__, __LINE__); \
+        ++g_failures; \
+    } } while(0)
 
 static std::array<std::uint8_t, 22> makeAck(char cmd, std::uint16_t bufferFullness, std::uint32_t pointRate) {
     std::array<std::uint8_t, 22> raw{};
@@ -59,9 +59,9 @@ int main() {
     testRejectShort();
 
     if (g_failures) {
-        logError("Tests failed: ", g_failures, " failure(s)\n");
+        logError("Tests failed", g_failures, "failure(s)");
         return 1;
     }
-    logInfo("EtherDreamResponse tests passed.\n");
+    logInfo("EtherDreamResponse tests passed");
     return 0;
 }

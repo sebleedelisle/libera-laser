@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <mutex>
+#include <string>
 
 namespace libera::log {
 
@@ -56,7 +57,9 @@ void logInfo(std::string_view message) {
         handler = infoHandler;
     }
     if (handler) {
-        handler(message);
+        std::string line{message};
+        line.push_back('\n');
+        handler(line);
     }
 }
 
@@ -67,7 +70,9 @@ void logError(std::string_view message) {
         handler = errorHandler;
     }
     if (handler) {
-        handler(message);
+        std::string line{message};
+        line.push_back('\n');
+        handler(line);
     }
 }
 

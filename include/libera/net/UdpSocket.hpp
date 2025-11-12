@@ -23,7 +23,7 @@ public:
         std::error_code ec;
         sock_.open(udp::v4(), ec);
         if (ec) {
-            logError("[UdpSocket] open_v4 failed: ", ec.message(), "\n");
+            logError("[UdpSocket] open_v4 failed", ec.message());
         }
         return ec;
     }
@@ -32,7 +32,7 @@ public:
         std::error_code ec;
         sock_.bind(udp::endpoint(udp::v4(), port), ec);
         if (ec) {
-            logError("[UdpSocket] bind_any failed on port ", port, ": ", ec.message(), "\n");
+            logError("[UdpSocket] bind_any failed on port", port, ec.message());
         }
         return ec;
     }

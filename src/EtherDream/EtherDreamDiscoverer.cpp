@@ -44,7 +44,7 @@ EtherDreamDiscoverer::EtherDreamDiscoverer() {
 
     std::error_code ec;
     if ((ec = socket->open_v4())) {
-        logError("[EtherDreamDiscoverer] Failed to open UDP socket: ", ec.message(), "\n");
+        logError("[EtherDreamDiscoverer] Failed to open UDP socket", ec.message());
         socket.reset();
         return;
     }
@@ -59,7 +59,7 @@ EtherDreamDiscoverer::EtherDreamDiscoverer() {
 
     socket->raw().set_option(asio::socket_base::reuse_address(true), ec);
     if ((ec = socket->bind_any(config::ETHERDREAM_DISCOVERY_PORT))) {
-        logError("[EtherDreamDiscoverer] Failed to bind UDP socket: ", ec.message(), "\n");
+        logError("[EtherDreamDiscoverer] Failed to bind UDP socket", ec.message());
         socket->close();
         socket.reset();
         return;
