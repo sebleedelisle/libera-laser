@@ -83,7 +83,7 @@ expected<void> EtherDreamDevice::connect() {
 }
 
 void EtherDreamDevice::run() {
-    constexpr auto retryDelay = std::chrono::milliseconds(50);
+    constexpr auto retryDelay = std::chrono::milliseconds(100);
     networkFailureEncountered = false;
 
     while (running) {

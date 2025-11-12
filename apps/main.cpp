@@ -71,15 +71,16 @@ void installCirclePointsCallback(const std::shared_ptr<core::LaserDeviceBase>& d
 
             // Honour the scheduler contract:
             //  * produce at least minimumPointsRequired (or a whole circle if it asked for zero)
-            //  * never exceed maximumPointsRequired (unless it was zero => "no limit")
+            //  * never exceed maximumPointsRequired
+
+            if (req.maximumPointsRequired == 0) {
+                return; // no room to push additional samples yet
+            }
             const std::size_t requestedMin =
                 req.minimumPointsRequired == 0 ? circle.size() : req.minimumPointsRequired;
             const std::size_t minBatch = std::max(requestedMin, circle.size());
 
-            const std::size_t maxAllowed =
-                req.maximumPointsRequired == 0
-                    ? std::numeric_limits<std::size_t>::max()
-                    : req.maximumPointsRequired;
+            const std::size_t maxAllowed = req.maximumPointsRequired;
 
             const std::size_t target = std::min(minBatch, maxAllowed);
             if (target == 0) {

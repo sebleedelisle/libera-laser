@@ -19,8 +19,6 @@ struct PointFillRequest {
     std::size_t minimumPointsRequired = 0;
 
     /// Maximum number of points that should be produced by the callback.
-    /// A value of 0 means "no upper bound"; callers can tighten this to cap
-    /// buffer growth when device FIFO space is limited.
     std::size_t maximumPointsRequired = 0;
 
     /// Host-side estimate of when the first point in this batch will reach the mirrors.
@@ -41,7 +39,7 @@ struct PointFillRequest {
  * The callback must:
  * - Append new points to @p outputBuffer using `push_back` / `emplace_back`.
  * - Produce at least `request.minimumPointsRequired` points.
- * - Produce no more than `request.maximumPointsRequired` when it is non-zero.
+ * - Produce no more than `request.maximumPointsRequired`.
  * - Not call `reserve()` or `resize()` on @p outputBuffer (avoid allocations
  *   inside the realtime path; the framework reserves large buffers up front).
  * - It may produce more than the minimum, up to outputBuffer.capacity().
