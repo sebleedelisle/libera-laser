@@ -495,7 +495,7 @@ int EtherDreamDevice::getBufferSize() const {
             return size;
         }
     }
-    return static_cast<int>(config::ETHERDREAM_BUFFER_CAPACITY);
+    return 0;
 }
 
 bool EtherDreamDevice::ensureConnected() {
@@ -520,7 +520,8 @@ bool EtherDreamDevice::performHandshake() {
         return true;
     }
 
-    if (auto pingAck = sendPing(); pingAck) {
+    auto pingAck = sendPing();
+    if (pingAck) {
         return true;
     }
 

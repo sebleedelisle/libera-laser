@@ -1,6 +1,5 @@
-#include "libera/etherdream/EtherDreamDiscoverer.hpp"
+#include "libera/etherdream/EtherDreamManager.hpp"
 
-#include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/log/Log.hpp"
 #if defined(_WIN32)
@@ -38,13 +37,13 @@ std::string format_mac_id(std::uint64_t mac) {
 
 } // namespace
 
-EtherDreamDiscoverer::EtherDreamDiscoverer() {
+EtherDreamManager::EtherDreamManager() {
     io = net::shared_io_context();
     socket = std::make_unique<net::UdpSocket>(*io);
 
     std::error_code ec;
     if ((ec = socket->open_v4())) {
-        logError("[EtherDreamDiscoverer] Failed to open UDP socket", ec.message());
+        logError("[EtherDreamManager] Failed to open UDP socket", ec.message());
         socket.reset();
         return;
     }
@@ -59,7 +58,7 @@ EtherDreamDiscoverer::EtherDreamDiscoverer() {
 
     socket->raw().set_option(asio::socket_base::reuse_address(true), ec);
     if ((ec = socket->bind_any(config::ETHERDREAM_DISCOVERY_PORT))) {
-        logError("[EtherDreamDiscoverer] Failed to bind UDP socket", ec.message());
+        logError("[EtherDreamManager] Failed to bind UDP socket", ec.message());
         socket->close();
         socket.reset();
         return;
@@ -69,18 +68,12 @@ EtherDreamDiscoverer::EtherDreamDiscoverer() {
     listener = std::thread([this]{ threadedFunction(); });
 }
 
-EtherDreamDiscoverer::~EtherDreamDiscoverer() {
-    running.store(false);
-    if (socket) {
-        socket->close();
-    }
-    if (listener.joinable()) {
-        listener.join();
-    }
+EtherDreamManager::~EtherDreamManager() {
+    closeAll();
 }
 
 std::vector<std::unique_ptr<core::DacInfo>>
-EtherDreamDiscoverer::discover() {
+EtherDreamManager::discover() {
     std::vector<std::unique_ptr<core::DacInfo>> results;
     const auto now = Clock::now();
     std::lock_guard lock(devicesMutex);
@@ -92,7 +85,76 @@ EtherDreamDiscoverer::discover() {
     return results;
 }
 
-void EtherDreamDiscoverer::threadedFunction() {
+std::shared_ptr<core::LaserDeviceBase>
+EtherDreamManager::getAndConnectToDac(const core::DacInfo& info) {
+    const auto* etherInfo = dynamic_cast<const EtherDreamDeviceInfo*>(&info);
+    if (!etherInfo) {
+        return nullptr;
+    }
+
+    std::shared_ptr<EtherDreamDevice> device;
+    bool newlyCreated = false;
+    {
+        std::lock_guard lock(activeMutex);
+        auto it = activeDevices.find(etherInfo->idValue());
+        if (it != activeDevices.end()) {
+            if (auto existing = it->second.lock()) {
+                device = existing;
+            } else {
+                activeDevices.erase(it);
+            }
+        }
+        if (!device) {
+            device = std::make_shared<EtherDreamDevice>(*etherInfo);
+            activeDevices[etherInfo->idValue()] = device;
+            newlyCreated = true;
+        }
+    }
+
+    if (device && newlyCreated) {
+        if (auto result = device->connect(*etherInfo); !result) {
+            logError("[EtherDreamManager] initial connect failed", result.error().message());
+        }
+        device->start();
+    }
+
+    return device;
+}
+
+void EtherDreamManager::closeAll() {
+    running.store(false);
+    if (socket) {
+        socket->close();
+        socket.reset();
+    }
+    if (listener.joinable()) {
+        listener.join();
+    }
+
+    std::unordered_map<std::string, std::shared_ptr<EtherDreamDevice>> snapshot;
+    {
+        std::lock_guard lock(activeMutex);
+        for (auto& [id, weak] : activeDevices) {
+            if (auto dev = weak.lock()) {
+                snapshot.emplace(id, std::move(dev));
+            }
+        }
+        activeDevices.clear();
+    }
+
+    for (auto& [id, dev] : snapshot) {
+        if (!dev) continue;
+        dev->stop();
+        dev->close();
+    }
+
+    {
+        std::lock_guard lock(devicesMutex);
+        devices.clear();
+    }
+}
+
+void EtherDreamManager::threadedFunction() {
     if (!socket) {
         return;
     }
@@ -124,7 +186,7 @@ void EtherDreamDiscoverer::threadedFunction() {
         }
 
         std::string ip = sender.address().to_string();
-        unsigned short dacPort = config::ETHERDREAM_DAC_PORT_DEFAULT; // Broadcast packets omit TCP port; use default.
+        unsigned short dacPort = config::ETHERDREAM_DAC_PORT_DEFAULT;
 
         if (received < kMinDiscoveryPacketBytes) {
             continue;
@@ -140,7 +202,7 @@ void EtherDreamDiscoverer::threadedFunction() {
         const auto softwareRevision = read_le_u16(cursor); cursor += 2;
         const auto bufferCapacity = read_le_u16(cursor); cursor += 2;
         const auto maxPointRate = read_le_u32(cursor); cursor += 4;
-        (void)cursor; // remaining status bytes are currently unused.
+        (void)cursor;
 
         std::string id = mac ? format_mac_id(mac) : ("etherdream-" + ip);
         std::string label = "EtherDream @ " + ip;
@@ -164,7 +226,7 @@ void EtherDreamDiscoverer::threadedFunction() {
     }
 }
 
-void EtherDreamDiscoverer::pruneStaleUnlocked(Clock::time_point now) {
+void EtherDreamManager::pruneStaleUnlocked(Clock::time_point now) {
     const auto expiry = now - config::ETHERDREAM_DISCOVERY_TIMEOUT;
     for (auto it = devices.begin(); it != devices.end(); ) {
         if (it->second.lastSeen < expiry) {

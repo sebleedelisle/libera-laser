@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/DacDiscovery.hpp"
+#include "libera/core/GlobalDacManager.hpp"
 
 #include <string>
 

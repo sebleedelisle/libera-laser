@@ -1,6 +1,5 @@
-#include "libera/core/DacDiscovery.hpp"
-#include "libera/etherdream/EtherDreamDevice.hpp"
-#include "libera/etherdream/EtherDreamDiscoverer.hpp"
+#include "libera/core/GlobalDacManager.hpp"
+#include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include "libera/log/Log.hpp"
 #include <chrono>
@@ -13,11 +12,11 @@ using namespace libera;
 
 namespace {
 
-void installCirclePointsCallback(etherdream::EtherDreamDevice& device) {
+void installCirclePointsCallback(const std::shared_ptr<core::LaserDeviceBase>& device) {
     // Register a callback that continuously feeds a coloured circle to the DAC.
     // The lambda keeps all state internally (static precomputed points + cursor)
     // so the outer application only has to install it once.
-    device.setRequestPointsCallback(
+    device->setRequestPointsCallback(
         [](const core::PointFillRequest& req, std::vector<core::LaserPoint>& out) {
 
             // Precompute the actual circle once and reuse it for every invocation.
@@ -111,19 +110,13 @@ void installCirclePointsCallback(etherdream::EtherDreamDevice& device) {
 } // namespace
 
 int main() {
-    etherdream::EtherDreamDevice etherdream;
-    installCirclePointsCallback(etherdream);
 
-    core::DacDiscoveryManager discoveryManager;
-    const auto discoveryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    std::vector<std::unique_ptr<core::DacInfo>> results;
-    while (std::chrono::steady_clock::now() < discoveryDeadline) {
-        results = discoveryManager.discoverAll();
-        if (!results.empty()) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    }
+    core::GlobalDacManager dacManager;
+
+    logInfo("Waiting for DACs to be discovered..."); 
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+
+    std::vector<std::unique_ptr<core::DacInfo>> results = dacManager.discoverAll();
 
     if (results.empty()) {
         logError("No EtherDream devices discovered after timeout.");
@@ -133,39 +126,35 @@ int main() {
     logInfo("Discovered DACs:");
     for (std::size_t idx = 0; idx < results.size(); ++idx) {
         const auto& entry = results[idx];
-        logInfo("  entry", idx, entry->labelValue(), "type", entry->type());
+        logInfo(idx, entry->labelValue(), "type", entry->type());
     }
 
     std::size_t choice = 0;
-    logInfo("Select DAC index: ");
-    if (!(std::cin >> choice) || choice >= results.size()) {
-        logError("Invalid selection.");
+    if(results.size()>1) { 
+        
+        logInfo("Select DAC index: ");
+        if (!(std::cin >> choice) || choice >= results.size()) {
+            logError("Invalid selection.");
+            return 1;
+        }
+    }
+
+    // the discovery manager getAndConnectToDac should create and connect the dac if it hasn't already. 
+    // if it has already it just returns the existing dac
+
+    std::shared_ptr<core::LaserDeviceBase> dac = dacManager.getAndConnectToDac(*results[choice]); 
+    if (!dac) {
+        logError("Failed to acquire DAC from manager.");
         return 1;
     }
+    installCirclePointsCallback(dac); 
 
-    auto* info = dynamic_cast<etherdream::EtherDreamDeviceInfo*>(results[choice].get());
-    if (!info) {
-        logError("Selected entry is not an EtherDream device.");
-        return 1;
-    }
+    std::this_thread::sleep_for(std::chrono::seconds(30));
 
-    if (auto result = etherdream.connect(*info); !result) {
-        const auto err = result.error();
-        logError("Connect failed", err.message(),
-                 err.category().name(), err.value());
-    } else { 
-        // Step 5: Start the device worker thread (calls EtherDreamDevice::run()).
-        logInfo("Starting dummy run...");
-        etherdream.start();
+    // dacManager closes down all dacs safely
+    dacManager.close(); 
 
-        // Keep main alive long enough for the worker to do a few ticks.
-        std::this_thread::sleep_for(std::chrono::seconds(30));
-
-        // Step 6: Stop the device worker and close the socket if you connected.
-        etherdream.stop();
-        etherdream.close();
-        logInfo("Done.");
-    }
+    logInfo("Done.");
     
 
     return 0;

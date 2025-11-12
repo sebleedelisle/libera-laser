@@ -3,9 +3,13 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <chrono>
 #include <cstdint>
+
+#include "libera/core/LaserDeviceBase.hpp"
 
 namespace libera::core {
 
@@ -31,35 +35,38 @@ protected:
     std::uint32_t maxPointRateValue = 0;
 };
 
-class DacDiscovererBase {
+class DacManagerBase {
 public:
-    virtual ~DacDiscovererBase() = default;
+    virtual ~DacManagerBase() = default;
 
     virtual std::vector<std::unique_ptr<DacInfo>> discover() = 0;
+    virtual std::string_view managedType() const = 0;
+    virtual std::shared_ptr<LaserDeviceBase> getAndConnectToDac(const DacInfo& info) = 0;
+    virtual void closeAll() = 0;
 };
 
-// Convenience alias for a callable that constructs a discoverer.
-using DiscovererFactory = std::function<std::unique_ptr<DacDiscovererBase>()>;
+using DacManagerFactory = std::function<std::unique_ptr<DacManagerBase>()>;
 
-// Returns the global list of registered discoverer factories.
-std::vector<DiscovererFactory>& getDiscovererFactories();
+std::vector<DacManagerFactory>& getDacManagerFactories();
 
-// Helper that auto-registers a factory when a static instance is created.
-struct DiscovererRegistry {
-    explicit DiscovererRegistry(DiscovererFactory factory);
+struct DacManagerRegistry {
+    explicit DacManagerRegistry(DacManagerFactory factory);
 };
 
-// Manual helper for adding discoverers at runtime if needed.
-void AddDiscoverer(DiscovererFactory factory);
+void AddDacManager(DacManagerFactory factory);
 
-class DacDiscoveryManager {
+class GlobalDacManager {
 public:
-    DacDiscoveryManager();
+    GlobalDacManager();
+    ~GlobalDacManager();
 
     std::vector<std::unique_ptr<DacInfo>> discoverAll();
+    std::shared_ptr<LaserDeviceBase> getAndConnectToDac(const DacInfo& info);
+    void close();
 
 private:
-    std::vector<std::unique_ptr<DacDiscovererBase>> discoverers;
+    std::vector<std::unique_ptr<DacManagerBase>> managers;
+    std::unordered_map<std::string, DacManagerBase*> managerByType;
 };
 
 } // namespace libera::core
