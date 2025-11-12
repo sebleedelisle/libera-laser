@@ -111,6 +111,9 @@ public:
      */
     virtual std::uint32_t getPointRate() const;
 
+    void setScannerSync(double offsetSeconds); 
+    double getScannerSync(); 
+
 protected:
     /// Worker loop implemented by subclasses.
     virtual void run() = 0;
@@ -137,6 +140,7 @@ protected:
 
     /// Main buffer of points pending transmission to the DAC.
     std::vector<LaserPoint> pointsToSend;
+    std::atomic<double> scannerSyncSeconds{0.2}; 
 };
 
 } // namespace libera::core

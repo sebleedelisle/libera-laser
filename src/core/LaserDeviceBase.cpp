@@ -35,10 +35,23 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
     // Debug-only: enforce the contract that the callback produced at least the requested minimum.
     assert(pointsToSend.size() >= request.minimumPointsRequired &&
            "Callback did not provide the minimum required number of points.");
-    if (request.maximumPointsRequired > 0) {
-        assert(pointsToSend.size() <= request.maximumPointsRequired &&
+  
+    assert(pointsToSend.size() <= request.maximumPointsRequired &&
                "Callback produced more points than allowed by maximumPointsRequired.");
-    }
+    if(pointsToSend.size()>request.maximumPointsRequired) { 
+        // get rid of extra points
+        logError("[LaserDeviceBase::requestPoints] - too many points sent! Maximum :", request.maximumPointsRequired, " actual :", pointsToSend.size()); 
+        logError("[LaserDeviceBase::requestPoints] - removing additional points"); 
+        pointsToSend.resize(request.maximumPointsRequired); 
+
+    } else if(pointsToSend.size()<request.minimumPointsRequired) { 
+        // fill up the buffer with blanks
+        const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();
+        const LaserPoint blankPoint{};
+        pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
+    } 
+
+    
 
     return true;
 }
