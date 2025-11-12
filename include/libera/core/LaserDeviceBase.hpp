@@ -112,7 +112,8 @@ public:
      */
     virtual std::uint32_t getPointRate() const;
 
-    void setScannerSync(double offsetSeconds); 
+    // Offset expressed in 1/10,000th of a second (0.1 ms) units.
+    void setScannerSync(double offsetTenThousandths); 
     double getScannerSync(); 
 
 protected:
@@ -141,7 +142,8 @@ protected:
 
     /// Main buffer of points pending transmission to the DAC.
     std::vector<LaserPoint> pointsToSend;
-    std::atomic<double> scannerSyncSeconds{0.2};
+    // Stores 1/10,000th of a second units so we match legacy colour-shift semantics.
+    std::atomic<double> scannerSyncTime{2.0}; // in 1/10,000 of a second
     std::deque<LaserPoint> scannerSyncColourDelayLine;
 };
 

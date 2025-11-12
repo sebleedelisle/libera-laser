@@ -115,12 +115,20 @@ int main() {
     core::GlobalDacManager dacManager;
 
     logInfo("Waiting for DACs to be discovered..."); 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-
-    std::vector<std::unique_ptr<core::DacInfo>> results = dacManager.discoverAll();
+    constexpr auto discoveryTimeout = std::chrono::milliseconds(1500);
+    constexpr auto discoveryPollInterval = std::chrono::milliseconds(100);
+    const auto discoveryStart = std::chrono::steady_clock::now();
+    std::vector<std::unique_ptr<core::DacInfo>> results;
+    do {
+        results = dacManager.discoverAll();
+        if (!results.empty()) {
+            break; // stop waiting as soon as at least one DAC is found
+        }
+        std::this_thread::sleep_for(discoveryPollInterval);
+    } while (std::chrono::steady_clock::now() - discoveryStart < discoveryTimeout);
 
     if (results.empty()) {
-        logError("No EtherDream devices discovered after timeout.");
+        logError("No  devices discovered after timeout.");
         return 1;
     }
 
@@ -152,10 +160,11 @@ int main() {
     installCirclePointsCallback(dac); 
 
     const float phase_step = 0.05f;          // smaller => slower change
+    constexpr float scannerSyncBaseUnits = 5.0f; // 0.5 ms expressed in 1/10,000 s units
     float phase = 0.f;
 
     for (int i = 0; i < 300; ++i) {
-        dac->setScannerSync(0.0005f * (std::sin(phase) + 1.f));
+        dac->setScannerSync(scannerSyncBaseUnits * (std::sin(phase) + 1.f));
 
         phase += phase_step;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));  // or duration<double>(0.1)
