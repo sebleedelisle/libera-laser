@@ -1,6 +1,7 @@
 #pragma once
 
 #include <vector>
+#include <deque>
 #include <functional>
 #include <thread>
 #include <atomic>
@@ -140,7 +141,8 @@ protected:
 
     /// Main buffer of points pending transmission to the DAC.
     std::vector<LaserPoint> pointsToSend;
-    std::atomic<double> scannerSyncSeconds{0.2}; 
+    std::atomic<double> scannerSyncSeconds{0.2};
+    std::deque<LaserPoint> scannerSyncColourDelayLine;
 };
 
 } // namespace libera::core

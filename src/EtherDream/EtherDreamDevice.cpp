@@ -345,8 +345,8 @@ void EtherDreamDevice::sendPoints() {
         return;
     }
 
-    logInfo("[EtherDream] TX data points", pointsToSend.size(),
-            "bytes", commandBuffer.size());
+    //logInfo("[EtherDream] TX data points", pointsToSend.size(),
+    //        "bytes", commandBuffer.size());
 
     auto dataAck = sendCommand();
     if (!dataAck) {
@@ -381,8 +381,8 @@ void EtherDreamDevice::sendPrepare() {
 void EtherDreamDevice::sendBegin() {
     logError("[EtherDream] begin required -> send 'b'");
     const auto targetRate = getPointRate();
-    logInfo("[EtherDream] TX 'b'", "rate", targetRate,
-            "timeout_ms", tcpClient.defaultTimeout().count());
+    //logInfo("[EtherDream] TX 'b'", "rate", targetRate,
+   //         "timeout_ms", tcpClient.defaultTimeout().count());
     commandBuffer.setBeginCommand(targetRate);
         if (auto ack = sendCommand(); !ack) {
             if (ack.error() == asio::error::timed_out) {

@@ -49,9 +49,34 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
         const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();
         const LaserPoint blankPoint{};
         pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
-    } 
+    }
 
-    
+
+
+
+    const double syncSeconds =
+        std::max(scannerSyncSeconds.load(std::memory_order_relaxed), 0.0);
+   
+    const auto shiftPointCount =
+        static_cast<std::size_t>(millisToPoints(syncSeconds * 1000.0));
+
+
+    scannerSyncColourDelayLine.resize(shiftPointCount); 
+    logInfo("syncSeconds", syncSeconds, "shiftPointCount", shiftPointCount); 
+
+    // Feed the FIFO with geometry points while reusing the delayed colour sample
+    // from `scannerSyncColourDelayLine`. This keeps X/Y data contiguous but shifts
+    // RGB/I intensity by the requested number of points so colour modulation stays
+    // aligned with the mirrors even when their propagation times differ.
+    for (auto &point : pointsToSend) {
+        scannerSyncColourDelayLine.push_back(point);
+        const LaserPoint colourPoint = scannerSyncColourDelayLine.front();
+        scannerSyncColourDelayLine.pop_front();
+        point.r = colourPoint.r;
+        point.g = colourPoint.g;
+        point.b = colourPoint.b;
+        point.i = colourPoint.i;
+    }
 
     return true;
 }
@@ -111,6 +136,16 @@ void LaserDeviceBase::setPointRate(std::uint32_t pointRateValue) {
 
 std::uint32_t LaserDeviceBase::getPointRate() const {
     return pointRate.load(std::memory_order_relaxed);
+}
+
+void LaserDeviceBase::setScannerSync(double offsetSeconds) {
+   // logInfo("[LaserDeviceBase::setScannerSync]", offsetSeconds); 
+    const double clamped = std::max(offsetSeconds, 0.0);
+    scannerSyncSeconds.store(clamped, std::memory_order_relaxed);
+}
+
+double LaserDeviceBase::getScannerSync() {
+    return scannerSyncSeconds.load(std::memory_order_relaxed);
 }
 
 } // namespace libera::core

@@ -115,7 +115,7 @@ int main() {
     core::GlobalDacManager dacManager;
 
     logInfo("Waiting for DACs to be discovered..."); 
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
     std::vector<std::unique_ptr<core::DacInfo>> results = dacManager.discoverAll();
 
@@ -148,9 +148,21 @@ int main() {
         logError("Failed to acquire DAC from manager.");
         return 1;
     }
+    
     installCirclePointsCallback(dac); 
 
-    std::this_thread::sleep_for(std::chrono::seconds(30));
+    const float phase_step = 0.05f;          // smaller => slower change
+    float phase = 0.f;
+
+    for (int i = 0; i < 300; ++i) {
+        dac->setScannerSync(0.0005f * (std::sin(phase) + 1.f));
+
+        phase += phase_step;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));  // or duration<double>(0.1)
+    }
+
+
+    
 
     // dacManager closes down all dacs safely
     dacManager.close(); 
