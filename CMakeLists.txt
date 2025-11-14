@@ -91,3 +91,6 @@ endforeach()
 # --------------------------------
 add_executable(libera-main apps/main.cpp)
 target_link_libraries(libera-main PRIVATE libera-core)
+
+add_executable(laser-stream-test apps/LaserStreamTest.cpp)
+target_link_libraries(laser-stream-test PRIVATE libera-core)
