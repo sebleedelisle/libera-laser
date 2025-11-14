@@ -1,10 +1,10 @@
 #pragma once
-#include "libera/core/LaserDeviceBase.hpp"
+#include "libera/core/LaserDevice.hpp"
 
 
 namespace libera::core::dummy {
 
-class DummyController : public LaserDeviceBase {
+class DummyController : public LaserDevice {
 public:
     DummyController();
     ~DummyController();

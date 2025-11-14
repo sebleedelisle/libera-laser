@@ -9,7 +9,7 @@
 #include <chrono>
 #include <cstdint>
 
-#include "libera/core/LaserDeviceBase.hpp"
+#include "libera/core/LaserDevice.hpp"
 
 namespace libera::core {
 
@@ -41,7 +41,7 @@ public:
 
     virtual std::vector<std::unique_ptr<DacInfo>> discover() = 0;
     virtual std::string_view managedType() const = 0;
-    virtual std::shared_ptr<LaserDeviceBase> getAndConnectToDac(const DacInfo& info) = 0;
+    virtual std::shared_ptr<LaserDevice> getAndConnectToDac(const DacInfo& info) = 0;
     virtual void closeAll() = 0;
 };
 
@@ -61,7 +61,7 @@ public:
     ~GlobalDacManager();
 
     std::vector<std::unique_ptr<DacInfo>> discoverAll();
-    std::shared_ptr<LaserDeviceBase> getAndConnectToDac(const DacInfo& info);
+    std::shared_ptr<LaserDevice> getAndConnectToDac(const DacInfo& info);
     void close();
 
 private:

@@ -43,7 +43,7 @@ std::vector<std::unique_ptr<DacInfo>> GlobalDacManager::discoverAll() {
     return results;
 }
 
-std::shared_ptr<LaserDeviceBase>
+std::shared_ptr<LaserDevice>
 GlobalDacManager::getAndConnectToDac(const DacInfo& info) {
     auto it = managerByType.find(info.type());
     if (it == managerByType.end() || !it->second) {

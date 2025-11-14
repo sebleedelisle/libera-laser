@@ -85,7 +85,7 @@ EtherDreamManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserDeviceBase>
+std::shared_ptr<core::LaserDevice>
 EtherDreamManager::getAndConnectToDac(const core::DacInfo& info) {
     const auto* etherInfo = dynamic_cast<const EtherDreamDeviceInfo*>(&info);
     if (!etherInfo) {
