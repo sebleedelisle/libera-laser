@@ -2,10 +2,12 @@
 
 #include "libera/core/LaserDeviceBase.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <mutex>
 #include <vector>
+#include <memory>
 
 namespace libera::core {
 
@@ -13,6 +15,7 @@ struct Frame {
     std::vector<LaserPoint> points;
     std::chrono::steady_clock::time_point time{};
     std::size_t playCount = 0;
+    std::size_t nextPoint = 0; // cursor of the next sample to emit
 };
 
 class LaserDevice : public LaserDeviceBase {
@@ -33,10 +36,12 @@ protected:
 
 private:
 
-    std::deque<Frame> pendingFrames;
+    std::deque<std::shared_ptr<Frame>> pendingFrames;
     mutable std::mutex pendingFramesMutex;
-    std::deque<Frame> frameQueue;
+    std::deque<std::shared_ptr<Frame>> frameQueue;
     bool frameModeActive = false;
+
+    void appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count);
 };
 
 } // namespace libera::core
