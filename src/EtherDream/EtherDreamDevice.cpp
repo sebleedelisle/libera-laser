@@ -77,7 +77,7 @@ expected<void> EtherDreamDevice::connect() {
     tcpClient.setConnectTimeout(1s);
 
 
-    logInfo("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
+    logInfoVerbose("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
 
     return {};
 }
@@ -168,7 +168,7 @@ EtherDreamDevice::waitForResponse(char command) {
 
         updatePlaybackRequirements(response.status, ackMatched);
 
-        logInfo("[EtherDream] RX", static_cast<char>(response.response),
+        logInfoVerbose("[EtherDream] RX", static_cast<char>(response.response),
                  "cmd", command, "sts", response.status.describe()); 
 //                 "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
 
@@ -191,7 +191,7 @@ EtherDreamDevice::waitForResponse(char command) {
 
 
 void EtherDreamDevice::close() {
-    logInfo("[EtherDreamDevice] close()");
+    logInfoVerbose("[EtherDreamDevice] close()");
     connectionActive = false;
     // Keep the operation idempotent so repeated calls are harmless.
     if (!tcpClient.is_open()) {
@@ -313,7 +313,7 @@ core::PointFillRequest EtherDreamDevice::getFillRequest() {
     req.estimatedFirstPointRenderTime =
         std::chrono::steady_clock::now() + bufferLead; 
 
-    logInfo("[EtherDreamDevice :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
+    logInfoVerbose("[EtherDreamDevice :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
    //logInfo("[EtherDreamDevice Point fill request ", bufferFullness, ',',bufferCapacity,',', req.minimumPointsRequired,
    //          ' ', req.maximumPointsRequired, "\n");
 
@@ -365,7 +365,7 @@ void EtherDreamDevice::sendPoints() {
 }
 
 void EtherDreamDevice::sendClear() {
-    logInfo("[EtherDream] clear required -> send 'c'");
+    logInfoVerbose("[EtherDream] clear required -> send 'c'");
     commandBuffer.setSingleByteCommand('c');
     if (auto ack = sendCommand(); !ack) {
         handleNetworkFailure("clear command", ack.error());
@@ -481,7 +481,7 @@ void EtherDreamDevice::sleepUntilNextPoints() {
         millisToWait = maxSleep;
     }
 
-    logInfo("[EtherDreamDevice] Sleeping for", millisToWait, "ms");
+    logInfoVerbose("[EtherDreamDevice] Sleeping for", millisToWait, "ms");
     std::this_thread::sleep_for(std::chrono::milliseconds{millisToWait});
 }
 

@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <type_traits>
 #include <chrono>
+#include <utility>
 #include "LaserPoint.hpp"
+#include "libera/log/Log.hpp"
 
 namespace libera::core {
 
@@ -115,6 +117,8 @@ public:
     // Offset expressed in 1/10,000th of a second (0.1 ms) units.
     void setScannerSync(double offsetTenThousandths); 
     double getScannerSync(); 
+    void setVerbose(bool enabled);
+    bool isVerbose() const;
 
     /// Reset the startup blanking window to 1 ms worth of points.
     void resetStartupBlank();
@@ -122,6 +126,13 @@ public:
 protected:
     /// Worker loop implemented by subclasses.
     virtual void run() = 0;
+
+    template <typename... Args>
+    void logInfoVerbose(Args&&... args) const {
+        if (verbose.load(std::memory_order_relaxed)) {
+            libera::log::logInfo(std::forward<Args>(args)...);
+        }
+    }
 
     double pointsToMillis(std::size_t pointCount) const;
     double pointsToMillis(std::size_t pointCount, std::uint32_t rate) const;
@@ -139,6 +150,7 @@ protected:
     std::atomic<bool> running{false};
     
     std::atomic<std::uint32_t> pointRate{30000};
+    std::atomic<bool> verbose{false};
 
     /// The installed callback that generates points (may be empty if not set).
     RequestPointsCallback requestPointsCallback{};

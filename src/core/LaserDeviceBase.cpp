@@ -107,7 +107,7 @@ void LaserDeviceBase::start() {
 }
 
 void LaserDeviceBase::stop() {
-    logInfo("[EtherDreamDevice] stop()\n");
+    logInfoVerbose("[LaserDeviceBase] stop()");
     running = false;
     if (worker.joinable()) {
         worker.join();
@@ -158,6 +158,14 @@ void LaserDeviceBase::resetStartupBlank() {
     const int blankPoints = millisToPoints(1.0f);
     startupBlankPointsRemaining.store(blankPoints, std::memory_order_relaxed);
     scannerSyncColourDelayLine.clear();
+}
+
+void LaserDeviceBase::setVerbose(bool enabled) {
+    verbose.store(enabled, std::memory_order_relaxed);
+}
+
+bool LaserDeviceBase::isVerbose() const {
+    return verbose.load(std::memory_order_relaxed);
 }
 
 void LaserDeviceBase::setScannerSync(double offsetTenThousandths) {
