@@ -1,6 +1,7 @@
 #include "libera/core/GlobalDacManager.hpp"
 #include "libera/core/LaserDevice.hpp"
 #include "libera/etherdream/EtherDreamManager.hpp"
+#include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include "libera/log/Log.hpp"
 
@@ -50,9 +51,7 @@ core::Frame makeCircleFrame(float phase) {
 }
 
 void waitUntilReady(const std::shared_ptr<core::LaserDevice>& dac) {
-    while (!dac->isReadyForNewFrame()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    
 }
 
 } // namespace
@@ -61,7 +60,7 @@ int main() {
     core::GlobalDacManager dacManager;
 
     logInfo("Waiting for DACs to be discovered...");
-    constexpr auto discoveryTimeout = std::chrono::milliseconds(1500);
+    constexpr auto discoveryTimeout = std::chrono::milliseconds(3000);
     constexpr auto discoveryPollInterval = std::chrono::milliseconds(100);
     const auto discoveryStart = std::chrono::steady_clock::now();
 
@@ -69,7 +68,7 @@ int main() {
     do {
         results = dacManager.discoverAll();
         if (!results.empty()) {
-            break;
+           // break;
         }
         std::this_thread::sleep_for(discoveryPollInterval);
     } while (std::chrono::steady_clock::now() - discoveryStart < discoveryTimeout);
@@ -86,34 +85,36 @@ int main() {
     }
 
     std::size_t choice = 0;
-    if (results.size() > 1) {
+    //if (results.size() > 1) {
         logInfo("Select DAC index: ");
         if (!(std::cin >> choice) || choice >= results.size()) {
             logError("Invalid selection.");
             return 1;
         }
-    }
+    //}
 
-    auto dac = dacManager.getAndConnectToDac(*results[choice]);
+    std::shared_ptr<core::LaserDevice> dac = dacManager.getAndConnectToDac(*results[choice]);
     if (!dac) {
         logError("Failed to acquire DAC from manager.");
         return 1;
     }
 
-    constexpr float scannerSyncBaseUnits = 5.0f; // 0.5 ms expressed in 1/10,000 s units
+    constexpr float scannerSyncTestValue = 5.0f; // 0.5 ms expressed in 1/10,000 s units
     const float phaseStep = 0.05f;
     float phase = 0.0f;
 
     const int totalFrames = 3000;
     for (int i = 0; i < totalFrames; ++i) {
-        waitUntilReady(dac);
+        while (!dac->isReadyForNewFrame()){
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
 
         core::Frame frame = makeCircleFrame(phase);
         if (!dac->sendFrame(std::move(frame))) {
             logError("Failed to queue frame ", i);
         }
 
-        dac->setScannerSync(scannerSyncBaseUnits * (std::sin(phase) + 1.0f));
+        dac->setScannerSync(scannerSyncTestValue * (std::sin(phase) + 1.0f));
         phase += phaseStep;
     }
 

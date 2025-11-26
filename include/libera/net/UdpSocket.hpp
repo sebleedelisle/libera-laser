@@ -45,18 +45,20 @@ public:
 
     // Send a datagram, fail if not sent within timeout.
     std::error_code send_to(const void* data, std::size_t n,
-                                      const udp::endpoint& ep, std::chrono::milliseconds timeout) {
+                                      const udp::endpoint& ep, std::chrono::milliseconds timeout,
+                                      bool logTimeout = true) {
         auto ex = sock_.get_executor();
         return with_deadline(ex, timeout,
             [&](auto cb){ sock_.async_send_to(asio::buffer(data, n), ep, 0, cb); },
             [&]{ sock_.cancel(); },
-            "udp_send");
+            "udp_send", logTimeout);
     }
 
     // Receive one datagram, with timeout. Returns ec + fills out_ep + out_n.
     std::error_code recv_from(void* data, std::size_t max,
                                         udp::endpoint& out_ep, std::size_t& out_n,
-                                        std::chrono::milliseconds timeout) {
+                                        std::chrono::milliseconds timeout,
+                                        bool logTimeout = true) {
         auto ex = sock_.get_executor();
         out_n = 0;
         return with_deadline(ex, timeout,
@@ -67,7 +69,7 @@ public:
                     });
             },
             [&]{ sock_.cancel(); },
-            "udp_recv");
+            "udp_recv", logTimeout);
     }
 
     udp::socket& raw() { return sock_; }

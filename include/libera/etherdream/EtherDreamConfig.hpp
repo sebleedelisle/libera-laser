@@ -20,7 +20,6 @@ constexpr std::chrono::seconds ETHERDREAM_DISCOVERY_TIMEOUT{3};
 
 // Streaming behaviour ---------------------------------------------------------
 
-constexpr std::size_t ETHERDREAM_BUFFER_CAPACITY = 1800;
 constexpr std::size_t ETHERDREAM_MIN_PACKET_POINTS = 150;  // minimum batch we want to ship
 constexpr std::size_t ETHERDREAM_MAX_PACKET_POINTS = 3640;  // maximum batch we want to ship
 
@@ -28,7 +27,6 @@ constexpr std::chrono::milliseconds ETHERDREAM_MIN_SLEEP{1};
 constexpr std::chrono::milliseconds ETHERDREAM_MAX_SLEEP{50};
 
 constexpr std::chrono::milliseconds ETHERDREAM_MIN_BUFFER_MS{50};
-
 
 
 } // namespace libera::etherdream::config

@@ -37,7 +37,7 @@ constexpr const char* kEtherDreamIp = "192.168.1.76";
 constexpr std::uint32_t kPointRate = 30000;
 constexpr std::uint16_t kShortPointCount = 200;
 constexpr std::uint16_t kLongPointCount  = 1800;
-constexpr std::size_t   kBufferCapacity  = libera::etherdream::config::ETHERDREAM_BUFFER_CAPACITY;
+constexpr std::size_t   kBufferCapacity  = 1800;
 
 libera::etherdream::EtherDreamResponse g_lastStatus{};
 
