@@ -292,6 +292,8 @@ std::size_t EtherDreamDevice::calculateMinimumPoints() {
     const int bufferFullness = estimateBufferFullness();
 
     int minPoints = millisToPoints(config::ETHERDREAM_MIN_BUFFER_MS); 
+    minPoints = std::max<int>(minPoints,
+                              static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
     if(bufferFullness>=minPoints) return 0; 
     else return static_cast<std::size_t>(minPoints - bufferFullness);
     
@@ -499,6 +501,8 @@ void EtherDreamDevice::sleepUntilNextPoints() {
     // time based rather than buffer size based
 
     int minPointsInBuffer = millisToPoints(config::ETHERDREAM_MIN_BUFFER_MS);
+    minPointsInBuffer = std::max<int>(minPointsInBuffer,
+                                      static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
     const int bufferSize = getBufferSize();
     const int minPacketPoints = static_cast<int>(config::ETHERDREAM_MIN_PACKET_POINTS);
 
