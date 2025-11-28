@@ -17,6 +17,7 @@
 #include <cstddef>  // for std::byte, std::to_integer
 #include <cstdint>
 #include <cctype>
+#include <mutex>
 
 using namespace std::chrono_literals; // Enable 100ms / 1s literals.
 
@@ -116,6 +117,12 @@ void EtherDreamDevice::run() {
                 sendPrepare();
             }
 
+            if (auto newrate = nextPendingRateChange()) {
+                if (auto rateAck = sendPointRate(*newrate); !rateAck) {
+                    handleNetworkFailure("point rate command", rateAck.error());
+                }
+            }
+
             sleepUntilNextPoints();
 
             auto req = getFillRequest();
@@ -208,6 +215,20 @@ bool EtherDreamDevice::isConnected() const {
 
 void EtherDreamDevice::setPointRate(std::uint32_t pointRateValue) {
     LaserDeviceBase::setPointRate(pointRateValue);
+    {
+        std::lock_guard<std::mutex> lock(pendingRatesMutex);
+        pendingRateChanges.push_back(pointRateValue);
+    }
+}
+
+std::optional<std::uint16_t> EtherDreamDevice::nextPendingRateChange() {
+    std::lock_guard<std::mutex> lock(pendingRatesMutex);
+    if (pendingRateChanges.empty()) {
+        return std::nullopt;
+    }
+    auto next = pendingRateChanges.back();
+    pendingRateChanges.clear();
+    return next;
 }
 
 
@@ -250,7 +271,8 @@ expected<DacAck> EtherDreamDevice::sendPointRate(std::uint16_t rate) {
         return ack;
     }
 
-    rateChangePending = true;
+    pendingRateChangeCount++;
+
     return ack;
 }
 
@@ -331,7 +353,7 @@ void EtherDreamDevice::sendPoints() {
         return;
     }
 
-    const bool injectRateChange = rateChangePending;
+    const bool injectRateChange = pendingRateChangeCount>0;
     const std::uint16_t pointCount =  static_cast<std::uint16_t>(pointsToSend.size());
 
     commandBuffer.setDataCommand(pointCount);
@@ -358,7 +380,7 @@ void EtherDreamDevice::sendPoints() {
     }
 
     if (injectRateChange) {
-        rateChangePending = false;
+        pendingRateChangeCount--;
     }
 
     resetPoints();
@@ -432,20 +454,20 @@ int EtherDreamDevice::estimateBufferFullness() const {
     return static_cast<std::uint16_t>(std::llround(clamped));
 }
 
-void EtherDreamDevice::ensureTargetPointRate() {
-    if (clearRequired || prepareRequired || beginRequired) {
-        return;
-    }
+// void EtherDreamDevice::ensureTargetPointRate() {
+//     if (clearRequired || prepareRequired || beginRequired) {
+//         return;
+//     }
 
-    const auto targetRate = getPointRate();
+//     const auto targetRate = getPointRate();
 
-    if (lastKnownStatus.playbackState == PlaybackState::Playing &&
-        lastKnownStatus.pointRate != targetRate) {
-        if (auto rateAck = sendPointRate(static_cast<std::uint16_t>(targetRate)); !rateAck) {
-            handleNetworkFailure("point rate command", rateAck.error());
-        }
-    }
-}
+//     if (lastKnownStatus.playbackState == PlaybackState::Playing &&
+//         lastKnownStatus.pointRate != targetRate) {
+//         if (auto rateAck = sendPointRate(static_cast<std::uint16_t>(targetRate)); !rateAck) {
+//             handleNetworkFailure("point rate command", rateAck.error());
+//         }
+//     }
+// }
 
 void EtherDreamDevice::sleepUntilNextPoints() {
 

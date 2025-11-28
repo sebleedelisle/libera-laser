@@ -3,7 +3,7 @@
 namespace libera::core {
 
 // A single point to be sent to a laser controller.
-// - x, y : normalised coordinates (-1..1 suggested)
+// - x, y : normalised coordinates (-1..1)
 // - r, g, b : colour channels (0..1 suggested)
 // - i : intensity/brightness (0..1)
 // - u1, u2 : user fields for extension (waveforms, safety masks, etc.)

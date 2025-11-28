@@ -50,9 +50,6 @@ core::Frame makeCircleFrame(float phase) {
     return frame;
 }
 
-void waitUntilReady(const std::shared_ptr<core::LaserDevice>& dac) {
-    
-}
 
 } // namespace
 
@@ -98,7 +95,7 @@ int main() {
         logError("Failed to acquire DAC from manager.");
         return 1;
     }
-
+    dac->setArmed(true); 
     constexpr float scannerSyncTestValue = 5.0f; // 0.5 ms expressed in 1/10,000 s units
     const float phaseStep = 0.05f;
     float phase = 0.0f;

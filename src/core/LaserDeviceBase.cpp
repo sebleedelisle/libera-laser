@@ -69,6 +69,17 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
         startupBlankPointsRemaining.store(blankPointsRemaining, std::memory_order_relaxed);
     }
 
+    if(!armed.load(std::memory_order_relaxed) ) { 
+        for (auto &point : pointsToSend) {
+            point.r = 0.0f;
+            point.g = 0.0f;
+            point.b = 0.0f;
+            point.i = 0.0f;
+            point.x = 0; 
+            point.y = 0; 
+        }
+    } 
+
     // applies scanner sync
     const double syncTenThousandths =
         std::max(scannerSyncTime.load(std::memory_order_relaxed), 0.0);
@@ -146,11 +157,19 @@ int LaserDeviceBase::millisToPoints(double millis) const {
     return static_cast<int>(std::min<long long>(rounded, std::numeric_limits<int>::max()));
 }
 
+bool LaserDeviceBase::getArmed() const noexcept { 
+    return armed.load(std::memory_order_relaxed);
+}
+
+void LaserDeviceBase::setArmed(bool state) { 
+    armed.store(state, std::memory_order_relaxed);
+} 
+
 void LaserDeviceBase::setPointRate(std::uint32_t pointRateValue) {
     pointRate.store(pointRateValue, std::memory_order_relaxed);
 }
 
-std::uint32_t LaserDeviceBase::getPointRate() const {
+std::uint32_t LaserDeviceBase::getPointRate() const noexcept {
     return pointRate.load(std::memory_order_relaxed);
 }
 
@@ -164,7 +183,7 @@ void LaserDeviceBase::setVerbose(bool enabled) {
     verbose.store(enabled, std::memory_order_relaxed);
 }
 
-bool LaserDeviceBase::isVerbose() const {
+bool LaserDeviceBase::isVerbose() const noexcept {
     return verbose.load(std::memory_order_relaxed);
 }
 
@@ -174,7 +193,7 @@ void LaserDeviceBase::setScannerSync(double offsetTenThousandths) {
     scannerSyncTime.store(clamped, std::memory_order_relaxed);
 }
 
-double LaserDeviceBase::getScannerSync() {
+double LaserDeviceBase::getScannerSync() const noexcept {
     return scannerSyncTime.load(std::memory_order_relaxed);
 }
 

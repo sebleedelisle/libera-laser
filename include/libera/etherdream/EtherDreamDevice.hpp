@@ -7,10 +7,12 @@
 #include "libera/etherdream/EtherDreamCommand.hpp"
 #include "libera/etherdream/EtherDreamResponse.hpp"
 #include "libera/etherdream/EtherDreamDeviceInfo.hpp"
+#include <deque>
 #include <memory>
 #include <string_view>
 #include <optional>
 #include <chrono>
+#include <mutex>
 
 namespace libera::etherdream {
 
@@ -62,7 +64,7 @@ protected:
 
 
 private:
-   
+    std::optional<std::uint16_t> nextPendingRateChange();
 
     /// Wait for the response frame to a specific command.
     expected<DacAck>
@@ -78,7 +80,7 @@ private:
 
     std::size_t calculateMinimumPoints();
 
-    long long computeSleepDurationMS();
+    long long p();
     void sleepUntilNextPoints();
 
     void handleNetworkFailure(std::string_view where,
@@ -95,7 +97,7 @@ private:
     void sendPrepare();
     void sendBegin();
     expected<DacAck> sendPing();
-    void ensureTargetPointRate();
+    // void ensureTargetPointRate();
 
     bool ensureConnected();
     bool performHandshake();
@@ -110,16 +112,18 @@ private:
     std::chrono::steady_clock::time_point lastReceiveTime{};
     libera::net::TcpClient tcpClient;
     std::optional<EtherDreamDeviceInfo> deviceInfo;
-    bool rateChangePending = false;
+
     bool clearRequired = false;
     bool prepareRequired = false;
     bool beginRequired = false;
     bool connectionActive = false;
 
-   //std::size_t minBuffer = 256; // EtherDream 3+ cannot report below this buffer depth.
-
     bool networkFailureEncountered = false;
     std::optional<std::error_code> lastError;
+
+    std::mutex pendingRatesMutex;
+    std::deque<std::uint16_t> pendingRateChanges;
+    size_t pendingRateChangeCount = 0; 
 };
 
 } // namespace libera::etherdream

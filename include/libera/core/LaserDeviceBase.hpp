@@ -112,13 +112,17 @@ public:
     /**
      * @brief Retrieve the last configured point rate (points per second).
      */
-    virtual std::uint32_t getPointRate() const;
+    virtual std::uint32_t getPointRate() const noexcept;
+
+    // arm status - needs to be set or no output! 
+    bool getArmed() const noexcept; 
+    void setArmed(bool state = true); 
 
     // Offset expressed in 1/10,000th of a second (0.1 ms) units.
     void setScannerSync(double offsetTenThousandths); 
-    double getScannerSync(); 
+    double getScannerSync() const noexcept; 
     void setVerbose(bool enabled);
-    bool isVerbose() const;
+    bool isVerbose() const noexcept;
 
     /// Reset the startup blanking window to 1 ms worth of points.
     void resetStartupBlank();
@@ -145,6 +149,8 @@ protected:
         const auto millis = std::chrono::duration<double, std::milli>(duration).count();
         return millisToPoints(millis);
     }
+
+    std::atomic<bool> armed{false};
 
     std::thread worker;
     std::atomic<bool> running{false};
