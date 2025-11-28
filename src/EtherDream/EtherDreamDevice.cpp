@@ -170,6 +170,16 @@ EtherDreamDevice::waitForResponse(char command) {
             return unexpected(make_error_code(std::errc::protocol_error));
         }
 
+        // The DAC can reply with 'I' when it has dropped back to idle (e.g., frame ended)
+        // and the command we sent is no longer valid. Treat this as an idle/NACK and
+        // request a new prepare/begin rather than waiting for an ACK that will never come.
+        if (response.response == 'I' && static_cast<char>(response.command) == command) {
+            updatePlaybackRequirements(response.status, /*commandAcked*/ false);
+            logError("[EtherDream] received 'I' (invalid/idle) for command", command,
+                     "sts", response.status.describe());
+            return unexpected(make_error_code(std::errc::operation_canceled));
+        }
+
         const bool ackMatched = (response.response == 'a') &&
                                 (static_cast<char>(response.command) == command);
 
@@ -374,7 +384,9 @@ void EtherDreamDevice::sendPoints() {
 
     auto dataAck = sendCommand();
     if (!dataAck) {
-        handleNetworkFailure("data command", dataAck.error());
+        if (dataAck.error() != std::errc::operation_canceled) {
+            handleNetworkFailure("data command", dataAck.error());
+        }
         resetPoints();
         return;
     }
@@ -390,7 +402,9 @@ void EtherDreamDevice::sendClear() {
     logInfoVerbose("[EtherDream] clear required -> send 'c'");
     commandBuffer.setSingleByteCommand('c');
     if (auto ack = sendCommand(); !ack) {
-        handleNetworkFailure("clear command", ack.error());
+        if (ack.error() != std::errc::operation_canceled) {
+            handleNetworkFailure("clear command", ack.error());
+        }
     }
 }
 
@@ -398,7 +412,9 @@ void EtherDreamDevice::sendPrepare() {
     logError("[EtherDream] prepare required -> send 'p'");
     commandBuffer.setSingleByteCommand('p');
     if (auto ack = sendCommand(); !ack) {
-        handleNetworkFailure("prepare command", ack.error());
+        if (ack.error() != std::errc::operation_canceled) {
+            handleNetworkFailure("prepare command", ack.error());
+        }
     }
 }
 
@@ -413,7 +429,10 @@ void EtherDreamDevice::sendBegin() {
                 logError("[EtherDream] begin write timeout after",
                          tcpClient.defaultTimeout().count(), "ms");
             }
-            handleNetworkFailure("begin command", ack.error());
+            if (ack.error() != asio::error::timed_out &&
+                ack.error() != std::errc::operation_canceled) {
+                handleNetworkFailure("begin command", ack.error());
+            }
         }
 }
 
