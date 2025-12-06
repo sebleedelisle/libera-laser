@@ -223,6 +223,10 @@ bool EtherDreamDevice::isConnected() const {
     return tcpClient.is_open();
 }
 
+bool EtherDreamDevice::hasActiveConnection() const {
+    return tcpClient.is_open() && !lastNetworkError().has_value() && connectionActive;
+}
+
 void EtherDreamDevice::setPointRate(std::uint32_t pointRateValue) {
     LaserDeviceBase::setPointRate(pointRateValue);
     {

@@ -57,6 +57,10 @@ public:
 
     void close();                        // idempotent
     bool isConnected() const;           // const-safe
+    /// Expose last network error (if any) for higher-level status reporting.
+    std::optional<std::error_code> networkError() const { return lastNetworkError(); }
+    /// Returns true when the TCP link is up and no network failure is recorded.
+    bool hasActiveConnection() const;
 
     
 protected:

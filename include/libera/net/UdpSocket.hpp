@@ -60,16 +60,25 @@ public:
                                         std::chrono::milliseconds timeout,
                                         bool logTimeout = true) {
         auto ex = sock_.get_executor();
-        out_n = 0;
-        return with_deadline(ex, timeout,
+        // Keep these alive even if the handler fires after this call returns.
+        auto receivedPtr = std::make_shared<std::size_t>(0);
+        auto endpointPtr = std::make_shared<udp::endpoint>();
+
+        auto ec = with_deadline(ex, timeout,
             [&](auto cb){
-                sock_.async_receive_from(asio::buffer(data, max), out_ep, 0,
-                    [&, cb](const std::error_code& ec, std::size_t n){
-                        out_n = n; cb(ec);
+                sock_.async_receive_from(asio::buffer(data, max), *endpointPtr, 0,
+                    [cb, receivedPtr, endpointPtr](const std::error_code& ec, std::size_t n){
+                        *receivedPtr = n;
+                        cb(ec);
                     });
             },
             [&]{ sock_.cancel(); },
             "udp_recv", logTimeout);
+
+        // Copy back results for the caller.
+        out_n = *receivedPtr;
+        out_ep = *endpointPtr;
+        return ec;
     }
 
     udp::socket& raw() { return sock_; }

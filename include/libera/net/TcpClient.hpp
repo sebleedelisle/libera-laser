@@ -103,12 +103,15 @@ public:
                                std::size_t* bytesTransferredOut = nullptr) {
         auto ex = socket_.get_executor();
         const auto effectiveTimeout = sanitize(timeout);
-        std::size_t bytesTransferred = 0;
+        // Keep the byte count alive even if the handler fires after this call
+        // returns (e.g. cancellation races). A stack variable would be invalid
+        // by then and trips ASan/Guard Malloc.
+        auto bytesTransferredPtr = std::make_shared<std::size_t>(0);
         auto ec = with_deadline(ex, effectiveTimeout,
             [&](auto completion){
                 asio::async_read(socket_, asio::buffer(buf, n),
-                    [&, completion](const std::error_code& op_ec, std::size_t transferred){
-                        bytesTransferred = transferred;
+                    [&, completion, bytesTransferredPtr](const std::error_code& op_ec, std::size_t transferred){
+                        *bytesTransferredPtr = transferred;
                         completion(op_ec);
                     });
             },
@@ -116,7 +119,7 @@ public:
             "tcp_read"
         );
         if (bytesTransferredOut) {
-            *bytesTransferredOut = bytesTransferred;
+            *bytesTransferredOut = *bytesTransferredPtr;
         }
         return ec;
     }
