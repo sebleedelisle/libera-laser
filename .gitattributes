@@ -1,0 +1,22 @@
+* text=auto eol=lf
+
+# Treat common binary assets as binary to avoid line-ending conversions.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.bz2 binary
+*.7z binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.mov binary
+*.wav binary
+*.mp3 binary
+*.bin binary
