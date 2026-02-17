@@ -6,6 +6,8 @@ namespace libera::core {
 LaserDevice::LaserDevice() = default;
 LaserDevice::~LaserDevice() = default;
 
+// returns false if the device isn't ready for a new frame or if the frame is empty. 
+
 bool LaserDevice::sendFrame(Frame&& frame) {
     if (!frameModeActive) {
         startFrameMode();
@@ -13,9 +15,9 @@ bool LaserDevice::sendFrame(Frame&& frame) {
 
     if(!isReadyForNewFrame()) return false; 
 
-    // empty frame ? 
-    assert(frame.points.size()>0 &&  "Empty frame!"); // should never happen
-    if(frame.points.size()==0) frame.points.push_back(LaserPoint());
+    // empty frame 
+    assert(frame.points.size()>0 &&  "Empty frame!"); 
+    if(frame.points.size()==0) return false; // if it's empty then don't add it and return false
 
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
 

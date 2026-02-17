@@ -164,7 +164,7 @@ void EtherDreamManager::threadedFunction() {
         asio::ip::udp::endpoint sender;
         std::size_t received = 0;
         auto ec = socket->recv_from(buffer.data(), buffer.size(), sender, received,
-                                    std::chrono::milliseconds(1000));
+                                    std::chrono::milliseconds(1000), false);
         auto now = Clock::now();
 
         if (!running.load()) {

@@ -38,6 +38,72 @@ else()
 endif()
 
 # --------------------------------
+# Helios SDK libusb selection
+# --------------------------------
+option(LIBERA_USE_BUNDLED_LIBUSB "Use bundled libusb from libs/helios_dac" OFF)
+set(LIBERA_BUNDLED_LIBUSB_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp"
+    CACHE PATH "Path to bundled libusb headers/binaries"
+)
+
+set(LIBERA_LIBUSB_FOUND FALSE)
+
+if (NOT LIBERA_USE_BUNDLED_LIBUSB)
+  find_package(PkgConfig QUIET)
+  if (PKG_CONFIG_FOUND)
+    pkg_check_modules(LIBUSB QUIET libusb-1.0)
+  endif()
+
+  if (LIBUSB_FOUND)
+    add_library(libusb::libusb UNKNOWN IMPORTED)
+    set_target_properties(libusb::libusb PROPERTIES
+      IMPORTED_LOCATION "${LIBUSB_LINK_LIBRARIES}"
+      INTERFACE_INCLUDE_DIRECTORIES "${LIBUSB_INCLUDE_DIRS}"
+    )
+    set(LIBERA_LIBUSB_FOUND TRUE)
+  else()
+    find_path(LIBUSB_INCLUDE_DIR libusb.h PATH_SUFFIXES libusb-1.0)
+    find_library(LIBUSB_LIBRARY NAMES usb-1.0 libusb-1.0)
+    if (LIBUSB_INCLUDE_DIR AND LIBUSB_LIBRARY)
+      add_library(libusb::libusb UNKNOWN IMPORTED)
+      set_target_properties(libusb::libusb PROPERTIES
+        IMPORTED_LOCATION "${LIBUSB_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBUSB_INCLUDE_DIR}"
+      )
+      set(LIBERA_LIBUSB_FOUND TRUE)
+    endif()
+  endif()
+endif()
+
+if (NOT LIBERA_LIBUSB_FOUND)
+  if (NOT EXISTS "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb.h")
+    message(FATAL_ERROR "Bundled libusb not found. Did you init the helios_dac submodule?")
+  endif()
+
+  if (APPLE)
+    set(LIBUSB_BUNDLED_LIB "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/macOS/libusb-1.0.0.dylib")
+  elseif (UNIX)
+    set(LIBUSB_BUNDLED_LIB "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Linux x64/libusb-1.0.so")
+  elseif (WIN32)
+    set(LIBUSB_BUNDLED_LIB "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Windows/libusb-1.0.lib")
+  endif()
+
+  if (NOT EXISTS "${LIBUSB_BUNDLED_LIB}")
+    message(FATAL_ERROR "Bundled libusb binary not found at ${LIBUSB_BUNDLED_LIB}")
+  endif()
+
+  add_library(libusb::libusb UNKNOWN IMPORTED)
+  set_target_properties(libusb::libusb PROPERTIES
+    IMPORTED_LOCATION "${LIBUSB_BUNDLED_LIB}"
+    INTERFACE_INCLUDE_DIRECTORIES "${LIBERA_BUNDLED_LIBUSB_DIR}"
+  )
+
+  if (APPLE)
+    set(CMAKE_BUILD_RPATH "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/macOS")
+  endif()
+endif()
+
+# --------------------------------
 # Collect sources for the library
 # --------------------------------
 # Finds all .cpp files under src/ at configure time. When you add new files,
@@ -61,7 +127,34 @@ target_include_directories(libera-core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/asio/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp>
 )
+
+# Helios SDK sources (USB + IDN).
+set(HELIOS_SDK_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp/HeliosDac.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp/idn/idn.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp/idn/idnServerList.cpp"
+)
+if (WIN32)
+    list(APPEND HELIOS_SDK_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp/idn/plt-windows.cpp"
+    )
+else()
+    list(APPEND HELIOS_SDK_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp/idn/plt-posix.cpp"
+    )
+endif()
+add_library(helios-sdk OBJECT ${HELIOS_SDK_SOURCES})
+target_include_directories(helios-sdk PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/libs/helios_dac/sdk/cpp")
+if (MSVC)
+  target_compile_options(helios-sdk PRIVATE /W0)
+else()
+  target_compile_options(helios-sdk PRIVATE -w)
+endif()
+target_sources(libera-core PRIVATE $<TARGET_OBJECTS:helios-sdk>)
+
+target_link_libraries(libera-core PUBLIC libusb::libusb)
 
 # Windows needs Winsock2 for TCP and UDP symbols. Linux and macOS do not.
 if (WIN32)

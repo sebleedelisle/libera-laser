@@ -1,23 +1,30 @@
-# libera-core
+# libera - cross-platform laser control
 
-This repository implements reusable building blocks for streaming laser control data. The EtherDream integration highlights how runtime control, networking, and wire serialization are separated for clarity and testability.
+Libera aims to be a de facto standard for laser control, with support for a growing ecosystem of open-protocol hardware:
+- Ether Dream
+- Helios USB
+- Helios Pro
+- IDN (ILDA Digital Network)
+- Laser Cube USB (LaserDock)
+- Laser Cube Network
+- AVB (LA Sollinger lasers)
 
-## EtherDream Control Loop
-- `EtherDreamDevice` owns the worker thread that polls device status, gathers points from user callbacks, and streams frames using the configuration in `libera/etherdream/EtherDreamConfig.hpp`.
-- Every command uses `waitForResponse()` to synchronously await the EtherDream ACK and capture the decoded `dac_status` payload (buffer fullness, playback state, point rate, etc.).
-- The streaming loop keeps at least `ETHERDREAM_MIN_PACKET_POINTS` points in flight and estimates how many additional samples are required based on the latest ACK’s buffer fullness.
+The project uses a permissive license and is intended for broad adoption in laser control software.
 
-## Networking Setup
-- TCP connectivity is managed by `libera::net::TcpClient`; `EtherDreamDevice::connect()` resolves the configured port (`ETHERDREAM_DAC_PORT_DEFAULT`) and enables low-latency options (TCP_NODELAY + keepalive) as soon as the socket comes up.
-- Networking calls share the same timeout budget as the streaming loop, so point refills and command/ACK sequences stay in lockstep.
-- The worker loop starts with a protocol ping (`?`) to confirm the DAC is alive before entering the cadence-driven run loop, reusing the shared timeout policy.
-- `waitForResponse()` blocks for the matching EtherDream ACK and returns the parsed status payload, so every command path picks up fresh device telemetry or surfaces transport errors immediately.
+## Overview
 
-## Serialization Contract
-- `EtherDreamCommand` constructs packets in the EtherDream wire format using a simple little-endian `ByteBuffer`. The streaming loop asks it to build `d`, `b`, and `q` messages as required.
-- Coordinates and colour channels are scaled to the documented 16-bit ranges before serialisation, so the DAC receives full-scale values regardless of the user-space units.
-- `EtherDreamResponse` decodes ACK frames and surfaces the parsed status fields, keeping the worker loop focused solely on scheduling and IO.
-- Time-sensitive behaviour is tuned through `ETHERDREAM_MIN_PACKET_POINTS` and the sleep bounds (`ETHERDREAM_MIN_SLEEP` / `ETHERDREAM_MAX_SLEEP`), with the stream loop calculating how many samples to queue based on the last ACK’s buffer fullness and point rate.
+The library discovers laser controllers on the system and provides a list of available devices. You can then instantiate one or more devices and stream points in either streaming or frame mode.
+
+### Streaming mode
+Streaming mode is inspired by audio engines: you provide a callback, and the device requests points when it needs more data. The callback receives:
+- A minimum number of points required to keep playback smooth.
+- A maximum number of points the device can accept.
+- An estimated timestamp for when the first point will be rendered.
+
+### Frame mode
+Frame mode is built into the `LaserDevice` base class. You can enqueue frames, query whether the device is ready for another frame, and let the frame management system feed the streaming callback internally.
+
+
 
 ## Coding Conventions
 - Compile-time constants use ALL_CAPS snake case (for example `ETHERDREAM_MIN_POINTS_PER_TICK`) to make immutability obvious in hot code paths.

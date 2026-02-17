@@ -1,0 +1,36 @@
+#pragma once
+
+#include "libera/core/LaserDevice.hpp"
+#include "HeliosDac.h"
+
+#include <atomic>
+#include <memory>
+#include <vector>
+
+namespace libera::helios {
+
+class HeliosDevice : public core::LaserDevice {
+public:
+    explicit HeliosDevice(std::shared_ptr<HeliosDac> sdk, unsigned int deviceIndex);
+    ~HeliosDevice() override;
+
+    void close();
+    bool isConnected() const;
+
+    void setPointRate(std::uint32_t pointRateValue) override;
+
+    void setFramePointCount(std::size_t points);
+    std::size_t framePointCount() const;
+
+protected:
+    void run() override;
+
+private:
+    std::shared_ptr<HeliosDac> sdk;
+    unsigned int index = 0;
+    std::atomic<std::size_t> targetFramePoints{1000};
+    std::atomic<std::uint64_t> currentPointIndex{0};
+    std::vector<HeliosPointExt> frameBuffer;
+};
+
+} // namespace libera::helios

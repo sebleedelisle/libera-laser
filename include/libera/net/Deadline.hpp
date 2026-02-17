@@ -41,7 +41,7 @@ std::error_code with_deadline(
     StartAsync start_async,
     Cancel cancel,
     const char* label = "",
-    bool logTimeout = true)
+    bool logTimeout = false)
 {
     //std::cout << "[with_deadline] start timeout=" << timeout.count() << "ms\n";
     struct State {

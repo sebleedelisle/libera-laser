@@ -2,6 +2,7 @@
 #include "libera/core/LaserDevice.hpp"
 #include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
+#include "libera/helios/HeliosManager.hpp"
 #include "libera/etherdream/EtherDreamDeviceInfo.hpp"
 #include "libera/log/Log.hpp"
 
