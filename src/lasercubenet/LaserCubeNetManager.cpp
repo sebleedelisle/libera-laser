@@ -4,8 +4,30 @@
 #include "libera/log/Log.hpp"
 
 #include <array>
+#include <iomanip>
+#include <sstream>
 
 namespace libera::lasercubenet {
+namespace {
+std::string hexPrefix(const std::uint8_t* data, std::size_t size, std::size_t maxBytes = 16) {
+    if (!data || size == 0) {
+        return {};
+    }
+    const std::size_t count = std::min(size, maxBytes);
+    std::ostringstream oss;
+    oss << std::uppercase << std::hex << std::setfill('0');
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i > 0) {
+            oss << ' ';
+        }
+        oss << std::setw(2) << static_cast<int>(data[i]);
+    }
+    if (size > count) {
+        oss << " ...";
+    }
+    return oss.str();
+}
+}
 
 LaserCubeNetManager::LaserCubeNetManager() {
     io = net::shared_io_context();
@@ -77,11 +99,51 @@ void LaserCubeNetManager::discoveryThread() {
                 continue;
             }
 
+            logInfo("[LaserCubeNetManager] discovery rx",
+                    sender.address().to_string(),
+                    sender.port(),
+                    "bytes",
+                    received);
+
             if (auto status = LaserCubeNetStatus::parse(buffer.data(), received)) {
                 status->ipAddress = sender.address().to_string();
                 status->lastSeen = Clock::now();
-                std::lock_guard lock(devicesMutex);
-                devices[status->serialNumber] = DeviceEntry{*status, status->lastSeen};
+                bool isNew = false;
+                {
+                    std::lock_guard lock(devicesMutex);
+                    isNew = devices.find(status->serialNumber) == devices.end();
+                    devices[status->serialNumber] = DeviceEntry{*status, status->lastSeen};
+                }
+                if (isNew) {
+                    logInfo("[LaserCubeNetManager] discovery ok",
+                            status->ipAddress,
+                            sender.port(),
+                            "serial",
+                            status->serialNumber,
+                            "model",
+                            status->modelName,
+                            "fw",
+                            status->firmwareVersion,
+                            "buffer",
+                            status->bufferFree,
+                            "/",
+                            status->bufferMax,
+                            "pps",
+                            status->pointRate,
+                            "/",
+                            status->pointRateMax);
+                }
+            } else {
+                const auto payloadVersion = received >= 3 ? static_cast<int>(buffer[2]) : -1;
+                logInfo("[LaserCubeNetManager] discovery rx parse failed",
+                        sender.address().to_string(),
+                        sender.port(),
+                        "bytes",
+                        received,
+                        "payloadVersion",
+                        payloadVersion,
+                        "hex",
+                        hexPrefix(buffer.data(), received));
             }
         }
 

@@ -47,6 +47,12 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
     } else if(pointsToSend.size()<request.minimumPointsRequired) { 
         // fill up the buffer with blanks
         const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();
+        logError("[LaserDeviceBase::requestPoints] - too few points sent! Minimum :",
+                 request.minimumPointsRequired,
+                 " actual :",
+                 pointsToSend.size(),
+                 " padding :",
+                 missing);
         const LaserPoint blankPoint{};
         pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
     }

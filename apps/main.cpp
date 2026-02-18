@@ -112,7 +112,8 @@ int main() {
             logError("Failed to queue frame ", i);
         }
 
-        dac->setScannerSync(scannerSyncTestValue * (std::sin(phase) + 1.0f));
+        dac->setScannerSync(0);
+       //dac->setScannerSync(scannerSyncTestValue * (std::sin(phase) + 1.0f));
         phase += phaseStep;
     }
 
