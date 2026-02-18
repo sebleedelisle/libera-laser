@@ -57,13 +57,12 @@ private:
     std::uint8_t messageNumber{0};
     std::uint8_t frameNumber{0};
 
+    // Track when each packet was sent so we can map acks to send times.
     std::map<std::uint8_t, std::chrono::steady_clock::time_point> messageTimes;
 
-    std::chrono::steady_clock::time_point lastDroppedPacketTime{};
+    // Timing helpers for buffer estimation and health tracking.
     std::chrono::steady_clock::time_point lastAckTime{};
     std::chrono::steady_clock::time_point lastDataSentTime{};
-    std::chrono::steady_clock::time_point lastPacketSentTime{};
-    std::chrono::steady_clock::time_point lastSendLogTime{};
     int lastDataSentBufferSize{0};
     std::atomic<int> lastReportedBufferFullness{0};
 

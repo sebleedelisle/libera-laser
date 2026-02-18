@@ -4,8 +4,45 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstring>
+
+#if defined(__APPLE__) || defined(__linux__)
+#include <pthread.h>
+#endif
+
+#if defined(__linux__)
+#include <sched.h>
+#endif
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace libera::core {
+namespace {
+void elevateWorkerThreadPriority() {
+#if defined(__APPLE__)
+    // macOS: use QoS to request a higher scheduling class without root.
+    const int rc = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    if (rc != 0) {
+        logInfo("[LaserDeviceBase] pthread_set_qos_class_self_np failed", rc);
+    }
+#elif defined(__linux__)
+    // Linux: try realtime scheduling; may require CAP_SYS_NICE or root.
+    sched_param sch{};
+    sch.sched_priority = 10; // modest priority within FIFO range
+    const int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
+    if (rc != 0) {
+        logInfo("[LaserDeviceBase] pthread_setschedparam failed", rc, std::strerror(rc));
+    }
+#elif defined(_WIN32)
+    // Windows: boost thread priority within the process.
+    if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+        logInfo("[LaserDeviceBase] SetThreadPriority failed", static_cast<int>(GetLastError()));
+    }
+#endif
+}
+} // namespace
 
 LaserDeviceBase::LaserDeviceBase() {
     pointsToSend.reserve(30000);
@@ -47,12 +84,6 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
     } else if(pointsToSend.size()<request.minimumPointsRequired) { 
         // fill up the buffer with blanks
         const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();
-        logError("[LaserDeviceBase::requestPoints] - too few points sent! Minimum :",
-                 request.minimumPointsRequired,
-                 " actual :",
-                 pointsToSend.size(),
-                 " padding :",
-                 missing);
         const LaserPoint blankPoint{};
         pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
     }
@@ -119,6 +150,7 @@ void LaserDeviceBase::start() {
     if (running) return; // Already running.
     running = true;
     worker = std::thread([this] {
+        elevateWorkerThreadPriority();
         this->run();
     });
 }

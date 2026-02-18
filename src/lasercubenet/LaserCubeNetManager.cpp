@@ -34,9 +34,11 @@ LaserCubeNetManager::LaserCubeNetManager() {
     socket = std::make_unique<net::UdpSocket>(*io);
     if (!socket->open_v4()) {
         socket->enable_broadcast(true);
+        // Bind to the command port so we can receive status replies.
         socket->bind_any(LaserCubeNetConfig::COMMAND_PORT);
     }
     running.store(true);
+    // Dedicated discovery thread so device scanning never blocks the caller.
     listener = std::thread([this]{ discoveryThread(); });
 }
 
@@ -80,10 +82,10 @@ void LaserCubeNetManager::discoveryThread() {
         return;
     }
 
-    asio::ip::udp::endpoint broadcastEndpoint(asio::ip::address_v4::broadcast(), LaserCubeNetConfig::COMMAND_PORT);
     std::array<std::uint8_t, 64> buffer{};
 
     while (running.load()) {
+        // Broadcast a GET_FULL_INFO probe to discover devices.
         sendProbe();
 
         const auto windowStart = Clock::now();
@@ -99,12 +101,13 @@ void LaserCubeNetManager::discoveryThread() {
                 continue;
             }
 
-            logInfo("[LaserCubeNetManager] discovery rx",
-                    sender.address().to_string(),
-                    sender.port(),
-                    "bytes",
-                    received);
+            // logInfo("[LaserCubeNetManager] discovery rx",
+            //         sender.address().to_string(),
+            //         sender.port(),
+            //         "bytes",
+            //         received);
 
+            // Parse and stash the most recent status for each device.
             if (auto status = LaserCubeNetStatus::parse(buffer.data(), received)) {
                 status->ipAddress = sender.address().to_string();
                 status->lastSeen = Clock::now();
@@ -135,19 +138,19 @@ void LaserCubeNetManager::discoveryThread() {
                 }
             } else {
                 const auto payloadVersion = received >= 3 ? static_cast<int>(buffer[2]) : -1;
-                logInfo("[LaserCubeNetManager] discovery rx parse failed",
-                        sender.address().to_string(),
-                        sender.port(),
-                        "bytes",
-                        received,
-                        "payloadVersion",
-                        payloadVersion,
-                        "hex",
-                        hexPrefix(buffer.data(), received));
+                // logInfo("[LaserCubeNetManager] discovery rx parse failed",
+                //         sender.address().to_string(),
+                //         sender.port(),
+                //         "bytes",
+                //         received,
+                //         "payloadVersion",
+                //         payloadVersion,
+                //         "hex",
+                //         hexPrefix(buffer.data(), received));
             }
         }
 
-        // Prune stale entries
+        // Prune stale entries.
         {
             std::lock_guard lock(devicesMutex);
             for (auto it = devices.begin(); it != devices.end(); ) {
@@ -165,6 +168,7 @@ void LaserCubeNetManager::discoveryThread() {
 
 void LaserCubeNetManager::sendProbe() {
     if (!socket) return;
+    // One-byte command broadcast; devices reply with a 64-byte status payload.
     const std::uint8_t cmd = LaserCubeNetConfig::CMD_GET_FULL_INFO;
     asio::ip::udp::endpoint broadcastEndpoint(asio::ip::address_v4::broadcast(), LaserCubeNetConfig::COMMAND_PORT);
     socket->send_to(&cmd, 1, broadcastEndpoint, std::chrono::milliseconds(200));
@@ -200,6 +204,7 @@ LaserCubeNetManager::getAndConnectToDac(const core::DacInfo& info) {
             }
         }
 
+        // Create a new device if one is not already active.
         if (!device) {
             device = std::make_shared<LaserCubeNetDevice>(*lcInfo);
             active[lcInfo->idValue()] = device;
@@ -208,6 +213,7 @@ LaserCubeNetManager::getAndConnectToDac(const core::DacInfo& info) {
     }
 
     if (device && newlyCreated) {
+        // Connect and start the device thread on first acquisition.
         if (auto result = device->connect(*lcInfo); !result) {
             logError("[LaserCubeNetManager] initial connect failed", result.error().message());
         }

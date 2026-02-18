@@ -11,11 +11,13 @@
 namespace libera::lasercubenet {
 namespace {
 inline std::uint16_t encodeCoord(float value) {
+    // LaserCube expects 12-bit unsigned coordinates (0..0x0FFF) mapped from -1..1.
     const float clamped = std::clamp((value + 1.0f) * 0.5f, 0.0f, 1.0f);
     return static_cast<std::uint16_t>(std::round(clamped * 0x0FFF));
 }
 
 inline std::uint16_t encodeColour(float value) {
+    // LaserCube uses 12-bit unsigned colour channels.
     const float clamped = std::clamp(value, 0.0f, 1.0f);
     return static_cast<std::uint16_t>(std::round(clamped * 0x0FFF));
 }
@@ -27,6 +29,7 @@ inline std::uint16_t read_u16_le(const std::uint8_t* data) {
 }
 
 LaserCubeNetDevice::LaserCubeNetDevice() {
+    // Reuse the shared IO context so sockets share the same network thread.
     io = net::shared_io_context();
 }
 
@@ -42,9 +45,9 @@ LaserCubeNetDevice::~LaserCubeNetDevice() {
 
 libera::expected<void> LaserCubeNetDevice::connect(const LaserCubeNetDeviceInfo& info) {
     ipAddress = info.ipAddress();
-    constexpr std::uint32_t kSlowPps = 30000;
+    // Start with the device-reported point rate; callers can override via setPointRate().
     pps.store(info.status().pointRate, std::memory_order_relaxed);
-    newPps.store(kSlowPps, std::memory_order_relaxed);
+    newPps.store(info.status().pointRate, std::memory_order_relaxed);
     maxPointRate.store(info.status().pointRateMax, std::memory_order_relaxed);
     pointBufferCapacity.store(info.status().bufferMax, std::memory_order_relaxed);
 
@@ -57,6 +60,7 @@ libera::expected<void> LaserCubeNetDevice::connect(const LaserCubeNetDeviceInfo&
         io = net::shared_io_context();
     }
 
+    // Data socket sends point packets; command socket handles control/status.
     dataSocket = std::make_unique<net::UdpSocket>(*io);
     commandSocket = std::make_unique<net::UdpSocket>(*io);
 
@@ -101,6 +105,7 @@ void LaserCubeNetDevice::run() {
 
     while (running.load()) {
         if (networkConnected.load(std::memory_order_relaxed)) {
+            // Push point-rate changes down to the device when requested.
             const auto targetPps = newPps.load(std::memory_order_relaxed);
             const auto currentPps = pps.load(std::memory_order_relaxed);
             if (targetPps != currentPps) {
@@ -109,16 +114,12 @@ void LaserCubeNetDevice::run() {
                 }
             }
 
-            const bool dataSent = sendPointsToDac();
-            if (dataSent) {
-                if ((messageNumber % 25) == 0) {
-                    //std::this_thread::sleep_for(10ms);
-                }
-            }
-
+            // Send at most one packet per loop; pacing is handled by buffer estimation.
+            (void)sendPointsToDac();
             checkAcks();
         }
 
+        // Avoid a busy loop when the device cannot accept more data yet.
         std::this_thread::sleep_for(1ms);
     }
 }
@@ -137,8 +138,10 @@ void LaserCubeNetDevice::setPointRate(std::uint32_t pointRateValue) {
 }
 
 bool LaserCubeNetDevice::sendPointsToDac() {
+    // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
+    // Estimate how full the device buffer is right now.
     const int minEstimatedBufferFullness =
         std::max(calculateBufferFullnessByTimeSent(), calculateBufferFullnessByTimeAcked());
     const int latencyPointAdjustment = 300;
@@ -150,6 +153,7 @@ bool LaserCubeNetDevice::sendPointsToDac() {
         return true;
     }
 
+    // Only request points when we have space for a full packet.
     if (maxPointsToAdd < maxPointsInPacket) {
         return true;
     }
@@ -171,10 +175,21 @@ bool LaserCubeNetDevice::sendPointsToDac() {
         return true;
     }
 
+    // Safety clamp in case the callback overfilled.
     if (pointsToSend.size() > static_cast<std::size_t>(maxPointsToAdd)) {
         pointsToSend.resize(static_cast<std::size_t>(maxPointsToAdd));
     }
 
+    // Build a single UDP packet: header + packed 12-bit points.
+    //
+    // Packet layout (byte offsets):
+    //  0: CMD_SAMPLE_DATA (0xA9)
+    //  1: Reserved, always 0x00
+    //  2: messageNumber (uint8, wraps 0..255)
+    //  3: frameNumber   (uint8, wraps 0..255)
+    //  4..: Point data, each point is 10 bytes:
+    //       x[0], x[1], y[0], y[1], r[0], r[1], g[0], g[1], b[0], b[1]
+    //       All channels are unsigned 12-bit values stored little-endian in 16-bit slots.
     core::ByteBuffer packet;
     packet.appendUInt8(LaserCubeNetConfig::CMD_SAMPLE_DATA);
     packet.appendUInt8(0x00);
@@ -182,6 +197,7 @@ bool LaserCubeNetDevice::sendPointsToDac() {
     packet.appendUInt8(frameNumber);
 
     for (const auto& pt : pointsToSend) {
+        // Each component is clamped and quantized to 12 bits.
         packet.appendUInt16(encodeCoord(pt.x));
         packet.appendUInt16(encodeCoord(pt.y));
         packet.appendUInt16(encodeColour(pt.r));
@@ -195,26 +211,6 @@ bool LaserCubeNetDevice::sendPointsToDac() {
         messageTimes[messageNumber] = now;
         lastDataSentTime = now;
         lastDataSentBufferSize = minEstimatedBufferFullness + static_cast<int>(pointsToSend.size());
-
-        if (lastPacketSentTime.time_since_epoch().count() != 0) {
-            const auto gap = now - lastPacketSentTime;
-            if (lastSendLogTime.time_since_epoch().count() == 0 ||
-                (now - lastSendLogTime) > std::chrono::milliseconds(500)) {
-                lastSendLogTime = now;
-                const auto gapMs = std::chrono::duration_cast<std::chrono::milliseconds>(gap).count();
-                logInfo("[LaserCubeNetDevice] send_gap_ms",
-                        gapMs,
-                        "sent",
-                        pointsToSend.size(),
-                        "est_full",
-                        minEstimatedBufferFullness,
-                        "max_add",
-                        maxPointsToAdd,
-                        "pps",
-                        pps.load(std::memory_order_relaxed));
-            }
-        }
-        lastPacketSentTime = now;
     }
 
     messageNumber++;
@@ -264,6 +260,7 @@ void LaserCubeNetDevice::checkAcks() {
         return;
     }
 
+    // Each ack is a 4-byte response carrying the free-space count.
     std::array<std::uint8_t, 4> buffer{};
     libera::net::asio::ip::udp::endpoint sender;
     std::size_t received = 0;
@@ -271,6 +268,11 @@ void LaserCubeNetDevice::checkAcks() {
                                     received, std::chrono::milliseconds(1), false);
     if (!ec && received == 4) {
         if (buffer[0] == LaserCubeNetConfig::CMD_GET_RINGBUFFER_FREE) {
+            // Ack layout (byte offsets):
+            //  0: CMD_GET_RINGBUFFER_FREE (0x8A)
+            //  1: messageNumber echoed back
+            //  2: free-space LSB
+            //  3: free-space MSB
             const std::uint8_t receivedMessageNumber = buffer[1];
             const auto it = messageTimes.find(receivedMessageNumber);
             if (it != messageTimes.end()) {
@@ -278,9 +280,11 @@ void LaserCubeNetDevice::checkAcks() {
                 lastAckTime = now;
 
                 const std::uint16_t bufferSpace = read_u16_le(&buffer[2]);
+                // Convert free-space to fullness (capacity - free).
                 const int bufferFullness = getDacTotalPointBufferCapacity() - static_cast<int>(bufferSpace);
                 lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
 
+                // If this ack corresponds to the most recent send, anchor the time-sent estimate.
                 if (it->second >= lastDataSentTime) {
                     lastDataSentTime = it->second;
                     lastDataSentBufferSize = bufferFullness;
@@ -305,7 +309,6 @@ void LaserCubeNetDevice::checkAcks() {
             const auto delay = now - it->second;
             if (delay > std::chrono::seconds(10)) {
                 it = messageTimes.erase(it);
-                lastDroppedPacketTime = now;
             } else {
                 ++it;
             }
@@ -314,6 +317,7 @@ void LaserCubeNetDevice::checkAcks() {
 }
 
 int LaserCubeNetDevice::calculateBufferFullnessByTimeSent() {
+    // Project buffer fullness forward from the last send time.
     if (lastDataSentTime.time_since_epoch().count() == 0) {
         return 0;
     }
@@ -329,6 +333,7 @@ int LaserCubeNetDevice::calculateBufferFullnessByTimeSent() {
 }
 
 int LaserCubeNetDevice::calculateBufferFullnessByTimeAcked() {
+    // Project buffer fullness forward from the last ack time.
     if (lastAckTime.time_since_epoch().count() == 0) {
         return 0;
     }
