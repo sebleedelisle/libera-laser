@@ -1,27 +1,25 @@
-#include "libera/helios/HeliosManager.hpp"
-
-#include "libera/log/Log.hpp"
+#include "libera/idn/IdnManager.hpp"
 
 #include <algorithm>
 
-namespace libera::helios {
+namespace libera::idn {
 namespace {
 
 std::string makeFallbackLabel(unsigned int index) {
-    return "Helios " + std::to_string(index);
+    return "IDN " + std::to_string(index);
 }
 
 } // namespace
 
-HeliosManager::HeliosManager() {
+IdnManager::IdnManager() {
     sdk = std::make_shared<HeliosDac>();
 }
 
-HeliosManager::~HeliosManager() {
+IdnManager::~IdnManager() {
     closeAll();
 }
 
-void HeliosManager::openIfNeeded() {
+void IdnManager::openIfNeeded() {
     if (!sdk) {
         sdk = std::make_shared<HeliosDac>();
     }
@@ -30,12 +28,12 @@ void HeliosManager::openIfNeeded() {
         return;
     }
 
-    const int count = sdk->OpenDevicesOnlyUsb();
+    const int count = sdk->OpenDevicesOnlyNetwork();
     opened = true;
     deviceCount = count > 0 ? static_cast<std::size_t>(count) : 0;
 }
 
-std::size_t HeliosManager::refreshDeviceCount(bool allowRescan) {
+std::size_t IdnManager::refreshDeviceCount(bool allowRescan) {
     openIfNeeded();
     if (!sdk) {
         deviceCount = 0;
@@ -46,14 +44,14 @@ std::size_t HeliosManager::refreshDeviceCount(bool allowRescan) {
         return deviceCount;
     }
 
-    const int count = sdk->ReScanDevicesOnlyUsb();
+    const int count = sdk->ReScanDevicesOnlyNetwork();
     if (count > 0) {
         deviceCount = static_cast<std::size_t>(count);
     }
     return deviceCount;
 }
 
-std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
+std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
     std::vector<std::unique_ptr<core::DacInfo>> results;
 
     bool hasActive = false;
@@ -81,6 +79,11 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
             continue;
         }
 
+        const int isUsb = sdk->GetIsUsb(index);
+        if (isUsb != 0) {
+            continue;
+        }
+
         char name[32] = {};
         std::string label;
         if (sdk->GetName(index, name) == HELIOS_SUCCESS) {
@@ -89,18 +92,14 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
             label = makeFallbackLabel(index);
         }
 
-        const int isUsb = sdk->GetIsUsb(index);
-        const bool usbDevice = isUsb == 1;
-        const std::uint32_t maxRate = usbDevice ? HELIOS_MAX_PPS : HELIOS_MAX_PPS_IDN;
         const int firmware = sdk->GetFirmwareVersion(index);
-        std::string id = "helios-" + std::to_string(index);
+        std::string id = "idn-" + std::to_string(index);
 
-        results.emplace_back(std::make_unique<HeliosDeviceInfo>(
+        results.emplace_back(std::make_unique<IdnDeviceInfo>(
             std::move(id),
             std::move(label),
-            maxRate,
+            HELIOS_MAX_PPS_IDN,
             index,
-            usbDevice,
             firmware));
     }
 
@@ -108,16 +107,16 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
 }
 
 std::shared_ptr<core::LaserDevice>
-HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
-    const auto* heliosInfo = dynamic_cast<const HeliosDeviceInfo*>(&info);
-    if (!heliosInfo) {
+IdnManager::getAndConnectToDac(const core::DacInfo& info) {
+    const auto* idnInfo = dynamic_cast<const IdnDeviceInfo*>(&info);
+    if (!idnInfo) {
         return nullptr;
     }
 
-    std::shared_ptr<HeliosDevice> device;
+    std::shared_ptr<helios::HeliosDevice> device;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeDevices.find(heliosInfo->index());
+        auto it = activeDevices.find(idnInfo->index());
         if (it != activeDevices.end()) {
             if (auto existing = it->second.lock()) {
                 device = existing;
@@ -127,8 +126,8 @@ HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
         }
 
         if (!device) {
-            device = std::make_shared<HeliosDevice>(sdk, heliosInfo->index());
-            activeDevices[heliosInfo->index()] = device;
+            device = std::make_shared<helios::HeliosDevice>(sdk, idnInfo->index());
+            activeDevices[idnInfo->index()] = device;
         }
     }
 
@@ -139,8 +138,8 @@ HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
     return device;
 }
 
-void HeliosManager::closeAll() {
-    std::unordered_map<unsigned int, std::shared_ptr<HeliosDevice>> snapshot;
+void IdnManager::closeAll() {
+    std::unordered_map<unsigned int, std::shared_ptr<helios::HeliosDevice>> snapshot;
     {
         std::lock_guard lock(activeMutex);
         for (auto& [index, weak] : activeDevices) {
@@ -165,4 +164,4 @@ void HeliosManager::closeAll() {
     deviceCount = 0;
 }
 
-} // namespace libera::helios
+} // namespace libera::idn

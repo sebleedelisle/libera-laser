@@ -86,6 +86,11 @@ void HeliosDevice::run() {
 
         const int status = sdk->GetStatus(index);
         if (status < 0) {
+            // -5007 is a libusb timeout from status polling. Treat as transient.
+            if (status == -5007) {
+                std::this_thread::sleep_for(2ms);
+                continue;
+            }
             logError("[HeliosDevice] status error", status);
             std::this_thread::sleep_for(5ms);
             continue;
