@@ -15,6 +15,22 @@ The project uses a permissive license and is intended for broad adoption in lase
 
 The library discovers laser controllers on the system and provides a list of available devices. You can then instantiate one or more devices and stream points in either streaming or frame mode.
 
+## Include patterns
+
+Default (all built-in DAC managers registered):
+
+```cpp
+#include "libera.h"
+```
+
+Selective (register only chosen managers):
+
+```cpp
+#include "libera/core/GlobalDacManager.hpp"
+#include "libera/etherdream/EtherDreamManager.hpp"
+#include "libera/helios/HeliosManager.hpp"
+```
+
 ### Streaming mode
 Streaming mode is inspired by audio engines: you provide a callback, and the device requests points when it needs more data. The callback receives:
 - A minimum number of points required to keep playback smooth.

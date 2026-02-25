@@ -1,9 +1,4 @@
-#include "libera/core/GlobalDacManager.hpp"
-#include "libera/core/LaserDevice.hpp"
-#include "libera/etherdream/EtherDreamManager.hpp"
-#include "libera/lasercubenet/LaserCubeNetManager.hpp"
-#include "libera/etherdream/EtherDreamDeviceInfo.hpp"
-#include "libera/log/Log.hpp"
+#include "libera.h"
 #include <chrono>
 #include <thread>
 #include <cmath>
