@@ -9,7 +9,7 @@
 
 namespace libera::lasercubenet {
 namespace {
-std::string hexPrefix(const std::uint8_t* data, std::size_t size, std::size_t maxBytes = 16) {
+[[maybe_unused]] std::string hexPrefix(const std::uint8_t* data, std::size_t size, std::size_t maxBytes = 16) {
     if (!data || size == 0) {
         return {};
     }
@@ -137,7 +137,7 @@ void LaserCubeNetManager::discoveryThread() {
                             status->pointRateMax);
                 }
             } else {
-                const auto payloadVersion = received >= 3 ? static_cast<int>(buffer[2]) : -1;
+                [[maybe_unused]] const auto payloadVersion = received >= 3 ? static_cast<int>(buffer[2]) : -1;
                 // logInfo("[LaserCubeNetManager] discovery rx parse failed",
                 //         sender.address().to_string(),
                 //         sender.port(),

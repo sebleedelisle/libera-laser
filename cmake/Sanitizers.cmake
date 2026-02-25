@@ -1,0 +1,17 @@
+function(libera_apply_sanitizers target)
+  if (SANITIZE STREQUAL "address")
+    set(_san_flags -fsanitize=address,undefined -fno-omit-frame-pointer)
+  elseif (SANITIZE STREQUAL "thread")
+    set(_san_flags -fsanitize=thread -fno-omit-frame-pointer)
+  else()
+    return()
+  endif()
+
+  if (MSVC)
+    message(WARNING "SANITIZE is set but MSVC sanitizers are not configured for this project.")
+    return()
+  endif()
+
+  target_compile_options(${target} PRIVATE $<$<CONFIG:Debug>:${_san_flags}>)
+  target_link_options(${target} PRIVATE $<$<CONFIG:Debug>:${_san_flags}>)
+endfunction()

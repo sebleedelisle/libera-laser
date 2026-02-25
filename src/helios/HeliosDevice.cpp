@@ -10,7 +10,7 @@
 namespace libera::helios {
 namespace {
 
-constexpr std::size_t kDefaultFramePoints = 1000;
+constexpr std::size_t kDefaultFramePoints = 1000; // maximum 4096 points
 constexpr std::size_t kMinFramePoints = 20;
 
 constexpr unsigned int kHeliosFlags = HELIOS_FLAGS_DEFAULT;

@@ -2,13 +2,24 @@
   "version": 6,
   "configurePresets": [
     {
-      "name": "debug",
-      "displayName": "Debug (no sanitiser)",
+      "name": "base",
+      "hidden": true,
       "generator": "Ninja",
+      "cacheVariables": {
+        "LIBERA_BUILD_EXAMPLES": "OFF",
+        "LIBERA_BUILD_INTEGRATION_TESTS": "OFF",
+        "LIBERA_BUILD_HARDWARE_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "SANITIZE": "none"
+        "SANITIZE": "none",
+        "LIBERA_BUILD_TESTS": "ON"
       }
     },
     {
@@ -28,11 +39,12 @@
     {
       "name": "release",
       "displayName": "Release",
-      "generator": "Ninja",
+      "inherits": "base",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "SANITIZE": "none"
+        "SANITIZE": "none",
+        "LIBERA_BUILD_TESTS": "OFF"
       }
     }
   ],
@@ -41,5 +53,10 @@
     { "name": "asan",  "configurePreset": "asan"  },
     { "name": "tsan",  "configurePreset": "tsan"  },
     { "name": "release", "configurePreset": "release" }
+  ],
+  "testPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "asan",  "configurePreset": "asan"  },
+    { "name": "tsan",  "configurePreset": "tsan"  }
   ]
 }
