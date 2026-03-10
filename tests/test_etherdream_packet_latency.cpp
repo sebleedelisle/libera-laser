@@ -33,11 +33,11 @@ using namespace std::chrono_literals;
 
 namespace {
 
-constexpr const char* kEtherDreamIp = "192.168.1.76";
-constexpr std::uint32_t kPointRate = 30000;
-constexpr std::uint16_t kShortPointCount = 200;
-constexpr std::uint16_t kLongPointCount  = 1800;
-constexpr std::size_t   kBufferCapacity  = 1800;
+constexpr const char* ETHER_DREAM_IP = "192.168.1.76";
+constexpr std::uint32_t POINT_RATE = 30000;
+constexpr std::uint16_t SHORT_POINT_COUNT = 200;
+constexpr std::uint16_t LONG_POINT_COUNT  = 1800;
+constexpr std::size_t   BUFFER_CAPACITY  = 1800;
 
 libera::etherdream::EtherDreamResponse g_lastStatus{};
 
@@ -95,7 +95,7 @@ sendDataPoints(libera::net::TcpClient& client, std::uint16_t pointCount) {
 
 void waitForDrain(std::uint16_t pointCount) {
     using namespace std::chrono;
-    const double seconds = static_cast<double>(pointCount) / static_cast<double>(kPointRate);
+    const double seconds = static_cast<double>(pointCount) / static_cast<double>(POINT_RATE);
     const auto micros = static_cast<long long>(seconds * 1'000'000.0);
     std::this_thread::sleep_for(microseconds(micros) + 2ms);
 }
@@ -106,7 +106,7 @@ void waitForSpace(libera::net::TcpClient& client, std::uint16_t requiredPoints) 
         query.setSingleByteCommand('?');
         sendCommand(client, query);
         const auto fullness = g_lastStatus.status.bufferFullness;
-        const auto freeSpace = (fullness <= kBufferCapacity) ? (kBufferCapacity - fullness) : 0;
+        const auto freeSpace = (fullness <= BUFFER_CAPACITY) ? (BUFFER_CAPACITY - fullness) : 0;
         if (freeSpace >= requiredPoints) {
             break;
         }
@@ -122,12 +122,12 @@ int main() {
     client.setConnectTimeout(500ms);
 
     auto endpoint = libera::net::tcp::endpoint(
-        libera::net::asio::ip::make_address(kEtherDreamIp),
+        libera::net::asio::ip::make_address(ETHER_DREAM_IP),
         libera::etherdream::config::ETHERDREAM_DAC_PORT_DEFAULT);
     auto ec = client.connect(endpoint);
     if (ec) {
         std::fprintf(stderr, "Unable to connect to EtherDream at %s (%s)\n",
-                     kEtherDreamIp, ec.message().c_str());
+                     ETHER_DREAM_IP, ec.message().c_str());
         return 0;
     }
     client.setLowLatency();
@@ -143,36 +143,36 @@ int main() {
     command.setSingleByteCommand('p');
     sendCommand(client, command);
 
-    command.setPointRateCommand(kPointRate);
+    command.setPointRateCommand(POINT_RATE);
     sendCommand(client, command);
 
-    sendDataPoints(client, kShortPointCount);
-    waitForDrain(kShortPointCount);
+    sendDataPoints(client, SHORT_POINT_COUNT);
+    waitForDrain(SHORT_POINT_COUNT);
 
-    command.setBeginCommand(kPointRate);
+    command.setBeginCommand(POINT_RATE);
     sendCommand(client, command);
 
-    waitForSpace(client, kLongPointCount);
+    waitForSpace(client, LONG_POINT_COUNT);
 
-    constexpr int kSamples = 200;
+    constexpr int sampleCount = 200;
     std::vector<double> shortSamples;
     std::vector<double> longSamples;
-    shortSamples.reserve(kSamples);
-    longSamples.reserve(kSamples);
+    shortSamples.reserve(sampleCount);
+    longSamples.reserve(sampleCount);
 
-    for (int i = 0; i < kSamples; ++i) {
-        waitForSpace(client, kShortPointCount);
-        auto latency = sendDataPoints(client, kShortPointCount);
+    for (int i = 0; i < sampleCount; ++i) {
+        waitForSpace(client, SHORT_POINT_COUNT);
+        auto latency = sendDataPoints(client, SHORT_POINT_COUNT);
         std::printf("short packet %d latency %.3f ms\n", i,
                     std::chrono::duration<double, std::milli>(latency).count());
         shortSamples.push_back(std::chrono::duration<double, std::milli>(latency).count());
     }
 
-    waitForSpace(client, kLongPointCount);
+    waitForSpace(client, LONG_POINT_COUNT);
 
-    for (int i = 0; i < kSamples; ++i) {
-        waitForSpace(client, kLongPointCount);
-        auto latency = sendDataPoints(client, kLongPointCount);
+    for (int i = 0; i < sampleCount; ++i) {
+        waitForSpace(client, LONG_POINT_COUNT);
+        auto latency = sendDataPoints(client, LONG_POINT_COUNT);
         std::printf("long  packet %d latency %.3f ms\n", i,
                     std::chrono::duration<double, std::milli>(latency).count());
         longSamples.push_back(std::chrono::duration<double, std::milli>(latency).count());

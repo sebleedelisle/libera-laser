@@ -66,7 +66,7 @@ private:
     int lastDataSentBufferSize{0};
     std::atomic<int> lastReportedBufferFullness{0};
 
-    static constexpr int kMinPacketDataSize = 128;
+    static constexpr int minPacketDataSize = 128;
 };
 
 } // namespace libera::lasercubenet

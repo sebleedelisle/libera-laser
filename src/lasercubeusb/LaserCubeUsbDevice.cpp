@@ -70,12 +70,12 @@ private:
 
 namespace {
 
-constexpr std::uint8_t kControlEndpointOut = 1 | LIBUSB_ENDPOINT_OUT;
-constexpr std::uint8_t kControlEndpointIn = 1 | LIBUSB_ENDPOINT_IN;
-constexpr std::uint8_t kDataEndpointOut = 3 | LIBUSB_ENDPOINT_OUT;
-constexpr int kMinPacketDataSize = 128;
-constexpr double kLatencyMillis = 10.0;
-constexpr int kWaitLeadMillis = 30;
+constexpr std::uint8_t CONTROL_ENDPOINT_OUT = 1 | LIBUSB_ENDPOINT_OUT;
+constexpr std::uint8_t CONTROL_ENDPOINT_IN = 1 | LIBUSB_ENDPOINT_IN;
+constexpr std::uint8_t DATA_ENDPOINT_OUT = 3 | LIBUSB_ENDPOINT_OUT;
+constexpr int MIN_PACKET_DATA_SIZE = 128;
+constexpr double LATENCY_MILLIS = 10.0;
+constexpr int WAIT_LEAD_MILLIS = 30;
 
 bool send_uint8(libusb_device_handle* handle, std::uint8_t command, std::uint8_t value) {
     int transferred = 0;
@@ -83,12 +83,12 @@ bool send_uint8(libusb_device_handle* handle, std::uint8_t command, std::uint8_t
     packet[0] = command;
     packet[1] = value;
 
-    int rc = libusb_bulk_transfer(handle, kControlEndpointOut, packet, 2, &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, 2, &transferred, 0);
     if (rc != 0 || transferred != 2) {
         return false;
     }
 
-    rc = libusb_bulk_transfer(handle, kControlEndpointIn, packet, 64, &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 0);
     if (rc != 0 || transferred != 64 || packet[1] != 0) {
         return false;
     }
@@ -101,12 +101,12 @@ bool read_uint32(libusb_device_handle* handle, std::uint8_t command, std::uint32
     std::uint8_t packet[64] = {};
     packet[0] = command;
 
-    int rc = libusb_bulk_transfer(handle, kControlEndpointOut, packet, 1, &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, 1, &transferred, 0);
     if (rc != 0 || transferred != 1) {
         return false;
     }
 
-    rc = libusb_bulk_transfer(handle, kControlEndpointIn, packet, 64, &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 0);
     if (rc != 0 || transferred != 64 || packet[1] != 0) {
         return false;
     }
@@ -122,12 +122,12 @@ bool send_uint32(libusb_device_handle* handle, std::uint8_t command, std::uint32
     std::memcpy(packet + 1, &value, sizeof(std::uint32_t));
     const int length = 1 + static_cast<int>(sizeof(std::uint32_t));
 
-    int rc = libusb_bulk_transfer(handle, kControlEndpointOut, packet, length, &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, length, &transferred, 0);
     if (rc != 0 || transferred != length) {
         return false;
     }
 
-    rc = libusb_bulk_transfer(handle, kControlEndpointIn, packet, 64, &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 0);
     if (rc != 0 || transferred != 64 || packet[1] != 0) {
         return false;
     }
@@ -145,13 +145,13 @@ bool send_raw(libusb_device_handle* handle, const std::uint8_t* request, std::ui
     const std::uint32_t length = std::min<std::uint32_t>(requestLength, packet.size());
     std::memcpy(packet.data(), request, length);
 
-    int rc = libusb_bulk_transfer(handle, kControlEndpointOut, packet.data(), static_cast<int>(length), &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet.data(), static_cast<int>(length), &transferred, 0);
     if (rc != 0 || transferred != static_cast<int>(length)) {
         return false;
     }
 
     std::array<std::uint8_t, 64> response{};
-    rc = libusb_bulk_transfer(handle, kControlEndpointIn, response.data(), static_cast<int>(response.size()), &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, response.data(), static_cast<int>(response.size()), &transferred, 0);
     if (rc != 0 || transferred != static_cast<int>(response.size()) || response[1] != 0) {
         return false;
     }
@@ -339,15 +339,15 @@ void LaserCubeUsbDevice::waitUntilReadyToSend() {
     }
 
     const int minPointsInBuffer = std::max(
-        kMinPacketDataSize,
-        static_cast<int>(std::lround((static_cast<double>(rate) * kLatencyMillis) / 1000.0)));
+        MIN_PACKET_DATA_SIZE,
+        static_cast<int>(std::lround((static_cast<double>(rate) * LATENCY_MILLIS) / 1000.0)));
 
     const int bufferFullness = estimateBufferFullness();
-    const int pointsUntilNeedsRefill = std::max(kMinPacketDataSize, bufferFullness - minPointsInBuffer);
+    const int pointsUntilNeedsRefill = std::max(MIN_PACKET_DATA_SIZE, bufferFullness - minPointsInBuffer);
 
     const double microsPerPoint = 1000000.0 / static_cast<double>(rate);
     int microsToWait = static_cast<int>(std::lround(pointsUntilNeedsRefill * microsPerPoint));
-    microsToWait -= (kWaitLeadMillis * 1000);
+    microsToWait -= (WAIT_LEAD_MILLIS * 1000);
     if (microsToWait > 0) {
         std::this_thread::sleep_for(std::chrono::microseconds(microsToWait));
     }
@@ -433,7 +433,7 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
     do {
         rc = libusb_bulk_transfer(
             usbHandle->get(),
-            kDataEndpointOut,
+            DATA_ENDPOINT_OUT,
             reinterpret_cast<unsigned char*>(packetBuffer.data()),
             static_cast<int>(packetBuffer.size()),
             &transferred,

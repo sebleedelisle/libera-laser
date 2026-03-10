@@ -22,13 +22,13 @@ void installCirclePointsCallback(const std::shared_ptr<core::LaserDevice>& devic
             // This keeps the hot path allocation-free and guarantees identical
             // geometry for each revolution.
             static const std::vector<core::LaserPoint> circle = [] {
-                constexpr std::size_t kCirclePoints = 500;
+                constexpr std::size_t circlePoints = 500;
                 std::vector<core::LaserPoint> pts;
-                pts.reserve(kCirclePoints);
+                pts.reserve(circlePoints);
 
                 const float tau = 2.0f * static_cast<float>(std::acos(-1.0));
-                for (std::size_t i = 0; i < kCirclePoints; ++i) {
-                    const float t = static_cast<float>(i) / static_cast<float>(kCirclePoints);
+                for (std::size_t i = 0; i < circlePoints; ++i) {
+                    const float t = static_cast<float>(i) / static_cast<float>(circlePoints);
                     const float angle = t * tau;
                     const float x = std::cos(angle);
                     const float y = std::sin(angle);
@@ -158,14 +158,14 @@ int main() {
     
     installCirclePointsCallback(dac); 
 
-    const float phase_step = 0.05f;          // smaller => slower change
+    const float phaseStep = 0.05f;          // smaller => slower change
     constexpr float scannerSyncBaseUnits = 5.0f; // 0.5 ms expressed in 1/10,000 s units
     float phase = 0.f;
 
     for (int i = 0; i < 300; ++i) {
         dac->setScannerSync(scannerSyncBaseUnits * (std::sin(phase) + 1.f));
 
-        phase += phase_step;
+        phase += phaseStep;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));  // or duration<double>(0.1)
     }
 

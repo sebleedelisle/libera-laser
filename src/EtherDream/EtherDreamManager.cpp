@@ -12,7 +12,7 @@
 namespace libera::etherdream {
 namespace {
 
-constexpr std::size_t kMinDiscoveryPacketBytes = 36;
+constexpr std::size_t MIN_DISCOVERY_PACKET_BYTES = 36;
 
 std::uint16_t read_le_u16(const std::uint8_t* data) {
     return static_cast<std::uint16_t>(data[0]) |
@@ -188,7 +188,7 @@ void EtherDreamManager::threadedFunction() {
         std::string ip = sender.address().to_string();
         unsigned short dacPort = config::ETHERDREAM_DAC_PORT_DEFAULT;
 
-        if (received < kMinDiscoveryPacketBytes) {
+        if (received < MIN_DISCOVERY_PACKET_BYTES) {
             continue;
         }
 

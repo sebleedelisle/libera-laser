@@ -10,10 +10,10 @@
 namespace libera::helios {
 namespace {
 
-constexpr std::size_t kDefaultFramePoints = 1000; // maximum 4096 points
-constexpr std::size_t kMinFramePoints = 20;
+constexpr std::size_t DEFAULT_FRAME_POINTS = 1000; // maximum 4096 points
+constexpr std::size_t MIN_FRAME_POINTS = 20;
 
-constexpr unsigned int kHeliosFlags = HELIOS_FLAGS_DEFAULT;
+constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
 std::uint16_t clampU16FromUnit(float value) {
     const float clamped = std::clamp(value, 0.0f, 1.0f);
@@ -31,8 +31,8 @@ std::uint16_t clampU16FromSigned(float value) {
 HeliosDevice::HeliosDevice(std::shared_ptr<HeliosDac> sdkInstance, unsigned int deviceIndex)
 : sdk(std::move(sdkInstance))
 , index(deviceIndex) {
-    targetFramePoints.store(kDefaultFramePoints, std::memory_order_relaxed);
-    frameBuffer.reserve(kDefaultFramePoints);
+    targetFramePoints.store(DEFAULT_FRAME_POINTS, std::memory_order_relaxed);
+    frameBuffer.reserve(DEFAULT_FRAME_POINTS);
 }
 
 HeliosDevice::~HeliosDevice() {
@@ -59,7 +59,7 @@ void HeliosDevice::setPointRate(std::uint32_t pointRateValue) {
 }
 
 void HeliosDevice::setFramePointCount(std::size_t points) {
-    const auto clamped = std::max(points, kMinFramePoints);
+    const auto clamped = std::max(points, MIN_FRAME_POINTS);
     targetFramePoints.store(clamped, std::memory_order_relaxed);
     frameBuffer.reserve(clamped);
 }
@@ -140,7 +140,7 @@ void HeliosDevice::run() {
         const int result = sdk->WriteFrameExtended(
             index,
             pps,
-            kHeliosFlags,
+            HELIOS_FLAGS,
             frameBuffer.data(),
             static_cast<unsigned int>(frameBuffer.size()));
 

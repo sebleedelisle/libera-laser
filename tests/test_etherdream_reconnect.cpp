@@ -116,8 +116,8 @@ int main() {
     libera::etherdream::EtherDreamDevice device;
     libera::etherdream::EtherDreamDeviceInfo info{"loopback", "Loopback", "127.0.0.1", server.port()};
 
-    constexpr int kTries = 3000;
-    for (int i = 0; i < kTries; ++i) {
+    constexpr int tries = 3000;
+    for (int i = 0; i < tries; ++i) {
         auto connected = device.connect(info);
         ASSERT_TRUE(connected, "connect should succeed");
 
@@ -127,7 +127,7 @@ int main() {
         std::this_thread::sleep_for(50ms);
     }
 
-    ASSERT_TRUE(server.connectionsAccepted() >= kTries, "server observed all connections");
+    ASSERT_TRUE(server.connectionsAccepted() >= tries, "server observed all connections");
 
     server.stop();
     std::puts("EtherDream reconnect test passed.");
