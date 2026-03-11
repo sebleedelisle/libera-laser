@@ -3,6 +3,7 @@
  */
 #include "libera/etherdream/EtherDreamDevice.hpp"
 
+#include "libera/core/BufferEstimator.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/log/Log.hpp"
 
@@ -295,9 +296,10 @@ std::size_t EtherDreamDevice::calculateMinimumPoints() {
 
     const int bufferFullness = estimateBufferFullness();
 
-    int minPoints = millisToPoints(config::ETHERDREAM_MIN_BUFFER_MS); 
-    minPoints = std::max<int>(minPoints,
-                              static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
+    const int minPoints = core::BufferEstimator::minimumBufferPoints(
+        getPointRate(),
+        config::ETHERDREAM_MIN_BUFFER_MS,
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
     if(bufferFullness>=minPoints) return 0; 
     else return static_cast<std::size_t>(minPoints - bufferFullness);
     
@@ -448,35 +450,16 @@ expected<DacAck> EtherDreamDevice::sendPing() {
 }
 
 int EtherDreamDevice::estimateBufferFullness() const {
-    const auto rate = lastKnownStatus.pointRate;
-    if (rate == 0) {
+    const auto estimate = core::BufferEstimator::estimateFromAnchor(
+        lastKnownStatus.bufferFullness,
+        lastReceiveTime,
+        lastKnownStatus.pointRate);
+    if (!estimate.projected) {
         return lastKnownStatus.bufferFullness;
     }
 
-    if (lastReceiveTime == std::chrono::steady_clock::time_point{}) {
-        return lastKnownStatus.bufferFullness;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = now - lastReceiveTime;
-    if (elapsed <= std::chrono::steady_clock::duration::zero()) {
-        return lastKnownStatus.bufferFullness;
-    }
-
-    const auto elapsedUs =
-        std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
-    if (elapsedUs <= 0) {
-        return lastKnownStatus.bufferFullness;
-    }
-
-    const double consumed =
-        (static_cast<double>(rate) * static_cast<double>(elapsedUs)) / 1'000'000.0;
-    const double estimated =
-        static_cast<double>(lastKnownStatus.bufferFullness) - consumed;
-    const double clamped =
-        std::clamp(estimated, 0.0, static_cast<double>(getBufferSize()));
-
-    return static_cast<std::uint16_t>(std::llround(clamped));
+    const int bufferSize = getBufferSize();
+    return std::clamp(estimate.bufferFullness, 0, bufferSize);
 }
 
 // void EtherDreamDevice::ensureTargetPointRate() {
@@ -504,9 +487,10 @@ void EtherDreamDevice::sleepUntilNextPoints() {
     // we calculate this using the point rate as it needs to be 
     // time based rather than buffer size based
 
-    int minPointsInBuffer = millisToPoints(config::ETHERDREAM_MIN_BUFFER_MS);
-    minPointsInBuffer = std::max<int>(minPointsInBuffer,
-                                      static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
+    int minPointsInBuffer = core::BufferEstimator::minimumBufferPoints(
+        getPointRate(),
+        config::ETHERDREAM_MIN_BUFFER_MS,
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
     const int bufferSize = getBufferSize();
     const int minPacketPoints = static_cast<int>(config::ETHERDREAM_MIN_PACKET_POINTS);
 
@@ -524,11 +508,10 @@ void EtherDreamDevice::sleepUntilNextPoints() {
     const int minSleep = static_cast<int>(config::ETHERDREAM_MIN_SLEEP.count());
     const int maxSleep = static_cast<int>(config::ETHERDREAM_MAX_SLEEP.count());
 
-    if (millisToWait < minSleep) {
-        millisToWait = minSleep;
-    } else if (millisToWait > maxSleep) {
-        millisToWait = maxSleep;
-    }
+    millisToWait = core::BufferEstimator::clampSleepMillis(
+        millisToWait,
+        minSleep,
+        maxSleep);
 
     logInfoVerbose("[EtherDreamDevice] Sleeping for", millisToWait, "ms");
     std::this_thread::sleep_for(std::chrono::milliseconds{millisToWait});

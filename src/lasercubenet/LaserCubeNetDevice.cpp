@@ -1,5 +1,6 @@
 #include "libera/lasercubenet/LaserCubeNetDevice.hpp"
 
+#include "libera/core/BufferEstimator.hpp"
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/log/Log.hpp"
 
@@ -317,35 +318,25 @@ void LaserCubeNetDevice::checkAcks() {
 }
 
 int LaserCubeNetDevice::calculateBufferFullnessByTimeSent() {
-    // Project buffer fullness forward from the last send time.
-    if (lastDataSentTime.time_since_epoch().count() == 0) {
+    const auto estimate = core::BufferEstimator::estimateFromAnchor(
+        lastDataSentBufferSize,
+        lastDataSentTime,
+        pps.load(std::memory_order_relaxed));
+    if (!estimate.projected) {
         return 0;
     }
-    const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastDataSentTime).count();
-    const auto currentPps = static_cast<double>(pps.load(std::memory_order_relaxed));
-    if (currentPps <= 0.0) {
-        return 0;
-    }
-    const double consumed = (static_cast<double>(elapsed) / 1000000.0) * currentPps;
-    const int remaining = static_cast<int>(static_cast<double>(lastDataSentBufferSize) - consumed);
-    return std::max(0, remaining);
+    return estimate.bufferFullness;
 }
 
 int LaserCubeNetDevice::calculateBufferFullnessByTimeAcked() {
-    // Project buffer fullness forward from the last ack time.
-    if (lastAckTime.time_since_epoch().count() == 0) {
+    const auto estimate = core::BufferEstimator::estimateFromAnchor(
+        lastReportedBufferFullness.load(std::memory_order_relaxed),
+        lastAckTime,
+        pps.load(std::memory_order_relaxed));
+    if (!estimate.projected) {
         return 0;
     }
-    const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastAckTime).count();
-    const auto currentPps = static_cast<double>(pps.load(std::memory_order_relaxed));
-    if (currentPps <= 0.0) {
-        return 0;
-    }
-    const double consumed = (static_cast<double>(elapsed) / 1000000.0) * currentPps;
-    const int remaining = static_cast<int>(static_cast<double>(lastReportedBufferFullness.load(std::memory_order_relaxed)) - consumed);
-    return std::max(0, remaining);
+    return estimate.bufferFullness;
 }
 
 int LaserCubeNetDevice::getDacTotalPointBufferCapacity() const {

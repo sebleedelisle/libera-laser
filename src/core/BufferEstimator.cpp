@@ -1,0 +1,60 @@
+#include "libera/core/BufferEstimator.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+namespace libera::core {
+
+BufferEstimate BufferEstimator::estimateFromAnchor(
+    int anchorBufferFullness,
+    std::chrono::steady_clock::time_point anchorTime,
+    std::uint32_t pointRate,
+    std::chrono::steady_clock::time_point now) {
+    if (pointRate == 0) {
+        return BufferEstimate{anchorBufferFullness, false};
+    }
+
+    if (anchorTime == std::chrono::steady_clock::time_point{}) {
+        return BufferEstimate{anchorBufferFullness, false};
+    }
+
+    const auto elapsed = now - anchorTime;
+    if (elapsed <= std::chrono::steady_clock::duration::zero()) {
+        return BufferEstimate{anchorBufferFullness, false};
+    }
+
+    const auto elapsedUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
+    if (elapsedUs <= 0) {
+        return BufferEstimate{anchorBufferFullness, false};
+    }
+
+    const double consumed =
+        (static_cast<double>(pointRate) * static_cast<double>(elapsedUs)) / 1'000'000.0;
+    const int estimated =
+        static_cast<int>(std::llround(static_cast<double>(anchorBufferFullness) - consumed));
+
+    return BufferEstimate{std::max(0, estimated), true};
+}
+
+int BufferEstimator::minimumBufferPoints(
+    std::uint32_t pointRate,
+    std::chrono::milliseconds minimumBufferTime,
+    int minimumBufferFloor) {
+    const double fromTime =
+        (static_cast<double>(pointRate) * static_cast<double>(minimumBufferTime.count())) / 1000.0;
+    const int pointsFromTime = static_cast<int>(std::llround(fromTime));
+    return std::max(pointsFromTime, minimumBufferFloor);
+}
+
+int BufferEstimator::clampSleepMillis(
+    int millis,
+    int minimumSleepMillis,
+    int maximumSleepMillis) {
+    if (maximumSleepMillis < minimumSleepMillis) {
+        std::swap(maximumSleepMillis, minimumSleepMillis);
+    }
+    return std::clamp(millis, minimumSleepMillis, maximumSleepMillis);
+}
+
+} // namespace libera::core

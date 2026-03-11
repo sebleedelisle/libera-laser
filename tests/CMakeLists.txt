@@ -1,4 +1,5 @@
 set(LIBERA_UNIT_TESTS
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_buffer_estimator.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_status.cpp
 )
 
