@@ -211,6 +211,10 @@ std::uint32_t LaserDeviceBase::getPointRate() const noexcept {
     return pointRate.load(std::memory_order_relaxed);
 }
 
+std::optional<DacBufferState> LaserDeviceBase::getBufferState() const {
+    return std::nullopt;
+}
+
 void LaserDeviceBase::resetStartupBlank() {
     const int blankPoints = millisToPoints(1.0f);
     startupBlankPointsRemaining.store(blankPoints, std::memory_order_relaxed);

@@ -28,6 +28,7 @@ public:
     void stopFrameMode();
     bool frameModeEnabled() const;
     bool isReadyForNewFrame() const;
+    std::size_t queuedFrameCount() const;
 
 protected:
     void frameFillCallback(const PointFillRequest& request,

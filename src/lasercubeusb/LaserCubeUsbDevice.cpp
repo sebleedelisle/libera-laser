@@ -281,6 +281,7 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
     currentPps.store(0, std::memory_order_relaxed);
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
+    lastEstimatedBufferFullness.store(0, std::memory_order_relaxed);
 
     return {};
 }
@@ -343,6 +344,7 @@ void LaserCubeUsbDevice::waitUntilReadyToSend() {
         static_cast<int>(std::lround((static_cast<double>(rate) * LATENCY_MILLIS) / 1000.0)));
 
     const int bufferFullness = estimateBufferFullness();
+    lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
     const int pointsUntilNeedsRefill = std::max(MIN_PACKET_DATA_SIZE, bufferFullness - minPointsInBuffer);
 
     const double microsPerPoint = 1000000.0 / static_cast<double>(rate);
@@ -385,6 +387,7 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
 
     const int capacity = getDacTotalPointBufferCapacity();
     const int bufferFullness = estimateBufferFullness();
+    lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
     int maxPointsToAdd = capacity - bufferFullness;
     if (maxPointsToAdd <= 0) {
         return true;
@@ -451,8 +454,27 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
 
     lastDataSentTime = std::chrono::steady_clock::now();
     lastDataSentBufferSize = static_cast<int>(pointsToSend.size());
+    lastEstimatedBufferFullness.store(lastDataSentBufferSize, std::memory_order_relaxed);
 
     return true;
+}
+
+std::optional<core::DacBufferState> LaserCubeUsbDevice::getBufferState() const {
+    const int total = getDacTotalPointBufferCapacity();
+    if (total <= 0) {
+        return std::nullopt;
+    }
+
+    const int fullness = std::clamp(
+        lastEstimatedBufferFullness.load(std::memory_order_relaxed),
+        0,
+        total);
+
+    core::DacBufferState state;
+    state.pointsInBuffer = fullness;
+    state.totalBufferPoints = total;
+    state.estimated = true;
+    return state;
 }
 
 } // namespace libera::lasercubeusb

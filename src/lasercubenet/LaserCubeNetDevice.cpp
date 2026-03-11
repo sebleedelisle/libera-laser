@@ -56,6 +56,7 @@ libera::expected<void> LaserCubeNetDevice::connect(const LaserCubeNetDeviceInfo&
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
     lastReportedBufferFullness.store(0, std::memory_order_relaxed);
+    lastEstimatedBufferFullness.store(0, std::memory_order_relaxed);
 
     if (!io) {
         io = net::shared_io_context();
@@ -145,6 +146,7 @@ bool LaserCubeNetDevice::sendPointsToDac() {
     // Estimate how full the device buffer is right now.
     const int minEstimatedBufferFullness =
         std::max(calculateBufferFullnessByTimeSent(), calculateBufferFullnessByTimeAcked());
+    lastEstimatedBufferFullness.store(minEstimatedBufferFullness, std::memory_order_relaxed);
     const int latencyPointAdjustment = 300;
     int maxPointsToAdd = std::max(0, getDacTotalPointBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
 
@@ -284,6 +286,7 @@ void LaserCubeNetDevice::checkAcks() {
                 // Convert free-space to fullness (capacity - free).
                 const int bufferFullness = getDacTotalPointBufferCapacity() - static_cast<int>(bufferSpace);
                 lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
+                lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
 
                 // If this ack corresponds to the most recent send, anchor the time-sent estimate.
                 if (it->second >= lastDataSentTime) {
@@ -341,6 +344,24 @@ int LaserCubeNetDevice::calculateBufferFullnessByTimeAcked() {
 
 int LaserCubeNetDevice::getDacTotalPointBufferCapacity() const {
     return pointBufferCapacity.load(std::memory_order_relaxed);
+}
+
+std::optional<core::DacBufferState> LaserCubeNetDevice::getBufferState() const {
+    const int total = pointBufferCapacity.load(std::memory_order_relaxed);
+    if (total <= 0) {
+        return std::nullopt;
+    }
+
+    const int fullness = std::clamp(
+        lastEstimatedBufferFullness.load(std::memory_order_relaxed),
+        0,
+        total);
+
+    core::DacBufferState state;
+    state.pointsInBuffer = fullness;
+    state.totalBufferPoints = total;
+    state.estimated = true;
+    return state;
 }
 
 } // namespace libera::lasercubenet

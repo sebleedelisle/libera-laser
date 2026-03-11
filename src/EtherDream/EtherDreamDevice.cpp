@@ -80,6 +80,7 @@ expected<void> EtherDreamDevice::connect() {
 
 
     logInfoVerbose("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
+    lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
 
     return {};
 }
@@ -318,6 +319,9 @@ void EtherDreamDevice::handleNetworkFailure(std::string_view where,
 void EtherDreamDevice::updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked) {
     lastKnownStatus = status;
     lastReceiveTime = std::chrono::steady_clock::now();
+    lastEstimatedBufferFullness.store(status.bufferFullness, std::memory_order_relaxed);
+    lastBufferEstimateProjected.store(false, std::memory_order_relaxed);
+    lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
     
 
     const bool estop = status.lightEngineState == LightEngineState::Estop;
@@ -455,11 +459,17 @@ int EtherDreamDevice::estimateBufferFullness() const {
         lastReceiveTime,
         lastKnownStatus.pointRate);
     if (!estimate.projected) {
+        lastEstimatedBufferFullness.store(lastKnownStatus.bufferFullness, std::memory_order_relaxed);
+        lastBufferEstimateProjected.store(false, std::memory_order_relaxed);
         return lastKnownStatus.bufferFullness;
     }
 
     const int bufferSize = getBufferSize();
-    return std::clamp(estimate.bufferFullness, 0, bufferSize);
+    const int clamped = std::clamp(estimate.bufferFullness, 0, bufferSize);
+    lastEstimatedBufferFullness.store(clamped, std::memory_order_relaxed);
+    lastKnownBufferCapacity.store(bufferSize, std::memory_order_relaxed);
+    lastBufferEstimateProjected.store(true, std::memory_order_relaxed);
+    return clamped;
 }
 
 // void EtherDreamDevice::ensureTargetPointRate() {
@@ -530,6 +540,24 @@ int EtherDreamDevice::getBufferSize() const {
         }
     }
     return 0;
+}
+
+std::optional<core::DacBufferState> EtherDreamDevice::getBufferState() const {
+    const int total = lastKnownBufferCapacity.load(std::memory_order_relaxed);
+    if (total <= 0) {
+        return std::nullopt;
+    }
+
+    const int fullness = std::clamp(
+        lastEstimatedBufferFullness.load(std::memory_order_relaxed),
+        0,
+        total);
+
+    core::DacBufferState state;
+    state.pointsInBuffer = fullness;
+    state.totalBufferPoints = total;
+    state.estimated = lastBufferEstimateProjected.load(std::memory_order_relaxed);
+    return state;
 }
 
 bool EtherDreamDevice::ensureConnected() {

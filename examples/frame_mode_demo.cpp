@@ -4,10 +4,13 @@
 
 #include "libera.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -19,10 +22,13 @@ namespace {
 // function that creates a frame of points to draw a rainbow circle. The phase
 // value changes the colour shift. 
 
-core::Frame makeCircleFrame(float phase) {
+core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
 
     constexpr std::size_t circlePoints = 500;
     constexpr float brightness = 0.2f;
+    const float clampedFill = std::clamp(bufferFillFraction, 0.0f, 1.0f);
+    const std::size_t whitePointCount = static_cast<std::size_t>(
+        std::lround(clampedFill * static_cast<float>(circlePoints)));
 
     core::Frame frame;
     frame.points.reserve(circlePoints);
@@ -35,9 +41,15 @@ core::Frame makeCircleFrame(float phase) {
         const float y = std::sin(angle);
 
         const float colourPhase = phase + t * tau;
-        const float r = (std::sin(colourPhase) + 1.0f) * 0.5f;
-        const float g = (std::sin(colourPhase + tau / 3.0f) + 1.0f) * 0.5f;
-        const float b = (std::sin(colourPhase + (2.0f * tau / 3.0f)) + 1.0f) * 0.5f;
+        float r = (std::sin(colourPhase) + 1.0f) * 0.5f;
+        float g = (std::sin(colourPhase + tau / 3.0f) + 1.0f) * 0.5f;
+        float b = (std::sin(colourPhase + (2.0f * tau / 3.0f)) + 1.0f) * 0.5f;
+
+        if (i < whitePointCount) {
+            r = 1.0f;
+            g = 1.0f;
+            b = 1.0f;
+        }
 
         frame.points.emplace_back(core::LaserPoint{
             x,
@@ -52,6 +64,56 @@ core::Frame makeCircleFrame(float phase) {
     }
 
     return frame;
+}
+
+float getBufferFillFraction(const std::optional<core::DacBufferState>& bufferState) {
+    if (!bufferState || bufferState->totalBufferPoints <= 0) {
+        return 0.0f;
+    }
+    return std::clamp(
+        static_cast<float>(bufferState->pointsInBuffer) /
+            static_cast<float>(bufferState->totalBufferPoints),
+        0.0f,
+        1.0f);
+}
+
+void printBufferState(const std::shared_ptr<core::LaserDevice>& dac,
+                      const std::optional<core::DacBufferState>& bufferState,
+                      int frameIndex,
+                      int totalFrames) {
+    const std::size_t queuedFrames = dac->queuedFrameCount();
+    const bool readyForNewFrame = dac->isReadyForNewFrame();
+
+    constexpr std::size_t queueBarSize = 2;
+    const std::size_t filled =
+        std::min<std::size_t>(queuedFrames, queueBarSize);
+
+    std::string bar(queueBarSize, '-');
+    for (std::size_t i = 0; i < filled; ++i) {
+        bar[i] = '#';
+    }
+
+    std::cout << '\r'
+              << "frame " << (frameIndex + 1) << "/" << totalFrames
+              << " dac_buffer ";
+    if (bufferState && bufferState->totalBufferPoints > 0) {
+        const int pointsInBuffer = std::clamp(
+            bufferState->pointsInBuffer,
+            0,
+            bufferState->totalBufferPoints);
+        const int percent = static_cast<int>(std::lround(
+            (100.0 * static_cast<double>(pointsInBuffer)) /
+            static_cast<double>(bufferState->totalBufferPoints)));
+        std::cout << pointsInBuffer << "/" << bufferState->totalBufferPoints
+                  << " (" << percent << "%)";
+    } else {
+        std::cout << "n/a";
+    }
+    std::cout << " queue[" << bar << "]"
+              << " queued=" << queuedFrames
+              << " state=" << (readyForNewFrame ? "ready" : "busy")
+              << "   "
+              << std::flush;
 }
 
 
@@ -99,20 +161,39 @@ int main() {
     
     const float phaseStep = 0.05f;
     float phase = 0.0f;
+    float lastKnownBufferFillFraction = 0.0f;
+    auto lastStatusPrint = std::chrono::steady_clock::now();
 
     const int totalFrames = 3000;
     for (int i = 0; i < totalFrames; ++i) {
         while (!dac->isReadyForNewFrame()){
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastStatusPrint >= std::chrono::milliseconds(50)) {
+                const auto bufferState = dac->getBufferState();
+                if (bufferState) {
+                    lastKnownBufferFillFraction = getBufferFillFraction(bufferState);
+                }
+                printBufferState(dac, bufferState, i, totalFrames);
+                lastStatusPrint = now;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
-        core::Frame frame = makeCircleFrame(phase);
+        const auto bufferState = dac->getBufferState();
+        if (bufferState) {
+            lastKnownBufferFillFraction = getBufferFillFraction(bufferState);
+        }
+
+        core::Frame frame = makeCircleFrame(phase, lastKnownBufferFillFraction);
         if (!dac->sendFrame(std::move(frame))) {
             logError("Failed to queue frame ", i);
         }
 
+        printBufferState(dac, bufferState, i, totalFrames);
+
         phase += phaseStep;
     }
+    std::cout << std::endl;
 
     dacManager.close();
     libera::logInfo("Done.");

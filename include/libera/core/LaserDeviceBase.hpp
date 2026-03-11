@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <type_traits>
 #include <chrono>
+#include <optional>
 #include <utility>
 #include "LaserPoint.hpp"
 #include "libera/log/Log.hpp"
@@ -34,6 +35,12 @@ struct PointFillRequest {
     [[nodiscard]] bool needsPoints(std::size_t minPoints) const {
         return (minimumPointsRequired > minPoints) || (maximumPointsRequired > minPoints);
     }
+};
+
+struct DacBufferState {
+    int pointsInBuffer = 0;
+    int totalBufferPoints = 0;
+    bool estimated = true;
 };
 
 /**
@@ -113,6 +120,9 @@ public:
      * @brief Retrieve the last configured point rate (points per second).
      */
     virtual std::uint32_t getPointRate() const noexcept;
+
+    /// Host-side view of DAC buffer fullness, if the backend can provide it.
+    virtual std::optional<DacBufferState> getBufferState() const;
 
     // arm status - needs to be set or no output! 
     bool getArmed() const noexcept; 

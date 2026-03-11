@@ -58,6 +58,13 @@ bool LaserDevice::isReadyForNewFrame() const {
     return (activeCount + pendingCount) <= 1;
 }
 
+std::size_t LaserDevice::queuedFrameCount() const {
+    std::lock_guard<std::mutex> lock(pendingFramesMutex);
+    const std::size_t pendingCount = pendingFrames.size();
+    const std::size_t activeCount = frameQueue.size();
+    return activeCount + pendingCount;
+}
+
 void LaserDevice::frameFillCallback(const PointFillRequest& request,
                                     std::vector<LaserPoint>& outputBuffer) {
     // Pull any frames provided by other threads into the local queue so the

@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <chrono>
+#include <optional>
 
 namespace libera::lasercubenet {
 
@@ -24,6 +25,7 @@ public:
 
     libera::expected<void> connect(const LaserCubeNetDeviceInfo& info);
     void close();
+    std::optional<core::DacBufferState> getBufferState() const override;
 
 protected:
     void run() override;
@@ -65,6 +67,7 @@ private:
     std::chrono::steady_clock::time_point lastDataSentTime{};
     int lastDataSentBufferSize{0};
     std::atomic<int> lastReportedBufferFullness{0};
+    std::atomic<int> lastEstimatedBufferFullness{0};
 
     static constexpr int minPacketDataSize = 128;
 };

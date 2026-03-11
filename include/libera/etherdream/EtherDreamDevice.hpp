@@ -61,6 +61,7 @@ public:
     std::optional<std::error_code> networkError() const { return lastNetworkError(); }
     /// Returns true when the TCP link is up and no network failure is recorded.
     bool hasActiveConnection() const;
+    std::optional<core::DacBufferState> getBufferState() const override;
 
     
 protected:
@@ -128,6 +129,10 @@ private:
     std::mutex pendingRatesMutex;
     std::deque<std::uint16_t> pendingRateChanges;
     size_t pendingRateChangeCount = 0; 
+
+    mutable std::atomic<int> lastEstimatedBufferFullness{0};
+    mutable std::atomic<int> lastKnownBufferCapacity{0};
+    mutable std::atomic<bool> lastBufferEstimateProjected{false};
 };
 
 } // namespace libera::etherdream
