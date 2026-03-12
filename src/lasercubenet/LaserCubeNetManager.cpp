@@ -1,33 +1,12 @@
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/lasercubenet/LaserCubeNetController.hpp"
 
+#include "libera/core/ActiveControllerMap.hpp"
 #include "libera/log/Log.hpp"
 
 #include <array>
-#include <iomanip>
-#include <sstream>
 
 namespace libera::lasercubenet {
-namespace {
-[[maybe_unused]] std::string hexPrefix(const std::uint8_t* data, std::size_t size, std::size_t maxBytes = 16) {
-    if (!data || size == 0) {
-        return {};
-    }
-    const std::size_t count = std::min(size, maxBytes);
-    std::ostringstream oss;
-    oss << std::uppercase << std::hex << std::setfill('0');
-    for (std::size_t i = 0; i < count; ++i) {
-        if (i > 0) {
-            oss << ' ';
-        }
-        oss << std::setw(2) << static_cast<int>(data[i]);
-    }
-    if (size > count) {
-        oss << " ...";
-    }
-    return oss.str();
-}
-}
 
 LaserCubeNetManager::LaserCubeNetManager() {
     io = net::shared_io_context();
@@ -58,12 +37,7 @@ void LaserCubeNetManager::closeAll() {
     std::unordered_map<std::string, std::shared_ptr<LaserCubeNetController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [id, weak] : active) {
-            if (auto dev = weak.lock()) {
-                snapshot.emplace(id, std::move(dev));
-            }
-        }
-        active.clear();
+        snapshot = core::snapshotActiveControllersAndClear(active);
     }
 
     for (auto& [id, dev] : snapshot) {
@@ -101,12 +75,6 @@ void LaserCubeNetManager::discoveryThread() {
                 continue;
             }
 
-            // logInfo("[LaserCubeNetManager] discovery rx",
-            //         sender.address().to_string(),
-            //         sender.port(),
-            //         "bytes",
-            //         received);
-
             // Parse and stash the most recent status for each controller.
             if (auto status = LaserCubeNetStatus::parse(buffer.data(), received)) {
                 status->ipAddress = sender.address().to_string();
@@ -136,17 +104,6 @@ void LaserCubeNetManager::discoveryThread() {
                             "/",
                             status->pointRateMax);
                 }
-            } else {
-                [[maybe_unused]] const auto payloadVersion = received >= 3 ? static_cast<int>(buffer[2]) : -1;
-                // logInfo("[LaserCubeNetManager] discovery rx parse failed",
-                //         sender.address().to_string(),
-                //         sender.port(),
-                //         "bytes",
-                //         received,
-                //         "payloadVersion",
-                //         payloadVersion,
-                //         "hex",
-                //         hexPrefix(buffer.data(), received));
             }
         }
 
@@ -195,21 +152,11 @@ LaserCubeNetManager::getAndConnectToDac(const core::DacInfo& info) {
     bool newlyCreated = false;
     {
         std::lock_guard lock(activeMutex);
-        auto it = active.find(lcInfo->idValue());
-        if (it != active.end()) {
-            if (auto existing = it->second.lock()) {
-                controller = existing;
-            } else {
-                active.erase(it);
-            }
-        }
-
-        // Create a new controller if one is not already active.
-        if (!controller) {
-            controller = std::make_shared<LaserCubeNetController>(*lcInfo);
-            active[lcInfo->idValue()] = controller;
-            newlyCreated = true;
-        }
+        controller = core::getOrCreateActiveController(
+            active,
+            lcInfo->idValue(),
+            [lcInfo] { return std::make_shared<LaserCubeNetController>(*lcInfo); },
+            &newlyCreated);
     }
 
     if (controller && newlyCreated) {

@@ -415,7 +415,6 @@ bool LaserControllerStreaming::isVerbose() const noexcept {
 }
 
 void LaserControllerStreaming::setScannerSync(double offsetTenThousandths) {
-   // logInfo("[LaserControllerStreaming::setScannerSync]", offsetTenThousandths); 
     const double clamped = std::max(offsetTenThousandths, 0.0);
     scannerSyncTime.store(clamped, std::memory_order_relaxed);
 }

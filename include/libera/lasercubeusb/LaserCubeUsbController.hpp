@@ -40,8 +40,6 @@ private:
     std::shared_ptr<libusb_context> usbContext;
     std::unique_ptr<UsbControllerHandle> usbHandle;
 
-    std::string serialNumber;
-
     std::atomic<bool> usbConnected{false};
     std::atomic<std::uint32_t> currentPps{0};
     std::atomic<std::uint32_t> targetPps{30000};

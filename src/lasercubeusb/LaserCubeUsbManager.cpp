@@ -1,5 +1,6 @@
 #include "libera/lasercubeusb/LaserCubeUsbManager.hpp"
 
+#include "libera/core/ActiveControllerMap.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbConfig.hpp"
 #include "libera/log/Log.hpp"
 
@@ -114,29 +115,33 @@ LaserCubeUsbManager::getAndConnectToDac(const core::DacInfo& info) {
         return nullptr;
     }
 
+    bool newlyCreated = false;
+    std::shared_ptr<LaserCubeUsbController> controller;
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        auto it = activeControllers.find(usbInfo->idValue());
-        if (it != activeControllers.end()) {
-            if (auto existing = it->second.lock()) {
-                return existing;
-            }
-            activeControllers.erase(it);
-        }
+        controller = core::getOrCreateActiveController(
+            activeControllers,
+            usbInfo->idValue(),
+            [this] { return std::make_shared<LaserCubeUsbController>(usbContext); },
+            &newlyCreated);
     }
 
-    auto controller = std::make_shared<LaserCubeUsbController>(usbContext);
+    if (!controller) {
+        return nullptr;
+    }
+    // If a live controller already exists, reuse it and avoid reconnecting USB.
+    if (!newlyCreated) {
+        return controller;
+    }
+
     const auto result = controller->connect(*usbInfo);
     if (!result) {
         logError("[LaserCubeUsbManager] connect failed", result.error().message());
+        std::lock_guard<std::mutex> lock(activeMutex);
+        activeControllers.erase(usbInfo->idValue());
         return nullptr;
     }
     controller->start();
-
-    {
-        std::lock_guard<std::mutex> lock(activeMutex);
-        activeControllers[usbInfo->idValue()] = controller;
-    }
 
     return controller;
 }
@@ -145,12 +150,7 @@ void LaserCubeUsbManager::closeAll() {
     std::unordered_map<std::string, std::shared_ptr<LaserCubeUsbController>> snapshot;
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        for (auto& [id, weak] : activeControllers) {
-            if (auto controller = weak.lock()) {
-                snapshot.emplace(id, controller);
-            }
-        }
-        activeControllers.clear();
+        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
     }
 
     for (auto& [id, controller] : snapshot) {

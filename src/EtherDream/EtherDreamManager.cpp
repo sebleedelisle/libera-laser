@@ -1,5 +1,7 @@
 #include "libera/etherdream/EtherDreamManager.hpp"
 
+#include "libera/core/ActiveControllerMap.hpp"
+#include "libera/core/ByteRead.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/log/Log.hpp"
 #if defined(_WIN32)
@@ -13,18 +15,6 @@ namespace libera::etherdream {
 namespace {
 
 constexpr std::size_t MIN_DISCOVERY_PACKET_BYTES = 36;
-
-std::uint16_t read_le_u16(const std::uint8_t* data) {
-    return static_cast<std::uint16_t>(data[0]) |
-           (static_cast<std::uint16_t>(data[1]) << 8);
-}
-
-std::uint32_t read_le_u32(const std::uint8_t* data) {
-    return static_cast<std::uint32_t>(data[0]) |
-           (static_cast<std::uint32_t>(data[1]) << 8) |
-           (static_cast<std::uint32_t>(data[2]) << 16) |
-           (static_cast<std::uint32_t>(data[3]) << 24);
-}
 
 std::string format_mac_id(std::uint64_t mac) {
     std::array<char, 32> buffer{};
@@ -92,26 +82,21 @@ EtherDreamManager::getAndConnectToDac(const core::DacInfo& info) {
         return nullptr;
     }
 
+    // Keep one shared controller instance per discovered device id.
     std::shared_ptr<EtherDreamController> controller;
     bool newlyCreated = false;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeControllers.find(etherInfo->idValue());
-        if (it != activeControllers.end()) {
-            if (auto existing = it->second.lock()) {
-                controller = existing;
-            } else {
-                activeControllers.erase(it);
-            }
-        }
-        if (!controller) {
-            controller = std::make_shared<EtherDreamController>(*etherInfo);
-            activeControllers[etherInfo->idValue()] = controller;
-            newlyCreated = true;
-        }
+        controller = core::getOrCreateActiveController(
+            activeControllers,
+            etherInfo->idValue(),
+            [etherInfo] { return std::make_shared<EtherDreamController>(*etherInfo); },
+            &newlyCreated);
     }
 
     if (controller && newlyCreated) {
+        // Connect/start only once for a new instance. Existing instances keep
+        // their own reconnect loop in the controller thread.
         if (auto result = controller->connect(*etherInfo); !result) {
             logError("[EtherDreamManager] initial connect failed", result.error().message());
         }
@@ -134,12 +119,7 @@ void EtherDreamManager::closeAll() {
     std::unordered_map<std::string, std::shared_ptr<EtherDreamController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [id, weak] : activeControllers) {
-            if (auto dev = weak.lock()) {
-                snapshot.emplace(id, std::move(dev));
-            }
-        }
-        activeControllers.clear();
+        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
     }
 
     for (auto& [id, dev] : snapshot) {
@@ -198,10 +178,10 @@ void EtherDreamManager::threadedFunction() {
             mac = (mac << 8) | static_cast<std::uint64_t>(data[i]);
         }
         const std::uint8_t* cursor = data + 6;
-        const auto hardwareRevision = read_le_u16(cursor); cursor += 2;
-        const auto softwareRevision = read_le_u16(cursor); cursor += 2;
-        const auto bufferCapacity = read_le_u16(cursor); cursor += 2;
-        const auto maxPointRate = read_le_u32(cursor); cursor += 4;
+        const auto hardwareRevision = core::bytes::readLe16(cursor); cursor += 2;
+        const auto softwareRevision = core::bytes::readLe16(cursor); cursor += 2;
+        const auto bufferCapacity = core::bytes::readLe16(cursor); cursor += 2;
+        const auto maxPointRate = core::bytes::readLe32(cursor); cursor += 4;
         (void)cursor;
 
         std::string id = mac ? format_mac_id(mac) : ("etherdream-" + ip);

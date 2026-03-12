@@ -30,14 +30,10 @@ using DacAck = EtherDreamController::DacAck;
 namespace ip = libera::net::asio::ip;
 namespace asio = libera::net::asio;
 
-EtherDreamController::EtherDreamController() {
-    //setPointRate(config::ETHERDREAM_TARGET_POINT_RATE);
-}
+EtherDreamController::EtherDreamController() = default;
 
 EtherDreamController::EtherDreamController(EtherDreamControllerInfo info)
-: controllerInfo(std::move(info)) {
-    //setPointRate(config::ETHERDREAM_TARGET_POINT_RATE);
-}
+: controllerInfo(std::move(info)) {}
 
 EtherDreamController::~EtherDreamController() {
     // Orderly shutdown: stop the worker thread and close the TCP connection.
@@ -70,9 +66,7 @@ expected<void> EtherDreamController::connect() {
                  "timeout_ms", tcpClient.defaultTimeout().count());
         return unexpected(connectError);
     }
-    // setLowLatency()
-    // sets TCP_NODELAY, stops the system holding small packets and combining them
-    // also sets SO_KEEPALIVE which probes the TCP connection 
+    // Ask the socket to send small packets right away and keep the connection alive.
     tcpClient.setLowLatency();
 
     tcpClient.setDefaultTimeout(200ms);
@@ -87,7 +81,6 @@ expected<void> EtherDreamController::connect() {
 
 void EtherDreamController::run() {
     constexpr auto retryDelay = std::chrono::milliseconds(100);
-    networkFailureEncountered = false;
 
     while (running) {
         if (!controllerInfo) {
@@ -188,8 +181,7 @@ EtherDreamController::waitForResponse(char command) {
         updatePlaybackRequirements(response.status, ackMatched);
 
         logInfoVerbose("[EtherDream] RX", static_cast<char>(response.response),
-                 "cmd", command, "sts", response.status.describe()); 
-//                 "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
+                       "cmd", command, "sts", response.status.describe());
 
         if (response.response == 'I') {
             continue; // status frame only; wait for actual ACK
@@ -315,7 +307,6 @@ void EtherDreamController::handleNetworkFailure(std::string_view where,
                                      const std::error_code& ec) {
     logError("[EtherDreamController] failure", where, ec.message());
     connectionActive = false;
-    networkFailureEncountered = true;
     lastError = ec;
 }
 
@@ -324,7 +315,6 @@ void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& st
     lastKnownStatus = status;
     lastReceiveTime = std::chrono::steady_clock::now();
     lastEstimatedBufferFullness.store(status.bufferFullness, std::memory_order_relaxed);
-    lastBufferEstimateProjected.store(false, std::memory_order_relaxed);
     lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
     
 
@@ -343,7 +333,8 @@ void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& st
 }
 
 core::PointFillRequest EtherDreamController::getFillRequest() {
-
+    // Build a "how many points do we need right now?" request using the latest
+    // projected controller-buffer fullness.
     const auto bufferFullness = estimateBufferFullness();
 
     const auto bufferCapacity = getBufferSize();
@@ -354,7 +345,8 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
     core::PointFillRequest req;
     req.maximumPointsRequired = freeSpace;
     req.minimumPointsRequired = minimumPointsRequired;
-    // ugh gross : 
+    // Convert queue depth (points) into time so scheduled frame callbacks can
+    // place new content close to the moment it will actually appear.
     const auto bufferLead = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::duration<double, std::milli>(pointsToMillis(bufferFullness)));
 
@@ -362,8 +354,6 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
         std::chrono::steady_clock::now() + bufferLead; 
 
     logInfoVerbose("[EtherDreamController :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
-   //logInfo("[EtherDreamController Point fill request ", bufferFullness, ',',bufferCapacity,',', req.minimumPointsRequired,
-   //          ' ', req.maximumPointsRequired, "\n");
 
     pointsToSend.clear();
     return req;
@@ -394,9 +384,6 @@ void EtherDreamController::sendPoints() {
         resetPoints();
         return;
     }
-
-    //logInfo("[EtherDream] TX data points", pointsToSend.size(),
-    //        "bytes", commandBuffer.size());
 
     auto dataAck = sendCommand();
     if (!dataAck) {
@@ -437,8 +424,6 @@ void EtherDreamController::sendPrepare() {
 void EtherDreamController::sendBegin() {
     logError("[EtherDream] begin required -> send 'b'");
     const auto targetRate = getPointRate();
-    //logInfo("[EtherDream] TX 'b'", "rate", targetRate,
-   //         "timeout_ms", tcpClient.defaultTimeout().count());
     commandBuffer.setBeginCommand(targetRate);
         if (auto ack = sendCommand(); !ack) {
             if (ack.error() == asio::error::timed_out) {
@@ -467,7 +452,6 @@ int EtherDreamController::estimateBufferFullness() const {
         &projected);
     if (!projected) {
         lastEstimatedBufferFullness.store(lastKnownStatus.bufferFullness, std::memory_order_relaxed);
-        lastBufferEstimateProjected.store(false, std::memory_order_relaxed);
         return lastKnownStatus.bufferFullness;
     }
 
@@ -475,34 +459,15 @@ int EtherDreamController::estimateBufferFullness() const {
     const int clamped = clampBufferFullnessToCapacity(estimated, bufferSize);
     lastEstimatedBufferFullness.store(clamped, std::memory_order_relaxed);
     lastKnownBufferCapacity.store(bufferSize, std::memory_order_relaxed);
-    lastBufferEstimateProjected.store(true, std::memory_order_relaxed);
     return clamped;
 }
 
-// void EtherDreamController::ensureTargetPointRate() {
-//     if (clearRequired || prepareRequired || beginRequired) {
-//         return;
-//     }
-
-//     const auto targetRate = getPointRate();
-
-//     if (lastKnownStatus.playbackState == PlaybackState::Playing &&
-//         lastKnownStatus.pointRate != targetRate) {
-//         if (auto rateAck = sendPointRate(static_cast<std::uint16_t>(targetRate)); !rateAck) {
-//             handleNetworkFailure("point rate command", rateAck.error());
-//         }
-//     }
-// }
-
 void EtherDreamController::sleepUntilNextPoints() {
-
-    // strategy is : 
-    // wait until the buffer has the minimum points in a packet available
-    // if it already does then wait the minimum time between requests. 
-
-    // we need to know the min allowable buffer level
-    // we calculate this using the point rate as it needs to be 
-    // time based rather than buffer size based
+    // Strategy:
+    // 1) Decide the minimum safe buffer level based on point rate and a
+    //    short target buffer duration.
+    // 2) Estimate how long until the current buffer drains to that level.
+    // 3) Sleep for that time, clamped to a small min/max window.
 
     int minPointsInBuffer = core::BufferEstimator::minimumBufferPoints(
         getPointRate(),
@@ -562,12 +527,10 @@ bool EtherDreamController::ensureConnected() {
 
     auto result = connect();
     if (!result) {
-        networkFailureEncountered = true;
         lastError = result.error();
         return false;
     }
 
-    networkFailureEncountered = false;
     lastError.reset();
     return true;
 }

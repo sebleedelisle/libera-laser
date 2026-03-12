@@ -1,4 +1,5 @@
 #include "libera/lasercubenet/LaserCubeNetStatus.hpp"
+#include "libera/core/ByteRead.hpp"
 
 #include <sstream>
 #include <iomanip>
@@ -6,17 +7,6 @@
 
 namespace libera::lasercubenet {
 namespace {
-inline std::uint16_t read_u16(const std::uint8_t* ptr) {
-    return static_cast<std::uint16_t>(ptr[0]) | (static_cast<std::uint16_t>(ptr[1]) << 8);
-}
-
-inline std::uint32_t read_u32(const std::uint8_t* ptr) {
-    return static_cast<std::uint32_t>(ptr[0]) |
-           (static_cast<std::uint32_t>(ptr[1]) << 8) |
-           (static_cast<std::uint32_t>(ptr[2]) << 16) |
-           (static_cast<std::uint32_t>(ptr[3]) << 24);
-}
-
 inline std::string hex_serial(const std::uint8_t* ptr, std::size_t len) {
     std::ostringstream oss;
     oss << std::uppercase << std::hex;
@@ -56,10 +46,10 @@ std::optional<LaserCubeNetStatus> LaserCubeNetStatus::parse(const std::uint8_t* 
         status.overTemperature = (flags & 0x20) != 0;
     }
 
-    status.pointRate = read_u32(&data[10]);
-    status.pointRateMax = read_u32(&data[14]);
-    status.bufferFree = read_u16(&data[19]);
-    status.bufferMax = read_u16(&data[21]);
+    status.pointRate = core::bytes::readLe32(&data[10]);
+    status.pointRateMax = core::bytes::readLe32(&data[14]);
+    status.bufferFree = core::bytes::readLe16(&data[19]);
+    status.bufferMax = core::bytes::readLe16(&data[21]);
     status.batteryPercent = data[23];
     status.temperatureC = data[24];
     status.connectionType = data[25];

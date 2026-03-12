@@ -15,7 +15,7 @@ NetService::NetService()
 , work_guard_(asio::make_work_guard(*io_))
 , t_([this]{ io_->run(); })
 {
-    logInfo("Creating NetService object\n");
+    logInfo("Creating NetService object");
 }
 
 NetService::~NetService() {

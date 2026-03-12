@@ -30,7 +30,6 @@ private:
     void openIfNeeded();
     std::size_t refreshControllerCount(bool allowRescan);
 
-    std::mutex sdkMutex;
     std::shared_ptr<HeliosDac> sdk;
     bool opened = false;
     std::size_t controllerCount = 0;

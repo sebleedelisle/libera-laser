@@ -210,7 +210,6 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
             foundSerial = true;
             try {
                 matchedHandle = std::make_unique<UsbControllerHandle>(controller);
-                serialNumber = serial;
             } catch (const std::exception& ex) {
                 logError("[LaserCubeUsbController] USB open failed", ex.what());
             }

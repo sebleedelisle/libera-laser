@@ -84,8 +84,6 @@ private:
     sendPointRate(std::uint16_t rate);
 
     std::size_t calculateMinimumPoints();
-
-    long long p();
     void sleepUntilNextPoints();
 
     void handleNetworkFailure(std::string_view where,
@@ -102,7 +100,6 @@ private:
     void sendPrepare();
     void sendBegin();
     expected<DacAck> sendPing();
-    // void ensureTargetPointRate();
 
     bool ensureConnected();
     bool performHandshake();
@@ -123,7 +120,6 @@ private:
     bool beginRequired = false;
     bool connectionActive = false;
 
-    bool networkFailureEncountered = false;
     std::optional<std::error_code> lastError;
 
     std::mutex pendingRatesMutex;
@@ -132,7 +128,6 @@ private:
 
     mutable std::atomic<int> lastEstimatedBufferFullness{0};
     mutable std::atomic<int> lastKnownBufferCapacity{0};
-    mutable std::atomic<bool> lastBufferEstimateProjected{false};
 };
 
 } // namespace libera::etherdream

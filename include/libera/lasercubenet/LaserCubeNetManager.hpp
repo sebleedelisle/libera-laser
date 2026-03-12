@@ -39,7 +39,6 @@ private:
 
     void discoveryThread();
     void sendProbe();
-    void processResponses();
 
     static constexpr std::string_view typeName{"LaserCubeNet"};
 

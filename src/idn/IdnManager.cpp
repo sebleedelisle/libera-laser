@@ -1,12 +1,89 @@
 #include "libera/idn/IdnManager.hpp"
 
+#include "libera/core/ActiveControllerMap.hpp"
+
 #include <algorithm>
+#include <cstdint>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace libera::idn {
 namespace {
 
 std::string makeFallbackLabel(unsigned int index) {
     return "IDN " + std::to_string(index);
+}
+
+constexpr std::size_t sdkNameMaxLength = 31;
+
+std::string truncateToSdkNameLength(std::string value) {
+    if (value.size() > sdkNameMaxLength) {
+        value.resize(sdkNameMaxLength);
+    }
+    return value;
+}
+
+std::string makeServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
+                             const IDNSL_SERVICE_INFO& serviceInfo) {
+    return truncateToSdkNameLength(
+        std::string(serverInfo.hostName).append(" - ").append(serviceInfo.serviceName));
+}
+
+std::string ipv4ToString(const in_addr& addr) {
+    const std::uint32_t hostOrder = ntohl(addr.s_addr);
+    return std::to_string((hostOrder >> 24) & 0xFFu) + "." +
+           std::to_string((hostOrder >> 16) & 0xFFu) + "." +
+           std::to_string((hostOrder >> 8) & 0xFFu) + "." +
+           std::to_string(hostOrder & 0xFFu);
+}
+
+std::unordered_map<std::string, core::DacInfo::NetworkInfo> discoverIdnNetworkInfoByLabel() {
+    std::unordered_map<std::string, core::DacInfo::NetworkInfo> infoByLabel;
+    std::unordered_set<std::string> ambiguousLabels;
+
+    IDNSL_SERVER_INFO* firstServerInfo = nullptr;
+    constexpr unsigned discoveryTimeoutMs = 600;
+    const int rc = getIDNServerList(&firstServerInfo, 0, discoveryTimeoutMs);
+    if (rc != 0 || !firstServerInfo) {
+        if (firstServerInfo) {
+            freeIDNServerList(firstServerInfo);
+        }
+        return infoByLabel;
+    }
+
+    for (auto* serverInfo = firstServerInfo; serverInfo != nullptr; serverInfo = serverInfo->next) {
+        std::optional<core::DacInfo::NetworkInfo> endpoint;
+        for (unsigned int i = 0; i < serverInfo->addressCount; ++i) {
+            const auto& addressInfo = serverInfo->addressTable[i];
+            if (addressInfo.errorFlags != 0) {
+                continue;
+            }
+            endpoint = core::DacInfo::NetworkInfo{
+                ipv4ToString(addressInfo.addr),
+                static_cast<std::uint16_t>(IDN_PORT)};
+            break;
+        }
+        if (!endpoint) {
+            continue;
+        }
+
+        for (unsigned int i = 0; i < serverInfo->serviceCount; ++i) {
+            const auto label = makeServiceLabel(*serverInfo, serverInfo->serviceTable[i]);
+            const auto [it, inserted] = infoByLabel.emplace(label, *endpoint);
+            if (!inserted &&
+                (it->second.ip != endpoint->ip || it->second.port != endpoint->port)) {
+                ambiguousLabels.insert(label);
+            }
+        }
+    }
+
+    freeIDNServerList(firstServerInfo);
+
+    for (const auto& label : ambiguousLabels) {
+        infoByLabel.erase(label);
+    }
+
+    return infoByLabel;
 }
 
 } // namespace
@@ -57,20 +134,17 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
     bool hasActive = false;
     {
         std::lock_guard lock(activeMutex);
-        for (auto it = activeControllers.begin(); it != activeControllers.end();) {
-            if (it->second.expired()) {
-                it = activeControllers.erase(it);
-            } else {
-                hasActive = true;
-                ++it;
-            }
-        }
+        hasActive = core::pruneExpiredActiveControllers(activeControllers);
     }
 
+    // Re-scan only when there are no live controllers. This keeps stable SDK
+    // indices while an IDN controller object is in use.
     const auto count = refreshControllerCount(!hasActive);
     if (!sdk || count == 0) {
         return results;
     }
+
+    const auto networkInfoByLabel = discoverIdnNetworkInfoByLabel();
 
     results.reserve(count);
     for (unsigned int index = 0; index < count; ++index) {
@@ -94,8 +168,12 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
 
         const int firmware = sdk->GetFirmwareVersion(index);
         std::optional<core::DacInfo::NetworkInfo> networkInfo;
+        if (const auto it = networkInfoByLabel.find(truncateToSdkNameLength(label));
+            it != networkInfoByLabel.end()) {
+            networkInfo = it->second;
+        }
         static constexpr const char* idnIpPrefix = "IDN: ";
-        if (label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
+        if (!networkInfo && label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
             networkInfo = core::DacInfo::NetworkInfo{
                 label.substr(5),
                 static_cast<std::uint16_t>(IDN_PORT)};
@@ -124,22 +202,14 @@ IdnManager::getAndConnectToDac(const core::DacInfo& info) {
     std::shared_ptr<IdnController> controller;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeControllers.find(idnInfo->index());
-        if (it != activeControllers.end()) {
-            if (auto existing = it->second.lock()) {
-                controller = existing;
-            } else {
-                activeControllers.erase(it);
-            }
-        }
-
-        if (!controller) {
-            controller = std::make_shared<IdnController>(sdk, idnInfo->index());
-            activeControllers[idnInfo->index()] = controller;
-        }
+        controller = core::getOrCreateActiveController(
+            activeControllers,
+            idnInfo->index(),
+            [this, idnInfo] { return std::make_shared<IdnController>(sdk, idnInfo->index()); });
     }
 
     if (controller) {
+        // Keep existing behavior: calling getAndConnectToDac can re-start a controller.
         controller->start();
     }
 
@@ -150,12 +220,7 @@ void IdnManager::closeAll() {
     std::unordered_map<unsigned int, std::shared_ptr<IdnController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [index, weak] : activeControllers) {
-            if (auto dev = weak.lock()) {
-                snapshot.emplace(index, std::move(dev));
-            }
-        }
-        activeControllers.clear();
+        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
     }
 
     for (auto& [index, dev] : snapshot) {

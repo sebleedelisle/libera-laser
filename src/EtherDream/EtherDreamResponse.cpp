@@ -1,22 +1,10 @@
 #include "libera/etherdream/EtherDreamResponse.hpp"
+#include "libera/core/ByteRead.hpp"
 
 #include <iomanip>
 #include <sstream>
 
 namespace libera::etherdream {
-namespace {
-std::uint16_t read_le_u16(const std::uint8_t* data) {
-    return static_cast<std::uint16_t>(data[0])
-         | static_cast<std::uint16_t>(data[1]) << 8;
-}
-
-std::uint32_t read_le_u32(const std::uint8_t* data) {
-    return static_cast<std::uint32_t>(data[0])
-         | (static_cast<std::uint32_t>(data[1]) << 8)
-         | (static_cast<std::uint32_t>(data[2]) << 16)
-         | (static_cast<std::uint32_t>(data[3]) << 24);
-}
-} // namespace
 
 bool EtherDreamResponse::decode(const std::uint8_t* data, std::size_t size) {
     if (!data || size < 22) {
@@ -31,12 +19,12 @@ bool EtherDreamResponse::decode(const std::uint8_t* data, std::size_t size) {
     status.lightEngineState = static_cast<LightEngineState>(statusBytes[1]);
     status.playbackState = static_cast<PlaybackState>(statusBytes[2]);
     status.source = statusBytes[3];
-    status.lightEngineFlags = read_le_u16(statusBytes + 4);
-    status.playbackFlags = read_le_u16(statusBytes + 6);
-    status.sourceFlags = read_le_u16(statusBytes + 8);
-    status.bufferFullness = read_le_u16(statusBytes + 10);
-    status.pointRate = read_le_u32(statusBytes + 12);
-    status.pointCount = read_le_u32(statusBytes + 16);
+    status.lightEngineFlags = core::bytes::readLe16(statusBytes + 4);
+    status.playbackFlags = core::bytes::readLe16(statusBytes + 6);
+    status.sourceFlags = core::bytes::readLe16(statusBytes + 8);
+    status.bufferFullness = core::bytes::readLe16(statusBytes + 10);
+    status.pointRate = core::bytes::readLe32(statusBytes + 12);
+    status.pointCount = core::bytes::readLe32(statusBytes + 16);
 
     return true;
 }
@@ -65,12 +53,7 @@ std::string EtherDreamStatus::describe() const {
     std::ostringstream os;
     os << "lt=" << toString(lightEngineState)
        << " pb=" << toString(playbackState)
-       << " buffer=" << bufferFullness; 
-     //  << " rate=" << pointRate
-     //  << " count=" << pointCount
-     //  << " flags{L=0x" << std::hex << std::uppercase << lightEngineFlags
-     //  << " P=0x" << playbackFlags
-    //   << " S=0x" << sourceFlags << std::dec << std::nouppercase << "}";
+       << " buffer=" << bufferFullness;
     return os.str();
 }
 

@@ -1,5 +1,6 @@
 #include "libera/helios/HeliosManager.hpp"
 
+#include "libera/core/ActiveControllerMap.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -118,16 +119,11 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
     bool hasActive = false;
     {
         std::lock_guard lock(activeMutex);
-        for (auto it = activeControllers.begin(); it != activeControllers.end();) {
-            if (it->second.expired()) {
-                it = activeControllers.erase(it);
-            } else {
-                hasActive = true;
-                ++it;
-            }
-        }
+        hasActive = core::pruneExpiredActiveControllers(activeControllers);
     }
 
+    // Re-scan only when there are no live controllers. This avoids resetting
+    // SDK device indices while a controller instance is active.
     const auto count = refreshControllerCount(!hasActive);
     if (!sdk || count == 0) {
         return results;
@@ -177,22 +173,14 @@ HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
     std::shared_ptr<HeliosController> controller;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeControllers.find(heliosInfo->index());
-        if (it != activeControllers.end()) {
-            if (auto existing = it->second.lock()) {
-                controller = existing;
-            } else {
-                activeControllers.erase(it);
-            }
-        }
-
-        if (!controller) {
-            controller = std::make_shared<HeliosController>(sdk, heliosInfo->index());
-            activeControllers[heliosInfo->index()] = controller;
-        }
+        controller = core::getOrCreateActiveController(
+            activeControllers,
+            heliosInfo->index(),
+            [this, heliosInfo] { return std::make_shared<HeliosController>(sdk, heliosInfo->index()); });
     }
 
     if (controller) {
+        // Keep existing behavior: calling getAndConnectToDac can re-start a controller.
         controller->start();
     }
 
@@ -203,12 +191,7 @@ void HeliosManager::closeAll() {
     std::unordered_map<unsigned int, std::shared_ptr<HeliosController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [index, weak] : activeControllers) {
-            if (auto dev = weak.lock()) {
-                snapshot.emplace(index, std::move(dev));
-            }
-        }
-        activeControllers.clear();
+        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
     }
 
     for (auto& [index, dev] : snapshot) {

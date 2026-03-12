@@ -1,5 +1,6 @@
 #include "libera/lasercubenet/LaserCubeNetController.hpp"
 
+#include "libera/core/ByteRead.hpp"
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/log/Log.hpp"
 
@@ -8,12 +9,6 @@
 #include <thread>
 
 namespace libera::lasercubenet {
-namespace {
-inline std::uint16_t read_u16_le(const std::uint8_t* data) {
-    return static_cast<std::uint16_t>(data[0]) |
-           (static_cast<std::uint16_t>(data[1]) << 8);
-}
-}
 
 LaserCubeNetController::LaserCubeNetController() {
     // Reuse the shared IO context so sockets share the same network thread.
@@ -323,7 +318,7 @@ void LaserCubeNetController::checkAcks() {
         lastAckTime = now;
         lastAckWarningTime = std::chrono::steady_clock::time_point{};
 
-        const std::uint16_t bufferSpace = read_u16_le(&buffer[2]);
+        const std::uint16_t bufferSpace = core::bytes::readLe16(&buffer[2]);
         // Convert free-space to fullness (capacity - free).
         const int bufferFullness = getDacTotalPointBufferCapacity() - static_cast<int>(bufferSpace);
         lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
