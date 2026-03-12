@@ -40,7 +40,14 @@ struct PointFillRequest {
 struct DacBufferState {
     int pointsInBuffer = 0;
     int totalBufferPoints = 0;
-    bool estimated = true;
+};
+
+struct DacLatencyStats {
+    double p50Ms = 0.0;
+    double p95Ms = 0.0;
+    double p99Ms = 0.0;
+    double maxMs = 0.0;
+    std::size_t sampleCount = 0;
 };
 
 /**
@@ -123,6 +130,9 @@ public:
 
     /// Host-side view of DAC buffer fullness, if the backend can provide it.
     virtual std::optional<DacBufferState> getBufferState() const;
+
+    /// Rolling latency percentiles (transport/admission), if supported.
+    virtual std::optional<DacLatencyStats> getLatencyStats() const;
 
     // arm status - needs to be set or no output! 
     bool getArmed() const noexcept; 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -26,6 +27,9 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
 
     constexpr std::size_t circlePoints = 500;
     constexpr float brightness = 0.2f;
+    constexpr std::size_t dottedOnPoints = 3;
+    constexpr std::size_t dottedOffPoints = 3;
+    constexpr std::size_t dottedCyclePoints = dottedOnPoints + dottedOffPoints;
     const float clampedFill = std::clamp(bufferFillFraction, 0.0f, 1.0f);
     const std::size_t whitePointCount = static_cast<std::size_t>(
         std::lround(clampedFill * static_cast<float>(circlePoints)));
@@ -44,11 +48,22 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
         float r = (std::sin(colourPhase) + 1.0f) * 0.5f;
         float g = (std::sin(colourPhase + tau / 3.0f) + 1.0f) * 0.5f;
         float b = (std::sin(colourPhase + (2.0f * tau / 3.0f)) + 1.0f) * 0.5f;
+        float intensity = 1.0f;
 
         if (i < whitePointCount) {
             r = 1.0f;
             g = 1.0f;
             b = 1.0f;
+        } else {
+            // Keep the non-white segment dotted with a fixed 3-on / 3-off mask.
+            // This uses the absolute point index so dots stay spatially static.
+            const bool dotIsOn = (i % dottedCyclePoints) < dottedOnPoints;
+            if (!dotIsOn) {
+                r = 0.0f;
+                g = 0.0f;
+                b = 0.0f;
+                intensity = 0.0f;
+            }
         }
 
         frame.points.emplace_back(core::LaserPoint{
@@ -57,7 +72,7 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
             r * brightness,
             g * brightness,
             b * brightness,
-            1.0f,
+            intensity,
             0.0f,
             0.0f
         });
@@ -93,7 +108,9 @@ void printBufferState(const std::shared_ptr<core::LaserDevice>& dac,
         bar[i] = '#';
     }
 
-    std::cout << '\r'
+    // Keep output on one line: return to column zero and clear the line before
+    // printing the latest status snapshot.
+    std::cout << "\r\033[2K"
               << "frame " << (frameIndex + 1) << "/" << totalFrames
               << " dac_buffer ";
     if (bufferState && bufferState->totalBufferPoints > 0) {
@@ -111,7 +128,22 @@ void printBufferState(const std::shared_ptr<core::LaserDevice>& dac,
     }
     std::cout << " queue[" << bar << "]"
               << " queued=" << queuedFrames
-              << " state=" << (readyForNewFrame ? "ready" : "busy")
+              << " state=" << (readyForNewFrame ? "ready" : "busy");
+
+    const auto latencyStats = dac->getLatencyStats();
+    if (latencyStats) {
+        std::cout << std::fixed << std::setprecision(2)
+                  << " latency_ms p50/p95/p99 "
+                  << latencyStats->p50Ms << "/"
+                  << latencyStats->p95Ms << "/"
+                  << latencyStats->p99Ms
+                  << " n=" << latencyStats->sampleCount
+                  << std::defaultfloat;
+    } else {
+        std::cout << " latency_ms n/a";
+    }
+
+    std::cout
               << "   "
               << std::flush;
 }

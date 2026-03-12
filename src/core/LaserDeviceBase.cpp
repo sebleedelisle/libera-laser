@@ -215,6 +215,10 @@ std::optional<DacBufferState> LaserDeviceBase::getBufferState() const {
     return std::nullopt;
 }
 
+std::optional<DacLatencyStats> LaserDeviceBase::getLatencyStats() const {
+    return std::nullopt;
+}
+
 void LaserDeviceBase::resetStartupBlank() {
     const int blankPoints = millisToPoints(1.0f);
     startupBlankPointsRemaining.store(blankPoints, std::memory_order_relaxed);

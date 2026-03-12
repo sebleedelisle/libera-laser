@@ -473,7 +473,6 @@ std::optional<core::DacBufferState> LaserCubeUsbDevice::getBufferState() const {
     core::DacBufferState state;
     state.pointsInBuffer = fullness;
     state.totalBufferPoints = total;
-    state.estimated = true;
     return state;
 }
 

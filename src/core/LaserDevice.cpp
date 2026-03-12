@@ -1,10 +1,39 @@
 #include "libera/core/LaserDevice.hpp"
 #include <cassert>
+#include <atomic>
 
 namespace libera::core {
+namespace {
+
+bool frameIsDueAt(const Frame& frame,
+                  std::chrono::steady_clock::time_point estimatedFirstRenderTime) {
+    // Unscheduled frames (default time point) are treated as "play immediately".
+    if (frame.time == std::chrono::steady_clock::time_point{}) {
+        return true;
+    }
+    return frame.time <= estimatedFirstRenderTime;
+}
+
+std::atomic<std::int64_t>& targetRenderLatencyMsStorage() {
+    // One shared frame scheduling latency for all LaserDevice instances.
+    static std::atomic<std::int64_t> latencyMs{0};
+    return latencyMs;
+}
+
+} // namespace
 
 LaserDevice::LaserDevice() = default;
 LaserDevice::~LaserDevice() = default;
+
+void LaserDevice::setTargetRenderLatency(std::chrono::milliseconds latency) {
+    const auto clamped = std::max<std::int64_t>(0, latency.count());
+    targetRenderLatencyMsStorage().store(clamped, std::memory_order_relaxed);
+}
+
+std::chrono::milliseconds LaserDevice::targetRenderLatency() {
+    return std::chrono::milliseconds(
+        targetRenderLatencyMsStorage().load(std::memory_order_relaxed));
+}
 
 // returns false if the device isn't ready for a new frame or if the frame is empty. 
 
@@ -18,6 +47,12 @@ bool LaserDevice::sendFrame(Frame&& frame) {
     // empty frame 
     assert(frame.points.size()>0 &&  "Empty frame!"); 
     if(frame.points.size()==0) return false; // if it's empty then don't add it and return false
+
+    // Auto-stamp unscheduled frames to now + global target latency so callers
+    // can queue frames without manually setting Frame::time each time.
+    if (frame.time == std::chrono::steady_clock::time_point{}) {
+        frame.time = std::chrono::steady_clock::now() + targetRenderLatency();
+    }
 
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
 
@@ -78,16 +113,38 @@ void LaserDevice::frameFillCallback(const PointFillRequest& request,
     const std::size_t minPoints = request.minimumPointsRequired;
     const std::size_t maxPoints = request.maximumPointsRequired;
 
+    // Some backends can provide an estimate for when the first point in this
+    // callback's batch will actually hit the mirrors. If unavailable, fall
+    // back to "now" so scheduled frames can still advance.
+    auto estimatedFirstRenderTime = request.estimatedFirstPointRenderTime;
+    if (estimatedFirstRenderTime == std::chrono::steady_clock::time_point{}) {
+        estimatedFirstRenderTime = std::chrono::steady_clock::now();
+    }
 
     if (frameQueue.empty()) {
         // Nothing ready yet, so provide the minimum number of blank samples to
         // keep downstream DAC logic satisfied.
-        if(minPoints >0) {
-            outputBuffer.insert(outputBuffer.end(), minPoints, LaserPoint{});
-        }
+        appendBlankPoints(outputBuffer, minPoints);
         return;
     }
 
+    // If one or more queued "next" frames are already due at this render time,
+    // drop older frames and promote the newest due one. This keeps playback
+    // aligned with the current schedule while avoiding stale frame buildup.
+    while (frameQueue.size() > 1) {
+        const auto& queuedNext = frameQueue[1];
+        if (!frameIsDueAt(*queuedNext, estimatedFirstRenderTime)) {
+            break;
+        }
+        frameQueue.pop_front();
+    }
+
+    // If the front frame is not due yet and we have nothing earlier to show,
+    // output blanks until its presentation time.
+    if (!frameIsDueAt(*frameQueue.front(), estimatedFirstRenderTime)) {
+        appendBlankPoints(outputBuffer, minPoints);
+        return;
+    }
 
     while(true) { 
 
@@ -106,22 +163,21 @@ void LaserDevice::frameFillCallback(const PointFillRequest& request,
 
         } 
         // if we're at the end of the frame but we're over minPoints, return
-        if((outputBuffer.size()>minPoints) && (currentFrame->nextPoint>=currentFrame->points.size()) )
+        if ((outputBuffer.size()>=minPoints) && (currentFrame->nextPoint>=currentFrame->points.size())) {
             return; 
+        }
         // if we're at maxPoints, return
         if(outputBuffer.size()==maxPoints) 
             return; 
-        // else it means that we're not at minPoints and we're at the end of the frame
-        // if we have no more frames, repeat this one
-        if(frameQueue.size()==1) { 
+        // else it means that we're below minPoints and we're at the end of the
+        // current frame. If a queued frame is due, promote it, otherwise repeat
+        // the current frame (hold-last-frame behavior).
+        if (frameQueue.size() > 1 && frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
+            frameQueue.pop_front();
+        } else {
             currentFrame->nextPoint=0; 
             currentFrame->playCount++; 
-        } else { 
-            while(frameQueue.size()>1) { 
-                frameQueue.pop_front(); 
-            } 
-            currentFrame = frameQueue.front();
-        } 
+        }
     }
 
 }
@@ -132,6 +188,13 @@ void LaserDevice::drainPendingFrames() {
         frameQueue.push_back(pendingFrames.front());
         pendingFrames.pop_front();
     }
+}
+
+void LaserDevice::appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count) {
+    if (count == 0) {
+        return;
+    }
+    buffer.insert(buffer.end(), count, LaserPoint{});
 }
 
 

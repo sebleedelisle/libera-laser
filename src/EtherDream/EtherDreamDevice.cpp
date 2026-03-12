@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cctype>
 #include <mutex>
+#include <vector>
 
 using namespace std::chrono_literals; // Enable 100ms / 1s literals.
 
@@ -29,6 +30,22 @@ using libera::unexpected;
 using DacAck = EtherDreamDevice::DacAck;
 namespace ip = libera::net::asio::ip;
 namespace asio = libera::net::asio;
+
+double percentileFromSortedSamples(const std::vector<double>& sorted, double percentile) {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+
+    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
+    const double rawIndex = clampedPercentile * static_cast<double>(sorted.size() - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(rawIndex));
+    const auto upper = static_cast<std::size_t>(std::ceil(rawIndex));
+    if (lower == upper) {
+        return sorted[lower];
+    }
+    const double weight = rawIndex - static_cast<double>(lower);
+    return sorted[lower] + ((sorted[upper] - sorted[lower]) * weight);
+}
 
 EtherDreamDevice::EtherDreamDevice() {
     //setPointRate(config::ETHERDREAM_TARGET_POINT_RATE);
@@ -260,6 +277,7 @@ expected<DacAck> EtherDreamDevice::sendCommand() {
     }
 
     const char opcode = commandBuffer.commandOpcode();
+    const auto sendStartTime = std::chrono::steady_clock::now();
 
     if (auto ec = tcpClient.write_all(commandBuffer.data(), commandBuffer.size()); ec) {
         commandBuffer.reset();
@@ -267,6 +285,9 @@ expected<DacAck> EtherDreamDevice::sendCommand() {
     }
 
     auto ack = waitForResponse(opcode);
+    if (ack && opcode == 'd') {
+        recordLatencySample(std::chrono::steady_clock::now() - sendStartTime);
+    }
     commandBuffer.reset();
     return ack;
 }
@@ -556,8 +577,42 @@ std::optional<core::DacBufferState> EtherDreamDevice::getBufferState() const {
     core::DacBufferState state;
     state.pointsInBuffer = fullness;
     state.totalBufferPoints = total;
-    state.estimated = lastBufferEstimateProjected.load(std::memory_order_relaxed);
     return state;
+}
+
+void EtherDreamDevice::recordLatencySample(std::chrono::steady_clock::duration sample) {
+    const double sampleMs =
+        std::chrono::duration<double, std::milli>(sample).count();
+    if (sampleMs < 0.0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(latencySamplesMutex);
+    latencySamplesMs.push_back(sampleMs);
+    while (latencySamplesMs.size() > latencySampleWindow) {
+        latencySamplesMs.pop_front();
+    }
+}
+
+std::optional<core::DacLatencyStats> EtherDreamDevice::getLatencyStats() const {
+    std::vector<double> sortedSamples;
+    {
+        std::lock_guard<std::mutex> lock(latencySamplesMutex);
+        if (latencySamplesMs.empty()) {
+            return std::nullopt;
+        }
+        sortedSamples.assign(latencySamplesMs.begin(), latencySamplesMs.end());
+    }
+
+    std::sort(sortedSamples.begin(), sortedSamples.end());
+
+    core::DacLatencyStats stats;
+    stats.sampleCount = sortedSamples.size();
+    stats.p50Ms = percentileFromSortedSamples(sortedSamples, 0.50);
+    stats.p95Ms = percentileFromSortedSamples(sortedSamples, 0.95);
+    stats.p99Ms = percentileFromSortedSamples(sortedSamples, 0.99);
+    stats.maxMs = sortedSamples.back();
+    return stats;
 }
 
 bool EtherDreamDevice::ensureConnected() {

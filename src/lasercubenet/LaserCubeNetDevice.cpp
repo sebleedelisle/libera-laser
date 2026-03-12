@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <thread>
+#include <vector>
 
 namespace libera::lasercubenet {
 namespace {
@@ -26,6 +27,22 @@ inline std::uint16_t encodeColour(float value) {
 inline std::uint16_t read_u16_le(const std::uint8_t* data) {
     return static_cast<std::uint16_t>(data[0]) |
            (static_cast<std::uint16_t>(data[1]) << 8);
+}
+
+double percentileFromSortedSamples(const std::vector<double>& sorted, double percentile) {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+
+    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
+    const double rawIndex = clampedPercentile * static_cast<double>(sorted.size() - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(rawIndex));
+    const auto upper = static_cast<std::size_t>(std::ceil(rawIndex));
+    if (lower == upper) {
+        return sorted[lower];
+    }
+    const double weight = rawIndex - static_cast<double>(lower);
+    return sorted[lower] + ((sorted[upper] - sorted[lower]) * weight);
 }
 }
 
@@ -53,6 +70,8 @@ libera::expected<void> LaserCubeNetDevice::connect(const LaserCubeNetDeviceInfo&
     pointBufferCapacity.store(info.status().bufferMax, std::memory_order_relaxed);
 
     lastAckTime = std::chrono::steady_clock::now();
+    lastAckWarningTime = std::chrono::steady_clock::time_point{};
+    lastUnexpectedAckSenderLogTime = std::chrono::steady_clock::time_point{};
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
     lastReportedBufferFullness.store(0, std::memory_order_relaxed);
@@ -263,48 +282,83 @@ void LaserCubeNetDevice::checkAcks() {
         return;
     }
 
-    // Each ack is a 4-byte response carrying the free-space count.
-    std::array<std::uint8_t, 4> buffer{};
-    libera::net::asio::ip::udp::endpoint sender;
-    std::size_t received = 0;
-    auto ec = dataSocket->recv_from(buffer.data(), buffer.size(), sender,
-                                    received, std::chrono::milliseconds(1), false);
-    if (!ec && received == 4) {
-        if (buffer[0] == LaserCubeNetConfig::CMD_GET_RINGBUFFER_FREE) {
-            // Ack layout (byte offsets):
-            //  0: CMD_GET_RINGBUFFER_FREE (0x8A)
-            //  1: messageNumber echoed back
-            //  2: free-space LSB
-            //  3: free-space MSB
-            const std::uint8_t receivedMessageNumber = buffer[1];
-            const auto it = messageTimes.find(receivedMessageNumber);
-            if (it != messageTimes.end()) {
-                const auto now = std::chrono::steady_clock::now();
-                lastAckTime = now;
+    constexpr std::size_t maxAckPollsPerCall = 64;
+    std::size_t polls = 0;
+    while (polls < maxAckPollsPerCall) {
+        // Each ack is a 4-byte response carrying the free-space count.
+        std::array<std::uint8_t, 4> buffer{};
+        libera::net::asio::ip::udp::endpoint sender;
+        std::size_t received = 0;
+        auto ec = dataSocket->recv_from(buffer.data(), buffer.size(), sender,
+                                        received, std::chrono::milliseconds(1), false);
 
-                const std::uint16_t bufferSpace = read_u16_le(&buffer[2]);
-                // Convert free-space to fullness (capacity - free).
-                const int bufferFullness = getDacTotalPointBufferCapacity() - static_cast<int>(bufferSpace);
-                lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
-                lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
-
-                // If this ack corresponds to the most recent send, anchor the time-sent estimate.
-                if (it->second >= lastDataSentTime) {
-                    lastDataSentTime = it->second;
-                    lastDataSentBufferSize = bufferFullness;
-                }
-
-                if (bufferSpace == 0) {
-                    logInfo("[LaserCubeNetDevice] BUFFER OVERRUN ------------------");
-                }
-
-                messageTimes.erase(it);
-            }
-        } else {
-            logInfo("[LaserCubeNetDevice] DIFFERENT RESPONSE", static_cast<int>(buffer[0]));
+        if (ec == libera::net::asio::error::timed_out ||
+            ec == libera::net::asio::error::operation_aborted) {
+            break;
         }
-    } else if (received > 0) {
-        logInfo("[LaserCubeNetDevice] message received is greater than 4 bytes", received);
+        if (ec) {
+            logInfo("[LaserCubeNetDevice] ack receive failed", ec.message());
+            break;
+        }
+        ++polls;
+
+        if (sender.address() != dataEndpoint.address() || sender.port() != dataEndpoint.port()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (lastUnexpectedAckSenderLogTime == std::chrono::steady_clock::time_point{} ||
+                (now - lastUnexpectedAckSenderLogTime) > std::chrono::seconds(1)) {
+                logInfo("[LaserCubeNetDevice] ignoring ack from unexpected sender",
+                        sender.address().to_string(), sender.port(),
+                        "expected", dataEndpoint.address().to_string(), dataEndpoint.port());
+                lastUnexpectedAckSenderLogTime = now;
+            }
+            continue;
+        }
+
+        if (received != 4) {
+            if (received > 0) {
+                logInfo("[LaserCubeNetDevice] ack packet unexpected size", received);
+            }
+            continue;
+        }
+
+        if (buffer[0] != LaserCubeNetConfig::CMD_GET_RINGBUFFER_FREE) {
+            logInfo("[LaserCubeNetDevice] DIFFERENT RESPONSE", static_cast<int>(buffer[0]));
+            continue;
+        }
+
+        // Ack layout (byte offsets):
+        //  0: CMD_GET_RINGBUFFER_FREE (0x8A)
+        //  1: messageNumber echoed back
+        //  2: free-space LSB
+        //  3: free-space MSB
+        const std::uint8_t receivedMessageNumber = buffer[1];
+        const auto it = messageTimes.find(receivedMessageNumber);
+        if (it == messageTimes.end()) {
+            continue;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        recordLatencySample(now - it->second);
+        lastAckTime = now;
+        lastAckWarningTime = std::chrono::steady_clock::time_point{};
+
+        const std::uint16_t bufferSpace = read_u16_le(&buffer[2]);
+        // Convert free-space to fullness (capacity - free).
+        const int bufferFullness = getDacTotalPointBufferCapacity() - static_cast<int>(bufferSpace);
+        lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
+        lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
+
+        // If this ack corresponds to the most recent send, anchor the time-sent estimate.
+        if (it->second >= lastDataSentTime) {
+            lastDataSentTime = it->second;
+            lastDataSentBufferSize = bufferFullness;
+        }
+
+        if (bufferSpace == 0) {
+            logInfo("[LaserCubeNetDevice] BUFFER OVERRUN ------------------");
+        }
+
+        messageTimes.erase(it);
     }
 
     if (!messageTimes.empty()) {
@@ -315,6 +369,23 @@ void LaserCubeNetDevice::checkAcks() {
                 it = messageTimes.erase(it);
             } else {
                 ++it;
+            }
+        }
+
+        if (!messageTimes.empty()) {
+            const bool staleAcks = (now - lastAckTime) > std::chrono::seconds(1);
+            const bool shouldLogWait =
+                staleAcks &&
+                (lastAckWarningTime == std::chrono::steady_clock::time_point{} ||
+                 (now - lastAckWarningTime) > std::chrono::seconds(1));
+            if (shouldLogWait) {
+                const auto oldestPending = now - messageTimes.begin()->second;
+                const auto oldestMs =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(oldestPending).count();
+                logInfo("[LaserCubeNetDevice] waiting for ack",
+                        "pending", static_cast<int>(messageTimes.size()),
+                        "oldest_ms", oldestMs);
+                lastAckWarningTime = now;
             }
         }
     }
@@ -360,8 +431,42 @@ std::optional<core::DacBufferState> LaserCubeNetDevice::getBufferState() const {
     core::DacBufferState state;
     state.pointsInBuffer = fullness;
     state.totalBufferPoints = total;
-    state.estimated = true;
     return state;
+}
+
+void LaserCubeNetDevice::recordLatencySample(std::chrono::steady_clock::duration sample) {
+    const double sampleMs =
+        std::chrono::duration<double, std::milli>(sample).count();
+    if (sampleMs < 0.0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(latencySamplesMutex);
+    latencySamplesMs.push_back(sampleMs);
+    while (latencySamplesMs.size() > latencySampleWindow) {
+        latencySamplesMs.pop_front();
+    }
+}
+
+std::optional<core::DacLatencyStats> LaserCubeNetDevice::getLatencyStats() const {
+    std::vector<double> sortedSamples;
+    {
+        std::lock_guard<std::mutex> lock(latencySamplesMutex);
+        if (latencySamplesMs.empty()) {
+            return std::nullopt;
+        }
+        sortedSamples.assign(latencySamplesMs.begin(), latencySamplesMs.end());
+    }
+
+    std::sort(sortedSamples.begin(), sortedSamples.end());
+
+    core::DacLatencyStats stats;
+    stats.sampleCount = sortedSamples.size();
+    stats.p50Ms = percentileFromSortedSamples(sortedSamples, 0.50);
+    stats.p95Ms = percentileFromSortedSamples(sortedSamples, 0.95);
+    stats.p99Ms = percentileFromSortedSamples(sortedSamples, 0.99);
+    stats.maxMs = sortedSamples.back();
+    return stats;
 }
 
 } // namespace libera::lasercubenet

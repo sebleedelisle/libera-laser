@@ -13,6 +13,8 @@ namespace libera::core {
 
 struct Frame {
     std::vector<LaserPoint> points;
+    // Desired first-point presentation time. If left as default (epoch), the
+    // frame will be auto-stamped in sendFrame() using targetRenderLatency().
     std::chrono::steady_clock::time_point time{};
     std::size_t playCount = 0;
     std::size_t nextPoint = 0; // cursor of the next sample to emit
@@ -22,6 +24,20 @@ class LaserDevice : public LaserDeviceBase {
 public:
     LaserDevice();
     virtual ~LaserDevice();
+
+    /**
+     * @brief Set global frame presentation latency used by sendFrame().
+     *
+     * When a frame has an empty timestamp (`Frame::time{}`), sendFrame() will
+     * stamp it to now + this latency so all frame-mode DACs can share one
+     * scheduling target.
+     */
+    static void setTargetRenderLatency(std::chrono::milliseconds latency);
+
+    /**
+     * @brief Get global frame presentation latency used by sendFrame().
+     */
+    static std::chrono::milliseconds targetRenderLatency();
 
     bool sendFrame(Frame&& frame);
     void startFrameMode();
