@@ -174,6 +174,24 @@ protected:
     /// Add one latency sample to the rolling window used by getLatencyStats().
     void recordLatencySample(std::chrono::steady_clock::duration sample);
 
+    /// Set host-estimated device buffer capacity for default getBufferState().
+    void setEstimatedBufferCapacity(int totalBufferPoints);
+
+    /// Clear host-estimated buffer state; default getBufferState() returns nullopt.
+    void clearEstimatedBufferState();
+
+    /// Update the projected buffer anchor used by default getBufferState().
+    /// pointRateValue=0 uses getPointRate() at the time of this call.
+    void updateEstimatedBufferAnchor(
+        int anchorBufferFullness,
+        std::chrono::steady_clock::time_point anchorTime,
+        std::uint32_t pointRateValue = 0);
+
+    /// Convenience overload that stamps the anchor at steady_clock::now().
+    void updateEstimatedBufferAnchorNow(
+        int anchorBufferFullness,
+        std::uint32_t pointRateValue = 0);
+
     /// Estimate current buffer fullness by projecting consumption from an anchor.
     /// If projection is not possible, fallbackBufferFullness is returned.
     int calculateBufferFullnessFromAnchor(
@@ -209,9 +227,17 @@ protected:
     std::atomic<int> startupBlankPointsRemaining{0};
 
 private:
+    using SteadyRep = std::chrono::steady_clock::duration::rep;
+
     static constexpr std::size_t latencySampleWindow = 512;
     mutable std::mutex latencySamplesMutex;
     std::deque<double> latencySamplesMs;
+
+    std::atomic<int> estimatedBufferCapacity{0};
+    std::atomic<int> estimatedBufferAnchorFullness{0};
+    std::atomic<std::uint32_t> estimatedBufferAnchorPointRate{0};
+    std::atomic<SteadyRep> estimatedBufferAnchorTick{0};
+    std::atomic<bool> estimatedBufferAnchorValid{false};
 };
 
 } // namespace libera::core

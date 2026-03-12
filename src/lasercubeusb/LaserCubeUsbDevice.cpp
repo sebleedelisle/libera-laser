@@ -281,13 +281,15 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
     currentPps.store(0, std::memory_order_relaxed);
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
-    lastEstimatedBufferFullness.store(0, std::memory_order_relaxed);
+    setEstimatedBufferCapacity(getDacTotalPointBufferCapacity());
+    updateEstimatedBufferAnchorNow(0, initialRate);
 
     return {};
 }
 
 void LaserCubeUsbDevice::close() {
     usbConnected.store(false, std::memory_order_relaxed);
+    clearEstimatedBufferState();
     usbHandle.reset();
 }
 
@@ -344,7 +346,6 @@ void LaserCubeUsbDevice::waitUntilReadyToSend() {
         static_cast<int>(std::lround((static_cast<double>(rate) * LATENCY_MILLIS) / 1000.0)));
 
     const int bufferFullness = estimateBufferFullness();
-    lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
     const int pointsUntilNeedsRefill = std::max(MIN_PACKET_DATA_SIZE, bufferFullness - minPointsInBuffer);
 
     const double microsPerPoint = 1000000.0 / static_cast<double>(rate);
@@ -379,7 +380,6 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
 
     const int capacity = getDacTotalPointBufferCapacity();
     const int bufferFullness = estimateBufferFullness();
-    lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
     int maxPointsToAdd = capacity - bufferFullness;
     if (maxPointsToAdd <= 0) {
         return true;
@@ -425,6 +425,7 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
     int transferred = 0;
     int rc = 0;
     int retries = 3;
+    const auto sendStartTime = std::chrono::steady_clock::now();
     do {
         rc = libusb_bulk_transfer(
             usbHandle->get(),
@@ -444,17 +445,19 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
         return false;
     }
 
-    lastDataSentTime = std::chrono::steady_clock::now();
-    lastDataSentBufferSize = static_cast<int>(pointsToSend.size());
-    lastEstimatedBufferFullness.store(lastDataSentBufferSize, std::memory_order_relaxed);
+    const auto now = std::chrono::steady_clock::now();
+    const int estimatedAfterSend = clampBufferFullnessToCapacity(
+        bufferFullness + static_cast<int>(pointsToSend.size()),
+        capacity);
+    lastDataSentTime = now;
+    lastDataSentBufferSize = estimatedAfterSend;
+    updateEstimatedBufferAnchor(
+        estimatedAfterSend,
+        now,
+        currentPps.load(std::memory_order_relaxed));
+    recordLatencySample(now - sendStartTime);
 
     return true;
-}
-
-std::optional<core::DacBufferState> LaserCubeUsbDevice::getBufferState() const {
-    return buildBufferState(
-        getDacTotalPointBufferCapacity(),
-        lastEstimatedBufferFullness.load(std::memory_order_relaxed));
 }
 
 } // namespace libera::lasercubeusb

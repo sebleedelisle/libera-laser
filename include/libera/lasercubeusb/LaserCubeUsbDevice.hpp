@@ -8,7 +8,6 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
-#include <optional>
 #include <string>
 
 struct libusb_context;
@@ -26,7 +25,6 @@ public:
     void close();
 
     void setPointRate(std::uint32_t pointRate) override;
-    std::optional<core::DacBufferState> getBufferState() const override;
 
 protected:
     void run() override;
@@ -52,7 +50,6 @@ private:
 
     std::chrono::steady_clock::time_point lastDataSentTime{};
     int lastDataSentBufferSize{0};
-    std::atomic<int> lastEstimatedBufferFullness{0};
 
     core::ByteBuffer packetBuffer;
 };

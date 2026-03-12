@@ -230,7 +230,35 @@ std::uint32_t LaserControllerStreaming::getPointRate() const noexcept {
 }
 
 std::optional<DacBufferState> LaserControllerStreaming::getBufferState() const {
-    return std::nullopt;
+    const int totalBufferPoints =
+        estimatedBufferCapacity.load(std::memory_order_relaxed);
+    if (totalBufferPoints <= 0) {
+        return std::nullopt;
+    }
+
+    if (!estimatedBufferAnchorValid.load(std::memory_order_relaxed)) {
+        return buildBufferState(totalBufferPoints, 0);
+    }
+
+    const int anchorBufferFullness =
+        estimatedBufferAnchorFullness.load(std::memory_order_relaxed);
+    auto anchorPointRate =
+        estimatedBufferAnchorPointRate.load(std::memory_order_relaxed);
+    if (anchorPointRate == 0) {
+        anchorPointRate = getPointRate();
+    }
+
+    const auto anchorTick = estimatedBufferAnchorTick.load(std::memory_order_relaxed);
+    const auto anchorTime = std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration{anchorTick}};
+
+    const int estimatedBufferFullness = calculateBufferFullnessFromAnchor(
+        anchorBufferFullness,
+        anchorTime,
+        anchorPointRate,
+        anchorBufferFullness);
+
+    return buildBufferState(totalBufferPoints, estimatedBufferFullness);
 }
 
 std::optional<DacLatencyStats> LaserControllerStreaming::getLatencyStats() const {
@@ -266,6 +294,40 @@ void LaserControllerStreaming::recordLatencySample(std::chrono::steady_clock::du
     while (latencySamplesMs.size() > latencySampleWindow) {
         latencySamplesMs.pop_front();
     }
+}
+
+void LaserControllerStreaming::setEstimatedBufferCapacity(int totalBufferPoints) {
+    estimatedBufferCapacity.store(std::max(0, totalBufferPoints), std::memory_order_relaxed);
+}
+
+void LaserControllerStreaming::clearEstimatedBufferState() {
+    estimatedBufferAnchorValid.store(false, std::memory_order_relaxed);
+    estimatedBufferCapacity.store(0, std::memory_order_relaxed);
+    estimatedBufferAnchorFullness.store(0, std::memory_order_relaxed);
+    estimatedBufferAnchorPointRate.store(0, std::memory_order_relaxed);
+    estimatedBufferAnchorTick.store(0, std::memory_order_relaxed);
+}
+
+void LaserControllerStreaming::updateEstimatedBufferAnchor(
+    int anchorBufferFullness,
+    std::chrono::steady_clock::time_point anchorTime,
+    std::uint32_t pointRateValue) {
+    estimatedBufferAnchorFullness.store(std::max(0, anchorBufferFullness), std::memory_order_relaxed);
+    if (pointRateValue == 0) {
+        pointRateValue = getPointRate();
+    }
+    estimatedBufferAnchorPointRate.store(pointRateValue, std::memory_order_relaxed);
+    estimatedBufferAnchorTick.store(anchorTime.time_since_epoch().count(), std::memory_order_relaxed);
+    estimatedBufferAnchorValid.store(true, std::memory_order_relaxed);
+}
+
+void LaserControllerStreaming::updateEstimatedBufferAnchorNow(
+    int anchorBufferFullness,
+    std::uint32_t pointRateValue) {
+    updateEstimatedBufferAnchor(
+        anchorBufferFullness,
+        std::chrono::steady_clock::now(),
+        pointRateValue);
 }
 
 int LaserControllerStreaming::calculateBufferFullnessFromAnchor(
