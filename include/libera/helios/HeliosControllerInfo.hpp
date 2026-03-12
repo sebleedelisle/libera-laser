@@ -26,7 +26,7 @@ public:
     int firmwareVersionValue() const { return firmwareVersion; }
 
 private:
-    static inline const std::string typeName{"helios"};
+    static inline const std::string typeName{"Helios"};
 
     unsigned int controllerIndex = 0;
     bool isUsb = false;

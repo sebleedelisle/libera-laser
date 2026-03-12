@@ -41,7 +41,7 @@ private:
     void sendProbe();
     void processResponses();
 
-    static constexpr std::string_view typeName{"lasercube_net"};
+    static constexpr std::string_view typeName{"LaserCubeNet"};
 
     std::shared_ptr<asio::io_context> io;
     std::unique_ptr<net::UdpSocket> socket;

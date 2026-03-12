@@ -27,7 +27,7 @@ public:
     };
 
 private:
-    static constexpr std::string_view typeName{"lasercube_usb"};
+    static constexpr std::string_view typeName{"LaserCubeUSB"};
 
     std::shared_ptr<libusb_context> usbContext;
 

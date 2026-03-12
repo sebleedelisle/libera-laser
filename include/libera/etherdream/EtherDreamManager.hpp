@@ -32,7 +32,7 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
-    static constexpr std::string_view typeName{"etherdream"};
+    static constexpr std::string_view typeName{"EtherDream"};
 
     struct ControllerEntry {
         EtherDreamControllerInfo info;

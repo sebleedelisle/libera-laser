@@ -33,7 +33,7 @@ public:
     void setHardwareVersion(std::string version) { hardwareVersionLabel = std::move(version); }
 
 private:
-    static inline const std::string typeName{"etherdream"};
+    static inline const std::string typeName{"EtherDream"};
 
     std::string ipAddress;
     unsigned short portNumber = 0;

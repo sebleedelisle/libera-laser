@@ -19,7 +19,7 @@ public:
     const std::string& serial() const { return serialNumber; }
 
 private:
-    static inline const std::string typeName{"lasercube_usb"};
+    static inline const std::string typeName{"LaserCubeUSB"};
     std::string serialNumber;
 };
 

@@ -2,7 +2,7 @@
 
 namespace libera::lasercubenet {
 
-const std::string LaserCubeNetControllerInfo::typeName{"lasercube_net"};
+const std::string LaserCubeNetControllerInfo::typeName{"LaserCubeNet"};
 
 LaserCubeNetControllerInfo::LaserCubeNetControllerInfo(const LaserCubeNetStatus& status)
     : core::DacInfo(status.serialNumber, status.modelName.empty() ? status.serialNumber : status.modelName,

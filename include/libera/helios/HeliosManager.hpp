@@ -25,7 +25,7 @@ public:
     };
 
 private:
-    static constexpr std::string_view typeName{"helios"};
+    static constexpr std::string_view typeName{"Helios"};
 
     void openIfNeeded();
     std::size_t refreshControllerCount(bool allowRescan);

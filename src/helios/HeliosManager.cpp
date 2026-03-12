@@ -3,12 +3,71 @@
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <unordered_set>
 
 namespace libera::helios {
 namespace {
 
 std::string makeFallbackLabel(unsigned int index) {
     return "Helios " + std::to_string(index);
+}
+
+std::string sanitizeIdComponent(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (unsigned char ch : text) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(std::tolower(ch)));
+        } else if (ch == ' ' || ch == '-' || ch == '_' || ch == '.') {
+            out.push_back('-');
+        }
+    }
+
+    // Collapse repeated separators.
+    std::string collapsed;
+    collapsed.reserve(out.size());
+    bool previousDash = false;
+    for (char ch : out) {
+        if (ch == '-') {
+            if (!previousDash) {
+                collapsed.push_back(ch);
+            }
+            previousDash = true;
+        } else {
+            collapsed.push_back(ch);
+            previousDash = false;
+        }
+    }
+
+    // Trim leading/trailing separator.
+    while (!collapsed.empty() && collapsed.front() == '-') {
+        collapsed.erase(collapsed.begin());
+    }
+    while (!collapsed.empty() && collapsed.back() == '-') {
+        collapsed.pop_back();
+    }
+    return collapsed;
+}
+
+std::string makeHeliosControllerId(const std::string& label,
+                                   unsigned int index,
+                                   std::unordered_set<std::string>& usedIds) {
+    std::string base = sanitizeIdComponent(label);
+    if (base.empty()) {
+        base = "helios";
+    }
+
+    std::string candidate = base;
+    if (usedIds.find(candidate) != usedIds.end()) {
+        candidate = base + "-" + std::to_string(index);
+    }
+    int suffix = 2;
+    while (usedIds.find(candidate) != usedIds.end()) {
+        candidate = base + "-" + std::to_string(suffix++);
+    }
+    usedIds.insert(candidate);
+    return candidate;
 }
 
 } // namespace
@@ -75,6 +134,7 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
     }
 
     results.reserve(count);
+    std::unordered_set<std::string> usedIds;
     for (unsigned int index = 0; index < count; ++index) {
         const int closed = sdk->GetIsClosed(index);
         if (closed > 0) {
@@ -93,7 +153,7 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
         const bool usbController = isUsb == 1;
         const std::uint32_t maxRate = usbController ? HELIOS_MAX_PPS : HELIOS_MAX_PPS_IDN;
         const int firmware = sdk->GetFirmwareVersion(index);
-        std::string id = "helios-" + std::to_string(index);
+        std::string id = makeHeliosControllerId(label, index, usedIds);
 
         results.emplace_back(std::make_unique<HeliosControllerInfo>(
             std::move(id),
