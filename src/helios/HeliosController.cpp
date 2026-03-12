@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <string>
 #include <thread>
 
 namespace libera::helios {
@@ -13,6 +14,48 @@ constexpr std::size_t DEFAULT_FRAME_POINTS = 1000; // maximum 4096 points
 constexpr std::size_t MIN_FRAME_POINTS = 20;
 
 constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
+
+std::string describeHeliosError(int code) {
+    // libusb errors are encoded as HELIOS_ERROR_LIBUSB_BASE + libusb_error.
+    if (code <= HELIOS_ERROR_LIBUSB_BASE) {
+        const int libusbCode = code - HELIOS_ERROR_LIBUSB_BASE;
+        return std::string("libusb:") + libusb_error_name(libusbCode);
+    }
+
+    switch (code) {
+    case HELIOS_ERROR_DEVICE_CLOSED:
+        return "device_closed";
+    case HELIOS_ERROR_DEVICE_FRAME_READY:
+        return "device_frame_ready";
+    case HELIOS_ERROR_DEVICE_SEND_CONTROL:
+        return "send_control_failed";
+    case HELIOS_ERROR_DEVICE_RESULT:
+        return "device_result_unexpected";
+    case HELIOS_ERROR_DEVICE_NULL_BUFFER:
+        return "device_null_buffer";
+    case HELIOS_ERROR_DEVICE_SIGNAL_TOO_LONG:
+        return "device_signal_too_long";
+    case HELIOS_ERROR_NOT_INITIALIZED:
+        return "not_initialized";
+    case HELIOS_ERROR_INVALID_DEVNUM:
+        return "invalid_device_index";
+    case HELIOS_ERROR_NULL_POINTS:
+        return "null_points";
+    case HELIOS_ERROR_TOO_MANY_POINTS:
+        return "too_many_points";
+    case HELIOS_ERROR_PPS_TOO_HIGH:
+        return "pps_too_high";
+    case HELIOS_ERROR_PPS_TOO_LOW:
+        return "pps_too_low";
+    default:
+        return "unknown";
+    }
+}
+
+bool shouldLogErrorBurst(std::size_t consecutiveCount) {
+    // Always log first failure, then throttle to keep console readable.
+    return consecutiveCount == 1 || (consecutiveCount % 25 == 0);
+}
 
 } // namespace
 
@@ -83,10 +126,19 @@ void HeliosController::run() {
                 std::this_thread::sleep_for(2ms);
                 continue;
             }
-            logError("[HeliosController] status error", status);
+            ++consecutiveStatusErrors;
+            if (shouldLogErrorBurst(consecutiveStatusErrors)) {
+                logError("[HeliosController] status error",
+                         "index", index,
+                         "code", status,
+                         "reason", describeHeliosError(status),
+                         "consecutive", consecutiveStatusErrors,
+                         "is_closed", sdk->GetIsClosed(index));
+            }
             std::this_thread::sleep_for(5ms);
             continue;
         }
+        consecutiveStatusErrors = 0;
 
         if (status == 0) {
             std::this_thread::sleep_for(1ms);
@@ -143,8 +195,18 @@ void HeliosController::run() {
         const auto sendDone = std::chrono::steady_clock::now();
 
         if (result < 0) {
-            logError("[HeliosController] WriteFrameExtended failed", result);
+            ++consecutiveWriteErrors;
+            if (shouldLogErrorBurst(consecutiveWriteErrors)) {
+                logError("[HeliosController] WriteFrameExtended failed",
+                         "index", index,
+                         "code", result,
+                         "reason", describeHeliosError(result),
+                         "consecutive", consecutiveWriteErrors,
+                         "point_count", frameBuffer.size(),
+                         "pps", pps);
+            }
         } else {
+            consecutiveWriteErrors = 0;
             recordLatencySample(sendDone - sendStart);
             setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
             updateEstimatedBufferAnchor(

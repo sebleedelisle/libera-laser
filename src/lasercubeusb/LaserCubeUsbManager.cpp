@@ -21,11 +21,16 @@ std::shared_ptr<libusb_context> createContext() {
         logError("[LaserCubeUsbManager] libusb_init failed", libusb_error_name(rc));
         return {};
     }
-    return std::shared_ptr<libusb_context>(raw, [](libusb_context* ctx) {
-        if (ctx) {
-            libusb_exit(ctx);
-        }
-    });
+
+    // Shutdown strategy:
+    // Helios SDK uses detached libusb worker threads and the default libusb
+    // context. During app teardown that can race with additional libusb_exit()
+    // calls from other managers and crash inside libusb's context list logic.
+    //
+    // Keep the LaserCube USB context process-lifetime instead of explicitly
+    // calling libusb_exit(ctx) during manager destruction. The OS reclaims this
+    // on process exit, and we avoid the teardown race.
+    return std::shared_ptr<libusb_context>(raw, [](libusb_context*) {});
 }
 
 bool isLaserCubeUsb(const libusb_device_descriptor& descriptor) {

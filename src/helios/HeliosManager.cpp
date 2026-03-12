@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <unordered_set>
 
 namespace libera::helios {
@@ -12,6 +13,19 @@ namespace {
 
 std::string makeFallbackLabel(unsigned int index) {
     return "Helios " + std::to_string(index);
+}
+
+bool isSdkFallbackUnknownLabel(const char* label) {
+    if (label == nullptr || label[0] == '\0') {
+        return false;
+    }
+
+    // The bundled Helios SDK synthesizes "Unknown Helios NN" and still returns
+    // HELIOS_SUCCESS when GetName() control traffic fails. Treat that label as
+    // non-authoritative so we do not churn stable IDs during transient USB errors.
+    constexpr const char kUnknownPrefix[] = "Unknown Helios ";
+    constexpr std::size_t kPrefixLen = sizeof(kUnknownPrefix) - 1;
+    return std::strncmp(label, kUnknownPrefix, kPrefixLen) == 0;
 }
 
 std::string sanitizeIdComponent(const std::string& text) {
@@ -131,25 +145,71 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
 
     results.reserve(count);
     std::unordered_set<std::string> usedIds;
+    std::unordered_set<unsigned int> seenIndices;
     for (unsigned int index = 0; index < count; ++index) {
         const int closed = sdk->GetIsClosed(index);
         if (closed > 0) {
             continue;
         }
+        seenIndices.insert(index);
 
         char name[32] = {};
         std::string label;
-        if (sdk->GetName(index, name) == HELIOS_SUCCESS) {
-            label = name;
-        } else {
+        // Strategy:
+        // while an active controller is streaming, avoid repeated GetName()
+        // control transfers every discovery tick. We only probe name eagerly
+        // when no active stream exists or we have no cached label yet.
+        bool attemptedFreshNameRead = false;
+        const bool needsNameRead =
+            (!hasActive) || (stableLabelByIndex.find(index) == stableLabelByIndex.end());
+        if (needsNameRead) {
+            attemptedFreshNameRead = true;
+            if (sdk->GetName(index, name) == HELIOS_SUCCESS &&
+                name[0] != '\0' &&
+                !isSdkFallbackUnknownLabel(name)) {
+                label = name;
+                stableLabelByIndex[index] = label;
+            }
+        }
+
+        if (label.empty()) {
+            auto cachedLabel = stableLabelByIndex.find(index);
+            if (cachedLabel != stableLabelByIndex.end()) {
+                label = cachedLabel->second;
+            }
+        }
+
+        if (label.empty()) {
             label = makeFallbackLabel(index);
+            if (attemptedFreshNameRead) {
+                logInfo("[HeliosManager] falling back to synthetic label",
+                        "index", index,
+                        "label", label,
+                        "sdk_name", name[0] == '\0' ? "<empty>" : std::string(name));
+            }
+        } else {
+            stableLabelByIndex[index] = label;
         }
 
         const int isUsb = sdk->GetIsUsb(index);
         const bool usbController = isUsb == 1;
         const std::uint32_t maxRate = usbController ? HELIOS_MAX_PPS : HELIOS_MAX_PPS_IDN;
         const int firmware = sdk->GetFirmwareVersion(index);
-        std::string id = makeHeliosControllerId(label, index, usedIds);
+        std::string id;
+        auto cachedId = stableIdByIndex.find(index);
+        if (cachedId != stableIdByIndex.end()) {
+            id = cachedId->second;
+            if (usedIds.find(id) == usedIds.end()) {
+                usedIds.insert(id);
+            } else {
+                // Very defensive: if a duplicate sneaks in, regenerate once.
+                id = makeHeliosControllerId(label, index, usedIds);
+                stableIdByIndex[index] = id;
+            }
+        } else {
+            id = makeHeliosControllerId(label, index, usedIds);
+            stableIdByIndex[index] = id;
+        }
 
         results.emplace_back(std::make_unique<HeliosControllerInfo>(
             std::move(id),
@@ -158,6 +218,22 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
             index,
             usbController,
             firmware));
+    }
+
+    // Drop stale cache entries for devices no longer present in current scan.
+    for (auto it = stableIdByIndex.begin(); it != stableIdByIndex.end();) {
+        if (seenIndices.find(it->first) == seenIndices.end()) {
+            it = stableIdByIndex.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = stableLabelByIndex.begin(); it != stableLabelByIndex.end();) {
+        if (seenIndices.find(it->first) == seenIndices.end()) {
+            it = stableLabelByIndex.erase(it);
+        } else {
+            ++it;
+        }
     }
 
     return results;
@@ -206,6 +282,8 @@ void HeliosManager::closeAll() {
 
     opened = false;
     controllerCount = 0;
+    stableIdByIndex.clear();
+    stableLabelByIndex.clear();
 }
 
 } // namespace libera::helios
