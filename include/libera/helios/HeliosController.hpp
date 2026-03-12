@@ -31,6 +31,10 @@ private:
     std::atomic<std::size_t> targetFramePoints{1000};
     std::atomic<std::uint64_t> currentPointIndex{0};
     std::vector<HeliosPointExt> frameBuffer;
+
+    // Simple counters used for log throttling and health diagnostics.
+    std::size_t consecutiveStatusErrors = 0;
+    std::size_t consecutiveWriteErrors = 0;
 };
 
 } // namespace libera::helios

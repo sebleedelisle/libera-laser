@@ -36,6 +36,11 @@ private:
 
     std::mutex activeMutex;
     std::unordered_map<unsigned int, std::weak_ptr<HeliosController>> activeControllers;
+
+    // Keep IDs/labels stable across transient SDK name-read failures so a
+    // briefly unhealthy USB control channel doesn't churn device identity.
+    std::unordered_map<unsigned int, std::string> stableIdByIndex;
+    std::unordered_map<unsigned int, std::string> stableLabelByIndex;
 };
 
 } // namespace libera::helios
