@@ -128,10 +128,14 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
         return;
     }
 
-    // If one or more queued "next" frames are already due at this render time,
-    // drop older frames and promote the newest due one. This keeps playback
-    // aligned with the current schedule while avoiding stale frame buildup.
+    // If newer frames are already due, we can skip stale queued frames, but we
+    // only do that before playback of the current frame has started. Skipping a
+    // frame mid-play causes visible "half-frame" truncation.
     while (frameQueue.size() > 1) {
+        const auto& current = frameQueue.front();
+        if (current->nextPoint != 0) {
+            break;
+        }
         const auto& queuedNext = frameQueue[1];
         if (!frameIsDueAt(*queuedNext, estimatedFirstRenderTime)) {
             break;

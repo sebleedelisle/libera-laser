@@ -143,16 +143,13 @@ bool LaserCubeNetController::sendPointsToDac() {
                 0));
     lastEstimatedBufferFullness.store(minEstimatedBufferFullness, std::memory_order_relaxed);
     const int latencyPointAdjustment = 300;
-    int maxPointsToAdd = std::max(0, getDacTotalPointBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
+    int maxPointsToAdd = std::max(
+        0,
+        getDacTotalPointBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
 
     const int maxPointsInPacket = static_cast<int>(LaserCubeNetConfig::MAX_POINTS_PER_PACKET);
 
     if (maxPointsToAdd <= 0) {
-        return true;
-    }
-
-    // Only request points when we have space for a full packet.
-    if (maxPointsToAdd < maxPointsInPacket) {
         return true;
     }
 
@@ -161,9 +158,14 @@ bool LaserCubeNetController::sendPointsToDac() {
     }
 
     core::PointFillRequest request{};
-    const int minPointsToAdd = maxPointsToAdd;
-    request.minimumPointsRequired = static_cast<std::size_t>(minPointsToAdd);
+    // Ask for up to the available room, but keep the hard minimum small so a
+    // frame can finish naturally instead of being padded to packet size.
+    request.minimumPointsRequired = 1;
     request.maximumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
+    const auto renderLead = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double, std::milli>(
+            pointsToMillis(static_cast<std::size_t>(minEstimatedBufferFullness), activePps)));
+    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now() + renderLead;
 
     if (!requestPoints(request)) {
         return false;
