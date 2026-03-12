@@ -38,8 +38,6 @@ private:
     bool sendCommand(std::uint8_t cmd, const std::uint8_t* payload, std::size_t size);
     void checkAcks();
 
-    int calculateBufferFullnessByTimeSent();
-    int calculateBufferFullnessByTimeAcked();
     int getDacTotalPointBufferCapacity() const;
 
     std::shared_ptr<asio::io_context> io;

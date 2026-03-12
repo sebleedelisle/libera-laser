@@ -1,4 +1,5 @@
 #include "libera/core/LaserControllerStreaming.hpp"
+#include "libera/core/BufferEstimator.hpp"
 #include "libera/log/Log.hpp"
 #include <cassert>
 #include <algorithm>
@@ -267,6 +268,36 @@ void LaserControllerStreaming::recordLatencySample(std::chrono::steady_clock::du
     }
 }
 
+int LaserControllerStreaming::calculateBufferFullnessFromAnchor(
+    int anchorBufferFullness,
+    std::chrono::steady_clock::time_point anchorTime,
+    std::uint32_t pointRate,
+    int fallbackBufferFullness,
+    bool* projected) const {
+    const auto estimate = BufferEstimator::estimateFromAnchor(
+        anchorBufferFullness,
+        anchorTime,
+        pointRate);
+
+    if (projected) {
+        *projected = estimate.projected;
+    }
+
+    if (!estimate.projected) {
+        return std::max(0, fallbackBufferFullness);
+    }
+    return std::max(0, estimate.bufferFullness);
+}
+
+int LaserControllerStreaming::clampBufferFullnessToCapacity(
+    int pointsInBuffer,
+    int totalBufferPoints) {
+    if (totalBufferPoints <= 0) {
+        return 0;
+    }
+    return std::clamp(pointsInBuffer, 0, totalBufferPoints);
+}
+
 std::optional<DacBufferState> LaserControllerStreaming::buildBufferState(
     int totalBufferPoints,
     int pointsInBuffer) {
@@ -276,7 +307,7 @@ std::optional<DacBufferState> LaserControllerStreaming::buildBufferState(
 
     DacBufferState state;
     state.totalBufferPoints = totalBufferPoints;
-    state.pointsInBuffer = std::clamp(pointsInBuffer, 0, totalBufferPoints);
+    state.pointsInBuffer = clampBufferFullnessToCapacity(pointsInBuffer, totalBufferPoints);
     return state;
 }
 

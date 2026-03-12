@@ -356,20 +356,12 @@ void LaserCubeUsbDevice::waitUntilReadyToSend() {
 }
 
 int LaserCubeUsbDevice::estimateBufferFullness() const {
-    if (lastDataSentTime == std::chrono::steady_clock::time_point{}) {
-        return 0;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = std::chrono::duration<double>(now - lastDataSentTime).count();
     const auto rate = currentPps.load(std::memory_order_relaxed);
-    if (rate == 0) {
-        return 0;
-    }
-
-    const double consumed = elapsed * static_cast<double>(rate);
-    const int estimated = static_cast<int>(std::lround(static_cast<double>(lastDataSentBufferSize) - consumed));
-    return std::max(0, estimated);
+    return calculateBufferFullnessFromAnchor(
+        lastDataSentBufferSize,
+        lastDataSentTime,
+        rate,
+        0);
 }
 
 int LaserCubeUsbDevice::getDacTotalPointBufferCapacity() const {

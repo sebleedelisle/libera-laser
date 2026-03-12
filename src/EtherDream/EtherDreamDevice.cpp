@@ -458,18 +458,21 @@ expected<DacAck> EtherDreamDevice::sendPing() {
 }
 
 int EtherDreamDevice::estimateBufferFullness() const {
-    const auto estimate = core::BufferEstimator::estimateFromAnchor(
+    bool projected = false;
+    const int estimated = calculateBufferFullnessFromAnchor(
         lastKnownStatus.bufferFullness,
         lastReceiveTime,
-        lastKnownStatus.pointRate);
-    if (!estimate.projected) {
+        lastKnownStatus.pointRate,
+        lastKnownStatus.bufferFullness,
+        &projected);
+    if (!projected) {
         lastEstimatedBufferFullness.store(lastKnownStatus.bufferFullness, std::memory_order_relaxed);
         lastBufferEstimateProjected.store(false, std::memory_order_relaxed);
         return lastKnownStatus.bufferFullness;
     }
 
     const int bufferSize = getBufferSize();
-    const int clamped = std::clamp(estimate.bufferFullness, 0, bufferSize);
+    const int clamped = clampBufferFullnessToCapacity(estimated, bufferSize);
     lastEstimatedBufferFullness.store(clamped, std::memory_order_relaxed);
     lastKnownBufferCapacity.store(bufferSize, std::memory_order_relaxed);
     lastBufferEstimateProjected.store(true, std::memory_order_relaxed);

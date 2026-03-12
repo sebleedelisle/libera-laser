@@ -1,6 +1,5 @@
 #include "libera/lasercubenet/LaserCubeNetDevice.hpp"
 
-#include "libera/core/BufferEstimator.hpp"
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/log/Log.hpp"
 
@@ -145,9 +144,21 @@ bool LaserCubeNetDevice::sendPointsToDac() {
     // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
+    const auto activePps = pps.load(std::memory_order_relaxed);
+
     // Estimate how full the device buffer is right now.
     const int minEstimatedBufferFullness =
-        std::max(calculateBufferFullnessByTimeSent(), calculateBufferFullnessByTimeAcked());
+        std::max(
+            calculateBufferFullnessFromAnchor(
+                lastDataSentBufferSize,
+                lastDataSentTime,
+                activePps,
+                0),
+            calculateBufferFullnessFromAnchor(
+                lastReportedBufferFullness.load(std::memory_order_relaxed),
+                lastAckTime,
+                activePps,
+                0));
     lastEstimatedBufferFullness.store(minEstimatedBufferFullness, std::memory_order_relaxed);
     const int latencyPointAdjustment = 300;
     int maxPointsToAdd = std::max(0, getDacTotalPointBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
@@ -372,28 +383,6 @@ void LaserCubeNetDevice::checkAcks() {
             }
         }
     }
-}
-
-int LaserCubeNetDevice::calculateBufferFullnessByTimeSent() {
-    const auto estimate = core::BufferEstimator::estimateFromAnchor(
-        lastDataSentBufferSize,
-        lastDataSentTime,
-        pps.load(std::memory_order_relaxed));
-    if (!estimate.projected) {
-        return 0;
-    }
-    return estimate.bufferFullness;
-}
-
-int LaserCubeNetDevice::calculateBufferFullnessByTimeAcked() {
-    const auto estimate = core::BufferEstimator::estimateFromAnchor(
-        lastReportedBufferFullness.load(std::memory_order_relaxed),
-        lastAckTime,
-        pps.load(std::memory_order_relaxed));
-    if (!estimate.projected) {
-        return 0;
-    }
-    return estimate.bufferFullness;
 }
 
 int LaserCubeNetDevice::getDacTotalPointBufferCapacity() const {

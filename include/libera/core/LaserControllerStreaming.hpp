@@ -174,6 +174,18 @@ protected:
     /// Add one latency sample to the rolling window used by getLatencyStats().
     void recordLatencySample(std::chrono::steady_clock::duration sample);
 
+    /// Estimate current buffer fullness by projecting consumption from an anchor.
+    /// If projection is not possible, fallbackBufferFullness is returned.
+    int calculateBufferFullnessFromAnchor(
+        int anchorBufferFullness,
+        std::chrono::steady_clock::time_point anchorTime,
+        std::uint32_t pointRate,
+        int fallbackBufferFullness,
+        bool* projected = nullptr) const;
+
+    static int clampBufferFullnessToCapacity(int pointsInBuffer,
+                                             int totalBufferPoints);
+
     /// Shared helper for devices that expose point-buffer fullness.
     static std::optional<DacBufferState> buildBufferState(int totalBufferPoints,
                                                           int pointsInBuffer);
