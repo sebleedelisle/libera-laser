@@ -13,7 +13,7 @@ The project uses a permissive license and is intended for broad adoption in lase
 
 ## Overview
 
-The library discovers laser controllers on the system and provides a list of available devices. You can then instantiate one or more devices and stream points in either streaming or frame mode.
+The library discovers laser controllers on the system and provides a list of available controllers. You can then instantiate one or more controllers and stream points in either streaming or frame mode.
 
 ## Include patterns
 
@@ -32,13 +32,13 @@ Selective (register only chosen managers):
 ```
 
 ### Streaming mode
-Streaming mode is inspired by audio engines: you provide a callback, and the device requests points when it needs more data. The callback receives:
+Streaming mode is inspired by audio engines: you provide a callback, and the controller requests points when it needs more data. The callback receives:
 - A minimum number of points required to keep playback smooth.
-- A maximum number of points the device can accept.
+- A maximum number of points the controller can accept.
 - An estimated timestamp for when the first point will be rendered.
 
 ### Frame mode
-Frame mode is built into the `LaserController` base class. You can enqueue frames, query whether the device is ready for another frame, and let the frame management system feed the streaming callback internally.
+Frame mode is built into the `LaserController` base class. You can enqueue frames, query whether the controller is ready for another frame, and let the frame management system feed the streaming callback internally.
 
 ## Build
 
@@ -78,7 +78,7 @@ Other options:
 ctest --preset debug
 ```
 
-Integration/hardware tests require enabling their options and may need actual devices on the network.
+Integration/hardware tests require enabling their options and may need actual controllers on the network.
 
 
 

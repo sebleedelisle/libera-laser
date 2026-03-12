@@ -1,4 +1,4 @@
-#include "libera/lasercubeusb/LaserCubeUsbDevice.hpp"
+#include "libera/lasercubeusb/LaserCubeUsbController.hpp"
 
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbConfig.hpp"
@@ -18,12 +18,12 @@
 
 namespace libera::lasercubeusb {
 
-class UsbDeviceHandle {
+class UsbControllerHandle {
 public:
-    explicit UsbDeviceHandle(libusb_device* device) {
-        int rc = libusb_open(device, &handle);
+    explicit UsbControllerHandle(libusb_device* controller) {
+        int rc = libusb_open(controller, &handle);
         if (rc != 0 || !handle) {
-            throw std::runtime_error(std::string("Failed to open USB device: ") + libusb_error_name(rc));
+            throw std::runtime_error(std::string("Failed to open USB controller: ") + libusb_error_name(rc));
         }
 
         claimInterface(0);
@@ -35,7 +35,7 @@ public:
         }
     }
 
-    ~UsbDeviceHandle() {
+    ~UsbControllerHandle() {
         releaseInterface(0);
         releaseInterface(1);
         if (handle) {
@@ -61,7 +61,7 @@ private:
         }
         const int rc = libusb_release_interface(handle, iface);
         if (rc != 0) {
-            logError("[LaserCubeUsbDevice] Failed to release interface", iface, libusb_error_name(rc));
+            logError("[LaserCubeUsbController] Failed to release interface", iface, libusb_error_name(rc));
         }
     }
 
@@ -159,27 +159,17 @@ bool send_raw(libusb_device_handle* handle, const std::uint8_t* request, std::ui
     return true;
 }
 
-std::uint16_t encodeCoord(float value) {
-    const float clamped = std::clamp((value + 1.0f) * 0.5f, 0.0f, 1.0f);
-    return static_cast<std::uint16_t>(std::lround(clamped * 4095.0f));
-}
-
-std::uint8_t encodeColour8(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
-    return static_cast<std::uint8_t>(std::lround(clamped * 255.0f));
-}
-
 } // namespace
 
-LaserCubeUsbDevice::LaserCubeUsbDevice(std::shared_ptr<libusb_context> context)
+LaserCubeUsbController::LaserCubeUsbController(std::shared_ptr<libusb_context> context)
     : usbContext(std::move(context)) {}
 
-LaserCubeUsbDevice::~LaserCubeUsbDevice() {
+LaserCubeUsbController::~LaserCubeUsbController() {
     stop();
     close();
 }
 
-libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo& info) {
+libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControllerInfo& info) {
     if (!usbContext) {
         return libera::unexpected(std::make_error_code(std::errc::not_connected));
     }
@@ -190,12 +180,12 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
         return libera::unexpected(std::make_error_code(std::errc::io_error));
     }
 
-    std::unique_ptr<UsbDeviceHandle> matchedHandle;
+    std::unique_ptr<UsbControllerHandle> matchedHandle;
     bool foundSerial = false;
     for (ssize_t i = 0; i < count; ++i) {
-        libusb_device* device = deviceList[i];
+        libusb_device* controller = deviceList[i];
         libusb_device_descriptor descriptor{};
-        if (libusb_get_device_descriptor(device, &descriptor) != 0) {
+        if (libusb_get_device_descriptor(controller, &descriptor) != 0) {
             continue;
         }
         if (descriptor.idVendor != LaserCubeUsbConfig::VENDOR_ID ||
@@ -206,7 +196,7 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
             continue;
         }
         libusb_device_handle* handle = nullptr;
-        if (libusb_open(device, &handle) != 0 || !handle) {
+        if (libusb_open(controller, &handle) != 0 || !handle) {
             continue;
         }
         unsigned char buffer[256] = {};
@@ -219,10 +209,10 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
         if (serial == info.serial()) {
             foundSerial = true;
             try {
-                matchedHandle = std::make_unique<UsbDeviceHandle>(device);
+                matchedHandle = std::make_unique<UsbControllerHandle>(controller);
                 serialNumber = serial;
             } catch (const std::exception& ex) {
-                logError("[LaserCubeUsbDevice] USB open failed", ex.what());
+                logError("[LaserCubeUsbController] USB open failed", ex.what());
             }
             break;
         }
@@ -239,7 +229,7 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
     usbHandle = std::move(matchedHandle);
 
     if (!send_uint8(usbHandle->get(), 0x80, 0x01)) {
-        logError("[LaserCubeUsbDevice] Failed to enable output");
+        logError("[LaserCubeUsbController] Failed to enable output");
     }
 
     std::uint32_t maxRate = 0;
@@ -287,13 +277,13 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
     return {};
 }
 
-void LaserCubeUsbDevice::close() {
+void LaserCubeUsbController::close() {
     usbConnected.store(false, std::memory_order_relaxed);
     clearEstimatedBufferState();
     usbHandle.reset();
 }
 
-void LaserCubeUsbDevice::setPointRate(std::uint32_t pointRateValue) {
+void LaserCubeUsbController::setPointRate(std::uint32_t pointRateValue) {
     auto maxRate = maxPointRate.load(std::memory_order_relaxed);
     if (maxRate > 0 && pointRateValue > maxRate) {
         pointRateValue = maxRate;
@@ -303,7 +293,7 @@ void LaserCubeUsbDevice::setPointRate(std::uint32_t pointRateValue) {
     targetPps.store(pointRateValue, std::memory_order_relaxed);
 }
 
-void LaserCubeUsbDevice::run() {
+void LaserCubeUsbController::run() {
     using namespace std::chrono_literals;
 
     resetStartupBlank();
@@ -328,14 +318,14 @@ void LaserCubeUsbDevice::run() {
     }
 }
 
-bool LaserCubeUsbDevice::sendPointRate(std::uint32_t rate) {
+bool LaserCubeUsbController::sendPointRate(std::uint32_t rate) {
     if (!usbHandle) {
         return false;
     }
     return send_uint32(usbHandle->get(), 0x82, rate);
 }
 
-void LaserCubeUsbDevice::waitUntilReadyToSend() {
+void LaserCubeUsbController::waitUntilReadyToSend() {
     const auto rate = static_cast<int>(currentPps.load(std::memory_order_relaxed));
     if (rate == 0) {
         return;
@@ -356,7 +346,7 @@ void LaserCubeUsbDevice::waitUntilReadyToSend() {
     }
 }
 
-int LaserCubeUsbDevice::estimateBufferFullness() const {
+int LaserCubeUsbController::estimateBufferFullness() const {
     const auto rate = currentPps.load(std::memory_order_relaxed);
     return calculateBufferFullnessFromAnchor(
         lastDataSentBufferSize,
@@ -365,11 +355,11 @@ int LaserCubeUsbDevice::estimateBufferFullness() const {
         0);
 }
 
-int LaserCubeUsbDevice::getDacTotalPointBufferCapacity() const {
+int LaserCubeUsbController::getDacTotalPointBufferCapacity() const {
     return LaserCubeUsbConfig::BUFFER_CAPACITY;
 }
 
-bool LaserCubeUsbDevice::sendPointsToDac() {
+bool LaserCubeUsbController::sendPointsToDac() {
     if (!usbHandle) {
         return false;
     }
@@ -408,11 +398,11 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
 
     packetBuffer.clear();
     for (const auto& pt : pointsToSend) {
-        const std::uint16_t x = encodeCoord(pt.x);
-        const std::uint16_t y = encodeCoord(pt.y);
-        const std::uint8_t r = encodeColour8(pt.r);
-        const std::uint8_t g = encodeColour8(pt.g);
-        const std::uint8_t b = encodeColour8(pt.b);
+        const std::uint16_t x = encodeUnsigned12FromSignedUnit(pt.x);
+        const std::uint16_t y = encodeUnsigned12FromSignedUnit(pt.y);
+        const std::uint8_t r = encodeUnsigned8FromUnit(pt.r);
+        const std::uint8_t g = encodeUnsigned8FromUnit(pt.g);
+        const std::uint8_t b = encodeUnsigned8FromUnit(pt.b);
         const std::uint16_t rg = static_cast<std::uint16_t>(r) | (static_cast<std::uint16_t>(g) << 8);
         const std::uint16_t bpacked = static_cast<std::uint16_t>(b);
 
@@ -440,7 +430,7 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
     } while (rc == LIBUSB_ERROR_TIMEOUT && retries > 0);
 
     if (rc != 0 || transferred != static_cast<int>(packetBuffer.size())) {
-        logError("[LaserCubeUsbDevice] send failed", libusb_error_name(rc));
+        logError("[LaserCubeUsbController] send failed", libusb_error_name(rc));
         usbConnected.store(false, std::memory_order_relaxed);
         return false;
     }

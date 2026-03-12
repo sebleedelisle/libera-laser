@@ -32,25 +32,25 @@ void HeliosManager::openIfNeeded() {
 
     const int count = sdk->OpenDevicesOnlyUsb();
     opened = true;
-    deviceCount = count > 0 ? static_cast<std::size_t>(count) : 0;
+    controllerCount = count > 0 ? static_cast<std::size_t>(count) : 0;
 }
 
-std::size_t HeliosManager::refreshDeviceCount(bool allowRescan) {
+std::size_t HeliosManager::refreshControllerCount(bool allowRescan) {
     openIfNeeded();
     if (!sdk) {
-        deviceCount = 0;
-        return deviceCount;
+        controllerCount = 0;
+        return controllerCount;
     }
 
     if (!allowRescan) {
-        return deviceCount;
+        return controllerCount;
     }
 
     const int count = sdk->ReScanDevicesOnlyUsb();
     if (count > 0) {
-        deviceCount = static_cast<std::size_t>(count);
+        controllerCount = static_cast<std::size_t>(count);
     }
-    return deviceCount;
+    return controllerCount;
 }
 
 std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
@@ -59,9 +59,9 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
     bool hasActive = false;
     {
         std::lock_guard lock(activeMutex);
-        for (auto it = activeDevices.begin(); it != activeDevices.end();) {
+        for (auto it = activeControllers.begin(); it != activeControllers.end();) {
             if (it->second.expired()) {
-                it = activeDevices.erase(it);
+                it = activeControllers.erase(it);
             } else {
                 hasActive = true;
                 ++it;
@@ -69,7 +69,7 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
         }
     }
 
-    const auto count = refreshDeviceCount(!hasActive);
+    const auto count = refreshControllerCount(!hasActive);
     if (!sdk || count == 0) {
         return results;
     }
@@ -90,17 +90,17 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
         }
 
         const int isUsb = sdk->GetIsUsb(index);
-        const bool usbDevice = isUsb == 1;
-        const std::uint32_t maxRate = usbDevice ? HELIOS_MAX_PPS : HELIOS_MAX_PPS_IDN;
+        const bool usbController = isUsb == 1;
+        const std::uint32_t maxRate = usbController ? HELIOS_MAX_PPS : HELIOS_MAX_PPS_IDN;
         const int firmware = sdk->GetFirmwareVersion(index);
         std::string id = "helios-" + std::to_string(index);
 
-        results.emplace_back(std::make_unique<HeliosDeviceInfo>(
+        results.emplace_back(std::make_unique<HeliosControllerInfo>(
             std::move(id),
             std::move(label),
             maxRate,
             index,
-            usbDevice,
+            usbController,
             firmware));
     }
 
@@ -109,46 +109,46 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
 
 std::shared_ptr<core::LaserController>
 HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
-    const auto* heliosInfo = dynamic_cast<const HeliosDeviceInfo*>(&info);
+    const auto* heliosInfo = dynamic_cast<const HeliosControllerInfo*>(&info);
     if (!heliosInfo) {
         return nullptr;
     }
 
-    std::shared_ptr<HeliosDevice> device;
+    std::shared_ptr<HeliosController> controller;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeDevices.find(heliosInfo->index());
-        if (it != activeDevices.end()) {
+        auto it = activeControllers.find(heliosInfo->index());
+        if (it != activeControllers.end()) {
             if (auto existing = it->second.lock()) {
-                device = existing;
+                controller = existing;
             } else {
-                activeDevices.erase(it);
+                activeControllers.erase(it);
             }
         }
 
-        if (!device) {
-            device = std::make_shared<HeliosDevice>(sdk, heliosInfo->index());
-            activeDevices[heliosInfo->index()] = device;
+        if (!controller) {
+            controller = std::make_shared<HeliosController>(sdk, heliosInfo->index());
+            activeControllers[heliosInfo->index()] = controller;
         }
     }
 
-    if (device) {
-        device->start();
+    if (controller) {
+        controller->start();
     }
 
-    return device;
+    return controller;
 }
 
 void HeliosManager::closeAll() {
-    std::unordered_map<unsigned int, std::shared_ptr<HeliosDevice>> snapshot;
+    std::unordered_map<unsigned int, std::shared_ptr<HeliosController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [index, weak] : activeDevices) {
+        for (auto& [index, weak] : activeControllers) {
             if (auto dev = weak.lock()) {
                 snapshot.emplace(index, std::move(dev));
             }
         }
-        activeDevices.clear();
+        activeControllers.clear();
     }
 
     for (auto& [index, dev] : snapshot) {
@@ -162,7 +162,7 @@ void HeliosManager::closeAll() {
     }
 
     opened = false;
-    deviceCount = 0;
+    controllerCount = 0;
 }
 
 } // namespace libera::helios

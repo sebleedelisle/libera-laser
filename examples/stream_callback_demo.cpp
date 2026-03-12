@@ -11,11 +11,11 @@ using namespace libera;
 
 namespace {
 
-void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& device) {
+void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& controller) {
     // Register a callback that continuously feeds a coloured circle to the DAC.
     // The lambda keeps all state internally (static precomputed points + cursor)
     // so the outer application only has to install it once.
-    device->setRequestPointsCallback(
+    controller->setRequestPointsCallback(
         [](const core::PointFillRequest& req, std::vector<core::LaserPoint>& out) {
 
             // Precompute the actual circle once and reuse it for every invocation.
@@ -127,7 +127,7 @@ int main() {
     } while (std::chrono::steady_clock::now() - discoveryStart < discoveryTimeout);
 
     if (results.empty()) {
-        logError("No  devices discovered after timeout.");
+        logError("No  controllers discovered after timeout.");
         return 1;
     }
 

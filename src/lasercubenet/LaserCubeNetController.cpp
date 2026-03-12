@@ -1,51 +1,38 @@
-#include "libera/lasercubenet/LaserCubeNetDevice.hpp"
+#include "libera/lasercubenet/LaserCubeNetController.hpp"
 
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <thread>
 
 namespace libera::lasercubenet {
 namespace {
-inline std::uint16_t encodeCoord(float value) {
-    // LaserCube expects 12-bit unsigned coordinates (0..0x0FFF) mapped from -1..1.
-    const float clamped = std::clamp((value + 1.0f) * 0.5f, 0.0f, 1.0f);
-    return static_cast<std::uint16_t>(std::round(clamped * 0x0FFF));
-}
-
-inline std::uint16_t encodeColour(float value) {
-    // LaserCube uses 12-bit unsigned colour channels.
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
-    return static_cast<std::uint16_t>(std::round(clamped * 0x0FFF));
-}
-
 inline std::uint16_t read_u16_le(const std::uint8_t* data) {
     return static_cast<std::uint16_t>(data[0]) |
            (static_cast<std::uint16_t>(data[1]) << 8);
 }
 }
 
-LaserCubeNetDevice::LaserCubeNetDevice() {
+LaserCubeNetController::LaserCubeNetController() {
     // Reuse the shared IO context so sockets share the same network thread.
     io = net::shared_io_context();
 }
 
-LaserCubeNetDevice::LaserCubeNetDevice(LaserCubeNetDeviceInfo info)
-    : LaserCubeNetDevice() {
+LaserCubeNetController::LaserCubeNetController(LaserCubeNetControllerInfo info)
+    : LaserCubeNetController() {
     ipAddress = info.ipAddress();
 }
 
-LaserCubeNetDevice::~LaserCubeNetDevice() {
+LaserCubeNetController::~LaserCubeNetController() {
     stop();
     close();
 }
 
-libera::expected<void> LaserCubeNetDevice::connect(const LaserCubeNetDeviceInfo& info) {
+libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControllerInfo& info) {
     ipAddress = info.ipAddress();
-    // Start with the device-reported point rate; callers can override via setPointRate().
+    // Start with the controller-reported point rate; callers can override via setPointRate().
     pps.store(info.status().pointRate, std::memory_order_relaxed);
     newPps.store(info.status().pointRate, std::memory_order_relaxed);
     maxPointRate.store(info.status().pointRateMax, std::memory_order_relaxed);
@@ -93,7 +80,7 @@ libera::expected<void> LaserCubeNetDevice::connect(const LaserCubeNetDeviceInfo&
     return {};
 }
 
-void LaserCubeNetDevice::close() {
+void LaserCubeNetController::close() {
     networkConnected.store(false, std::memory_order_relaxed);
     if (dataSocket) {
         dataSocket->close();
@@ -103,12 +90,12 @@ void LaserCubeNetDevice::close() {
     }
 }
 
-void LaserCubeNetDevice::run() {
+void LaserCubeNetController::run() {
     using namespace std::chrono_literals;
 
     while (running.load()) {
         if (networkConnected.load(std::memory_order_relaxed)) {
-            // Push point-rate changes down to the device when requested.
+            // Push point-rate changes down to the controller when requested.
             const auto targetPps = newPps.load(std::memory_order_relaxed);
             const auto currentPps = pps.load(std::memory_order_relaxed);
             if (targetPps != currentPps) {
@@ -122,12 +109,12 @@ void LaserCubeNetDevice::run() {
             checkAcks();
         }
 
-        // Avoid a busy loop when the device cannot accept more data yet.
+        // Avoid a busy loop when the controller cannot accept more data yet.
         std::this_thread::sleep_for(1ms);
     }
 }
 
-void LaserCubeNetDevice::setPointRate(std::uint32_t pointRateValue) {
+void LaserCubeNetController::setPointRate(std::uint32_t pointRateValue) {
     core::LaserControllerStreaming::setPointRate(pointRateValue);
     if (pointRateValue > maxPointRate.load(std::memory_order_relaxed)) {
         pointRateValue = maxPointRate.load(std::memory_order_relaxed);
@@ -140,13 +127,13 @@ void LaserCubeNetDevice::setPointRate(std::uint32_t pointRateValue) {
     }
 }
 
-bool LaserCubeNetDevice::sendPointsToDac() {
+bool LaserCubeNetController::sendPointsToDac() {
     // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
     const auto activePps = pps.load(std::memory_order_relaxed);
 
-    // Estimate how full the device buffer is right now.
+    // Estimate how full the controller buffer is right now.
     const int minEstimatedBufferFullness =
         std::max(
             calculateBufferFullnessFromAnchor(
@@ -214,11 +201,11 @@ bool LaserCubeNetDevice::sendPointsToDac() {
 
     for (const auto& pt : pointsToSend) {
         // Each component is clamped and quantized to 12 bits.
-        packet.appendUInt16(encodeCoord(pt.x));
-        packet.appendUInt16(encodeCoord(pt.y));
-        packet.appendUInt16(encodeColour(pt.r));
-        packet.appendUInt16(encodeColour(pt.g));
-        packet.appendUInt16(encodeColour(pt.b));
+        packet.appendUInt16(encodeUnsigned12FromSignedUnit(pt.x));
+        packet.appendUInt16(encodeUnsigned12FromSignedUnit(pt.y));
+        packet.appendUInt16(encodeUnsigned12FromUnit(pt.r));
+        packet.appendUInt16(encodeUnsigned12FromUnit(pt.g));
+        packet.appendUInt16(encodeUnsigned12FromUnit(pt.b));
     }
 
     const bool success = sendData(packet.data(), packet.size());
@@ -234,25 +221,25 @@ bool LaserCubeNetDevice::sendPointsToDac() {
     return success;
 }
 
-bool LaserCubeNetDevice::sendPointRate(std::uint32_t rate) {
+bool LaserCubeNetController::sendPointRate(std::uint32_t rate) {
     core::ByteBuffer payload;
     payload.appendUInt32(rate);
     return sendCommand(LaserCubeNetConfig::CMD_SET_ILDA_RATE, payload.data(), payload.size());
 }
 
-bool LaserCubeNetDevice::sendData(const std::uint8_t* buffer, std::size_t size) {
+bool LaserCubeNetController::sendData(const std::uint8_t* buffer, std::size_t size) {
     if (!dataSocket || !buffer || size == 0) {
         return false;
     }
     auto ec = dataSocket->send_to(buffer, size, dataEndpoint, std::chrono::milliseconds(50));
     if (ec) {
-        logError("[LaserCubeNetDevice] Failed to send data", ec.message());
+        logError("[LaserCubeNetController] Failed to send data", ec.message());
         return false;
     }
     return true;
 }
 
-bool LaserCubeNetDevice::sendCommand(std::uint8_t cmd, const std::uint8_t* payload, std::size_t size) {
+bool LaserCubeNetController::sendCommand(std::uint8_t cmd, const std::uint8_t* payload, std::size_t size) {
     if (!commandSocket) {
         return false;
     }
@@ -265,13 +252,13 @@ bool LaserCubeNetDevice::sendCommand(std::uint8_t cmd, const std::uint8_t* paylo
 
     auto ec = commandSocket->send_to(buffer.data(), buffer.size(), commandEndpoint, std::chrono::milliseconds(200));
     if (ec) {
-        logError("[LaserCubeNetDevice] command send failed", ec.message());
+        logError("[LaserCubeNetController] command send failed", ec.message());
         return false;
     }
     return true;
 }
 
-void LaserCubeNetDevice::checkAcks() {
+void LaserCubeNetController::checkAcks() {
     if (!dataSocket) {
         return;
     }
@@ -291,7 +278,7 @@ void LaserCubeNetDevice::checkAcks() {
             break;
         }
         if (ec) {
-            logInfo("[LaserCubeNetDevice] ack receive failed", ec.message());
+            logInfo("[LaserCubeNetController] ack receive failed", ec.message());
             break;
         }
         ++polls;
@@ -300,7 +287,7 @@ void LaserCubeNetDevice::checkAcks() {
             const auto now = std::chrono::steady_clock::now();
             if (lastUnexpectedAckSenderLogTime == std::chrono::steady_clock::time_point{} ||
                 (now - lastUnexpectedAckSenderLogTime) > std::chrono::seconds(1)) {
-                logInfo("[LaserCubeNetDevice] ignoring ack from unexpected sender",
+                logInfo("[LaserCubeNetController] ignoring ack from unexpected sender",
                         sender.address().to_string(), sender.port(),
                         "expected", dataEndpoint.address().to_string(), dataEndpoint.port());
                 lastUnexpectedAckSenderLogTime = now;
@@ -310,13 +297,13 @@ void LaserCubeNetDevice::checkAcks() {
 
         if (received != 4) {
             if (received > 0) {
-                logInfo("[LaserCubeNetDevice] ack packet unexpected size", received);
+                logInfo("[LaserCubeNetController] ack packet unexpected size", received);
             }
             continue;
         }
 
         if (buffer[0] != LaserCubeNetConfig::CMD_GET_RINGBUFFER_FREE) {
-            logInfo("[LaserCubeNetDevice] DIFFERENT RESPONSE", static_cast<int>(buffer[0]));
+            logInfo("[LaserCubeNetController] DIFFERENT RESPONSE", static_cast<int>(buffer[0]));
             continue;
         }
 
@@ -349,7 +336,7 @@ void LaserCubeNetDevice::checkAcks() {
         }
 
         if (bufferSpace == 0) {
-            logInfo("[LaserCubeNetDevice] BUFFER OVERRUN ------------------");
+            logInfo("[LaserCubeNetController] BUFFER OVERRUN ------------------");
         }
 
         messageTimes.erase(it);
@@ -376,7 +363,7 @@ void LaserCubeNetDevice::checkAcks() {
                 const auto oldestPending = now - messageTimes.begin()->second;
                 const auto oldestMs =
                     std::chrono::duration_cast<std::chrono::milliseconds>(oldestPending).count();
-                logInfo("[LaserCubeNetDevice] waiting for ack",
+                logInfo("[LaserCubeNetController] waiting for ack",
                         "pending", static_cast<int>(messageTimes.size()),
                         "oldest_ms", oldestMs);
                 lastAckWarningTime = now;
@@ -385,11 +372,11 @@ void LaserCubeNetDevice::checkAcks() {
     }
 }
 
-int LaserCubeNetDevice::getDacTotalPointBufferCapacity() const {
+int LaserCubeNetController::getDacTotalPointBufferCapacity() const {
     return pointBufferCapacity.load(std::memory_order_relaxed);
 }
 
-std::optional<core::DacBufferState> LaserCubeNetDevice::getBufferState() const {
+std::optional<core::DacBufferState> LaserCubeNetController::getBufferState() const {
     return buildBufferState(
         pointBufferCapacity.load(std::memory_order_relaxed),
         lastEstimatedBufferFullness.load(std::memory_order_relaxed));

@@ -6,29 +6,29 @@
 
 namespace libera::helios {
 
-class HeliosDeviceInfo : public core::DacInfo {
+class HeliosControllerInfo : public core::DacInfo {
 public:
-    HeliosDeviceInfo(std::string id,
+    HeliosControllerInfo(std::string id,
                      std::string label,
                      std::uint32_t maxPointRateValue,
-                     unsigned int deviceIndexValue,
-                     bool usbDevice,
+                     unsigned int controllerIndexValue,
+                     bool usbController,
                      int firmwareVersionValue)
     : DacInfo(std::move(id), std::move(label), maxPointRateValue)
-    , deviceIndex(deviceIndexValue)
-    , isUsb(usbDevice)
+    , controllerIndex(controllerIndexValue)
+    , isUsb(usbController)
     , firmwareVersion(firmwareVersionValue) {}
 
     const std::string& type() const override { return typeName; }
 
-    unsigned int index() const { return deviceIndex; }
-    bool isUsbDevice() const { return isUsb; }
+    unsigned int index() const { return controllerIndex; }
+    bool isUsbController() const { return isUsb; }
     int firmwareVersionValue() const { return firmwareVersion; }
 
 private:
     static inline const std::string typeName{"helios"};
 
-    unsigned int deviceIndex = 0;
+    unsigned int controllerIndex = 0;
     bool isUsb = false;
     int firmwareVersion = 0;
 };

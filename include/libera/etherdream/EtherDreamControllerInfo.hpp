@@ -6,9 +6,9 @@
 
 namespace libera::etherdream {
 
-class EtherDreamDeviceInfo : public core::DacInfo {
+class EtherDreamControllerInfo : public core::DacInfo {
 public:
-    EtherDreamDeviceInfo(std::string id,
+    EtherDreamControllerInfo(std::string id,
                          std::string label,
                          std::string ip,
                          unsigned short port,

@@ -6,7 +6,7 @@
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/etherdream/EtherDreamCommand.hpp"
 #include "libera/etherdream/EtherDreamResponse.hpp"
-#include "libera/etherdream/EtherDreamDeviceInfo.hpp"
+#include "libera/etherdream/EtherDreamControllerInfo.hpp"
 #include <deque>
 #include <memory>
 #include <string_view>
@@ -22,27 +22,27 @@ namespace ip = libera::net::asio::ip;
 /**
  * @brief Streaming controller that talks to an EtherDream DAC.
  *
- * The device inherits the worker thread lifecycle and point buffering from
+ * The controller inherits the worker thread lifecycle and point buffering from
  * `LaserControllerStreaming`. Streaming-specific timing (minimum refill sizes, sleep
  * cadence, etc.) is handled entirely within this class.
  *
  * Responsibilities:
  * - Maintain the TCP connection to the DAC.
  * - Poll status frames, decode them via `EtherDreamResponse`, and react.
- * - Request points from the user callback and stream device-formatted frames.
+ * - Request points from the user callback and stream controller-formatted frames.
  * - Drive the worker loop supplied by the base class.
  */
-class EtherDreamDevice : public libera::core::LaserController {
+class EtherDreamController : public libera::core::LaserController {
 public:
-    EtherDreamDevice();
-    explicit EtherDreamDevice(EtherDreamDeviceInfo info);
-    ~EtherDreamDevice();
+    EtherDreamController();
+    explicit EtherDreamController(EtherDreamControllerInfo info);
+    ~EtherDreamController();
 
     // non-copyable / non-movable
-    EtherDreamDevice(const EtherDreamDevice&) = delete;
-    EtherDreamDevice& operator=(const EtherDreamDevice&) = delete;
-    EtherDreamDevice(EtherDreamDevice&&) = delete;
-    EtherDreamDevice& operator=(EtherDreamDevice&&) = delete;
+    EtherDreamController(const EtherDreamController&) = delete;
+    EtherDreamController& operator=(const EtherDreamController&) = delete;
+    EtherDreamController(EtherDreamController&&) = delete;
+    EtherDreamController& operator=(EtherDreamController&&) = delete;
 
     struct DacAck {
         EtherDreamStatus status{};
@@ -51,7 +51,7 @@ public:
 
 
     expected<void> connect();
-    expected<void> connect(const EtherDreamDeviceInfo& info);
+    expected<void> connect(const EtherDreamControllerInfo& info);
 
     void setPointRate(std::uint32_t pointRate) override;
 
@@ -116,7 +116,7 @@ private:
     EtherDreamStatus lastKnownStatus{};
     std::chrono::steady_clock::time_point lastReceiveTime{};
     libera::net::TcpClient tcpClient;
-    std::optional<EtherDreamDeviceInfo> deviceInfo;
+    std::optional<EtherDreamControllerInfo> controllerInfo;
 
     bool clearRequired = false;
     bool prepareRequired = false;

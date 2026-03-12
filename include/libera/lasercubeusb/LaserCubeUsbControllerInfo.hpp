@@ -6,9 +6,9 @@
 
 namespace libera::lasercubeusb {
 
-class LaserCubeUsbDeviceInfo : public core::DacInfo {
+class LaserCubeUsbControllerInfo : public core::DacInfo {
 public:
-    LaserCubeUsbDeviceInfo(std::string serial,
+    LaserCubeUsbControllerInfo(std::string serial,
                            std::string label,
                            std::uint32_t maxPointRateValue = 0)
     : DacInfo(std::move(serial), std::move(label), maxPointRateValue)

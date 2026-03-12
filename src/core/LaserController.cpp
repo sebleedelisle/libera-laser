@@ -35,7 +35,7 @@ std::chrono::milliseconds LaserController::targetRenderLatency() {
         targetRenderLatencyMsStorage().load(std::memory_order_relaxed));
 }
 
-// returns false if the device isn't ready for a new frame or if the frame is empty. 
+// returns false if the controller isn't ready for a new frame or if the frame is empty. 
 
 bool LaserController::sendFrame(Frame&& frame) {
     if (!frameModeActive) {

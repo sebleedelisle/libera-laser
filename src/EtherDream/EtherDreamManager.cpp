@@ -76,49 +76,49 @@ std::vector<std::unique_ptr<core::DacInfo>>
 EtherDreamManager::discover() {
     std::vector<std::unique_ptr<core::DacInfo>> results;
     const auto now = Clock::now();
-    std::lock_guard lock(devicesMutex);
+    std::lock_guard lock(controllersMutex);
     pruneStaleUnlocked(now);
-    results.reserve(devices.size());
-    for (const auto& [id, entry] : devices) {
-        results.emplace_back(std::make_unique<EtherDreamDeviceInfo>(entry.info));
+    results.reserve(controllers.size());
+    for (const auto& [id, entry] : controllers) {
+        results.emplace_back(std::make_unique<EtherDreamControllerInfo>(entry.info));
     }
     return results;
 }
 
 std::shared_ptr<core::LaserController>
 EtherDreamManager::getAndConnectToDac(const core::DacInfo& info) {
-    const auto* etherInfo = dynamic_cast<const EtherDreamDeviceInfo*>(&info);
+    const auto* etherInfo = dynamic_cast<const EtherDreamControllerInfo*>(&info);
     if (!etherInfo) {
         return nullptr;
     }
 
-    std::shared_ptr<EtherDreamDevice> device;
+    std::shared_ptr<EtherDreamController> controller;
     bool newlyCreated = false;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeDevices.find(etherInfo->idValue());
-        if (it != activeDevices.end()) {
+        auto it = activeControllers.find(etherInfo->idValue());
+        if (it != activeControllers.end()) {
             if (auto existing = it->second.lock()) {
-                device = existing;
+                controller = existing;
             } else {
-                activeDevices.erase(it);
+                activeControllers.erase(it);
             }
         }
-        if (!device) {
-            device = std::make_shared<EtherDreamDevice>(*etherInfo);
-            activeDevices[etherInfo->idValue()] = device;
+        if (!controller) {
+            controller = std::make_shared<EtherDreamController>(*etherInfo);
+            activeControllers[etherInfo->idValue()] = controller;
             newlyCreated = true;
         }
     }
 
-    if (device && newlyCreated) {
-        if (auto result = device->connect(*etherInfo); !result) {
+    if (controller && newlyCreated) {
+        if (auto result = controller->connect(*etherInfo); !result) {
             logError("[EtherDreamManager] initial connect failed", result.error().message());
         }
-        device->start();
+        controller->start();
     }
 
-    return device;
+    return controller;
 }
 
 void EtherDreamManager::closeAll() {
@@ -131,15 +131,15 @@ void EtherDreamManager::closeAll() {
         listener.join();
     }
 
-    std::unordered_map<std::string, std::shared_ptr<EtherDreamDevice>> snapshot;
+    std::unordered_map<std::string, std::shared_ptr<EtherDreamController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [id, weak] : activeDevices) {
+        for (auto& [id, weak] : activeControllers) {
             if (auto dev = weak.lock()) {
                 snapshot.emplace(id, std::move(dev));
             }
         }
-        activeDevices.clear();
+        activeControllers.clear();
     }
 
     for (auto& [id, dev] : snapshot) {
@@ -149,8 +149,8 @@ void EtherDreamManager::closeAll() {
     }
 
     {
-        std::lock_guard lock(devicesMutex);
-        devices.clear();
+        std::lock_guard lock(controllersMutex);
+        controllers.clear();
     }
 }
 
@@ -176,7 +176,7 @@ void EtherDreamManager::threadedFunction() {
         }
 
         if (ec == asio::error::timed_out) {
-            std::lock_guard lock(devicesMutex);
+            std::lock_guard lock(controllersMutex);
             pruneStaleUnlocked(now);
             continue;
         }
@@ -209,7 +209,7 @@ void EtherDreamManager::threadedFunction() {
         std::string hardwareVersion =
             "hw" + std::to_string(hardwareRevision) + "-sw" + std::to_string(softwareRevision);
 
-        EtherDreamDeviceInfo info{
+        EtherDreamControllerInfo info{
             id,
             label,
             ip,
@@ -219,8 +219,8 @@ void EtherDreamManager::threadedFunction() {
             maxPointRate};
 
         {
-            std::lock_guard lock(devicesMutex);
-            devices.insert_or_assign(id, DeviceEntry{info, now});
+            std::lock_guard lock(controllersMutex);
+            controllers.insert_or_assign(id, ControllerEntry{info, now});
             pruneStaleUnlocked(now);
         }
     }
@@ -228,9 +228,9 @@ void EtherDreamManager::threadedFunction() {
 
 void EtherDreamManager::pruneStaleUnlocked(Clock::time_point now) {
     const auto expiry = now - config::ETHERDREAM_DISCOVERY_TIMEOUT;
-    for (auto it = devices.begin(); it != devices.end(); ) {
+    for (auto it = controllers.begin(); it != controllers.end(); ) {
         if (it->second.lastSeen < expiry) {
-            it = devices.erase(it);
+            it = controllers.erase(it);
         } else {
             ++it;
         }

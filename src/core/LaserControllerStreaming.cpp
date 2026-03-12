@@ -351,6 +351,33 @@ int LaserControllerStreaming::calculateBufferFullnessFromAnchor(
     return std::max(0, estimate.bufferFullness);
 }
 
+std::uint16_t LaserControllerStreaming::encodeUnsigned16FromSignedUnit(float value) {
+    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float normalized = (clamped * 0.5f) + 0.5f;
+    return static_cast<std::uint16_t>(std::lround(normalized * 65535.0f));
+}
+
+std::uint16_t LaserControllerStreaming::encodeUnsigned16FromUnit(float value) {
+    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    return static_cast<std::uint16_t>(std::lround(clamped * 65535.0f));
+}
+
+std::uint16_t LaserControllerStreaming::encodeUnsigned12FromSignedUnit(float value) {
+    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float normalized = (clamped * 0.5f) + 0.5f;
+    return static_cast<std::uint16_t>(std::lround(normalized * 4095.0f));
+}
+
+std::uint16_t LaserControllerStreaming::encodeUnsigned12FromUnit(float value) {
+    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    return static_cast<std::uint16_t>(std::lround(clamped * 4095.0f));
+}
+
+std::uint8_t LaserControllerStreaming::encodeUnsigned8FromUnit(float value) {
+    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    return static_cast<std::uint8_t>(std::lround(clamped * 255.0f));
+}
+
 int LaserControllerStreaming::clampBufferFullnessToCapacity(
     int pointsInBuffer,
     int totalBufferPoints) {

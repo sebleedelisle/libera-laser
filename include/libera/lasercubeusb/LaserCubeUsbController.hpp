@@ -3,7 +3,7 @@
 #include "libera/core/Expected.hpp"
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/core/LaserController.hpp"
-#include "libera/lasercubeusb/LaserCubeUsbDeviceInfo.hpp"
+#include "libera/lasercubeusb/LaserCubeUsbControllerInfo.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -14,14 +14,14 @@ struct libusb_context;
 
 namespace libera::lasercubeusb {
 
-class UsbDeviceHandle;
+class UsbControllerHandle;
 
-class LaserCubeUsbDevice : public core::LaserController {
+class LaserCubeUsbController : public core::LaserController {
 public:
-    explicit LaserCubeUsbDevice(std::shared_ptr<libusb_context> context);
-    ~LaserCubeUsbDevice() override;
+    explicit LaserCubeUsbController(std::shared_ptr<libusb_context> context);
+    ~LaserCubeUsbController() override;
 
-    libera::expected<void> connect(const LaserCubeUsbDeviceInfo& info);
+    libera::expected<void> connect(const LaserCubeUsbControllerInfo& info);
     void close();
 
     void setPointRate(std::uint32_t pointRate) override;
@@ -38,7 +38,7 @@ private:
     int getDacTotalPointBufferCapacity() const;
 
     std::shared_ptr<libusb_context> usbContext;
-    std::unique_ptr<UsbDeviceHandle> usbHandle;
+    std::unique_ptr<UsbControllerHandle> usbHandle;
 
     std::string serialNumber;
 

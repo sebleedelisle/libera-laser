@@ -3,7 +3,7 @@
 #include "libera/core/Expected.hpp"
 #include "libera/core/LaserController.hpp"
 #include "libera/lasercubenet/LaserCubeNetConfig.hpp"
-#include "libera/lasercubenet/LaserCubeNetDeviceInfo.hpp"
+#include "libera/lasercubenet/LaserCubeNetControllerInfo.hpp"
 #include "libera/net/NetService.hpp"
 #include "libera/net/UdpSocket.hpp"
 
@@ -17,13 +17,13 @@
 
 namespace libera::lasercubenet {
 
-class LaserCubeNetDevice : public core::LaserController {
+class LaserCubeNetController : public core::LaserController {
 public:
-    LaserCubeNetDevice();
-    explicit LaserCubeNetDevice(LaserCubeNetDeviceInfo info);
-    ~LaserCubeNetDevice() override;
+    LaserCubeNetController();
+    explicit LaserCubeNetController(LaserCubeNetControllerInfo info);
+    ~LaserCubeNetController() override;
 
-    libera::expected<void> connect(const LaserCubeNetDeviceInfo& info);
+    libera::expected<void> connect(const LaserCubeNetControllerInfo& info);
     void close();
     std::optional<core::DacBufferState> getBufferState() const override;
 

@@ -6,26 +6,26 @@
 
 namespace libera::idn {
 
-class IdnDeviceInfo : public core::DacInfo {
+class IdnControllerInfo : public core::DacInfo {
 public:
-    IdnDeviceInfo(std::string id,
+    IdnControllerInfo(std::string id,
                   std::string label,
                   std::uint32_t maxPointRateValue,
-                  unsigned int deviceIndexValue,
+                  unsigned int controllerIndexValue,
                   int firmwareVersionValue)
     : DacInfo(std::move(id), std::move(label), maxPointRateValue)
-    , deviceIndex(deviceIndexValue)
+    , controllerIndex(controllerIndexValue)
     , firmwareVersion(firmwareVersionValue) {}
 
     const std::string& type() const override { return typeName; }
 
-    unsigned int index() const { return deviceIndex; }
+    unsigned int index() const { return controllerIndex; }
     int firmwareVersionValue() const { return firmwareVersion; }
 
 private:
     static inline const std::string typeName{"idn"};
 
-    unsigned int deviceIndex = 0;
+    unsigned int controllerIndex = 0;
     int firmwareVersion = 0;
 };
 

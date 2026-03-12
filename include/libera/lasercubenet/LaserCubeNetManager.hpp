@@ -1,7 +1,7 @@
 #pragma once
 
 #include "libera/core/GlobalDacManager.hpp"
-#include "libera/lasercubenet/LaserCubeNetDeviceInfo.hpp"
+#include "libera/lasercubenet/LaserCubeNetControllerInfo.hpp"
 #include "libera/lasercubenet/LaserCubeNetConfig.hpp"
 #include "libera/lasercubenet/LaserCubeNetStatus.hpp"
 #include "libera/net/UdpSocket.hpp"
@@ -14,7 +14,7 @@
 
 namespace libera::lasercubenet {
 
-class LaserCubeNetDevice;
+class LaserCubeNetController;
 
 class LaserCubeNetManager : public core::DacManagerBase {
 public:
@@ -32,7 +32,7 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
-    struct DeviceEntry {
+    struct ControllerEntry {
         LaserCubeNetStatus status;
         Clock::time_point lastSeen;
     };
@@ -48,10 +48,10 @@ private:
     std::thread listener;
     std::atomic<bool> running{false};
 
-    std::mutex devicesMutex;
-    std::unordered_map<std::string, DeviceEntry> devices;
+    std::mutex controllersMutex;
+    std::unordered_map<std::string, ControllerEntry> controllers;
     std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<LaserCubeNetDevice>> active;
+    std::unordered_map<std::string, std::weak_ptr<LaserCubeNetController>> active;
 };
 
 } // namespace libera::lasercubenet

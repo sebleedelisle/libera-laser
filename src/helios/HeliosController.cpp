@@ -1,10 +1,9 @@
-#include "libera/helios/HeliosDevice.hpp"
+#include "libera/helios/HeliosController.hpp"
 
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <thread>
 
 namespace libera::helios {
@@ -15,60 +14,53 @@ constexpr std::size_t MIN_FRAME_POINTS = 20;
 
 constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
-std::uint16_t clampU16FromUnit(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
-    return static_cast<std::uint16_t>(std::lround(clamped * 65535.0f));
-}
-
-std::uint16_t clampU16FromSigned(float value) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
-    const float normalized = (clamped * 0.5f) + 0.5f;
-    return static_cast<std::uint16_t>(std::lround(normalized * 65535.0f));
-}
-
 } // namespace
 
-HeliosDevice::HeliosDevice(std::shared_ptr<HeliosDac> sdkInstance, unsigned int deviceIndex)
+HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsigned int controllerIndex)
 : sdk(std::move(sdkInstance))
-, index(deviceIndex) {
+, index(controllerIndex) {
     targetFramePoints.store(DEFAULT_FRAME_POINTS, std::memory_order_relaxed);
     frameBuffer.reserve(DEFAULT_FRAME_POINTS);
+    setEstimatedBufferCapacity(static_cast<int>(DEFAULT_FRAME_POINTS));
+    updateEstimatedBufferAnchorNow(0, getPointRate());
 }
 
-HeliosDevice::~HeliosDevice() {
+HeliosController::~HeliosController() {
     stop();
     close();
 }
 
-void HeliosDevice::close() {
+void HeliosController::close() {
+    clearEstimatedBufferState();
     if (!sdk) {
         return;
     }
     sdk->Stop(index);
 }
 
-bool HeliosDevice::isConnected() const {
+bool HeliosController::isConnected() const {
     if (!sdk) {
         return false;
     }
     return sdk->GetIsClosed(index) == 0;
 }
 
-void HeliosDevice::setPointRate(std::uint32_t pointRateValue) {
+void HeliosController::setPointRate(std::uint32_t pointRateValue) {
     LaserControllerStreaming::setPointRate(pointRateValue);
 }
 
-void HeliosDevice::setFramePointCount(std::size_t points) {
+void HeliosController::setFramePointCount(std::size_t points) {
     const auto clamped = std::max(points, MIN_FRAME_POINTS);
     targetFramePoints.store(clamped, std::memory_order_relaxed);
     frameBuffer.reserve(clamped);
+    setEstimatedBufferCapacity(static_cast<int>(clamped));
 }
 
-std::size_t HeliosDevice::framePointCount() const {
+std::size_t HeliosController::framePointCount() const {
     return targetFramePoints.load(std::memory_order_relaxed);
 }
 
-void HeliosDevice::run() {
+void HeliosController::run() {
     using namespace std::chrono_literals;
 
     resetStartupBlank();
@@ -91,7 +83,7 @@ void HeliosDevice::run() {
                 std::this_thread::sleep_for(2ms);
                 continue;
             }
-            logError("[HeliosDevice] status error", status);
+            logError("[HeliosController] status error", status);
             std::this_thread::sleep_for(5ms);
             continue;
         }
@@ -102,6 +94,11 @@ void HeliosDevice::run() {
         }
 
         const std::size_t framePoints = targetFramePoints.load(std::memory_order_relaxed);
+        const unsigned int pps = getPointRate();
+
+        // SDK status says the DAC is ready, so treat current queued fullness as empty.
+        setEstimatedBufferCapacity(static_cast<int>(framePoints));
+        updateEstimatedBufferAnchorNow(0, pps);
 
         core::PointFillRequest req;
         req.minimumPointsRequired = framePoints;
@@ -124,29 +121,36 @@ void HeliosDevice::run() {
         for (std::size_t i = 0; i < pointsToSend.size(); ++i) {
             const auto& p = pointsToSend[i];
             auto& out = frameBuffer[i];
-            out.x = clampU16FromSigned(p.x);
-            out.y = clampU16FromSigned(p.y);
-            out.r = clampU16FromUnit(p.r);
-            out.g = clampU16FromUnit(p.g);
-            out.b = clampU16FromUnit(p.b);
-            out.i = clampU16FromUnit(p.i);
-            out.user1 = clampU16FromUnit(p.u1);
-            out.user2 = clampU16FromUnit(p.u2);
+            out.x = encodeUnsigned16FromSignedUnit(p.x);
+            out.y = encodeUnsigned16FromSignedUnit(p.y);
+            out.r = encodeUnsigned16FromUnit(p.r);
+            out.g = encodeUnsigned16FromUnit(p.g);
+            out.b = encodeUnsigned16FromUnit(p.b);
+            out.i = encodeUnsigned16FromUnit(p.i);
+            out.user1 = encodeUnsigned16FromUnit(p.u1);
+            out.user2 = encodeUnsigned16FromUnit(p.u2);
             out.user3 = 0;
             out.user4 = 0;
         }
 
-        const unsigned int pps = getPointRate();
+        const auto sendStart = std::chrono::steady_clock::now();
         const int result = sdk->WriteFrameExtended(
             index,
             pps,
             HELIOS_FLAGS,
             frameBuffer.data(),
             static_cast<unsigned int>(frameBuffer.size()));
+        const auto sendDone = std::chrono::steady_clock::now();
 
         if (result < 0) {
-            logError("[HeliosDevice] WriteFrameExtended failed", result);
+            logError("[HeliosController] WriteFrameExtended failed", result);
         } else {
+            recordLatencySample(sendDone - sendStart);
+            setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
+            updateEstimatedBufferAnchor(
+                static_cast<int>(frameBuffer.size()),
+                sendDone,
+                pps);
             currentPointIndex.fetch_add(frameBuffer.size(), std::memory_order_relaxed);
         }
     }

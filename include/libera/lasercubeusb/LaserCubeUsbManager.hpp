@@ -1,8 +1,8 @@
 #pragma once
 
 #include "libera/core/GlobalDacManager.hpp"
-#include "libera/lasercubeusb/LaserCubeUsbDevice.hpp"
-#include "libera/lasercubeusb/LaserCubeUsbDeviceInfo.hpp"
+#include "libera/lasercubeusb/LaserCubeUsbController.hpp"
+#include "libera/lasercubeusb/LaserCubeUsbControllerInfo.hpp"
 
 #include <memory>
 #include <mutex>
@@ -32,7 +32,7 @@ private:
     std::shared_ptr<libusb_context> usbContext;
 
     std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<LaserCubeUsbDevice>> activeDevices;
+    std::unordered_map<std::string, std::weak_ptr<LaserCubeUsbController>> activeControllers;
 };
 
 } // namespace libera::lasercubeusb

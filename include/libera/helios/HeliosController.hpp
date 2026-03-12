@@ -9,10 +9,10 @@
 
 namespace libera::helios {
 
-class HeliosDevice : public core::LaserController {
+class HeliosController : public core::LaserController {
 public:
-    explicit HeliosDevice(std::shared_ptr<HeliosDac> sdk, unsigned int deviceIndex);
-    ~HeliosDevice() override;
+    explicit HeliosController(std::shared_ptr<HeliosDac> sdk, unsigned int controllerIndex);
+    ~HeliosController() override;
 
     void close();
     bool isConnected() const;

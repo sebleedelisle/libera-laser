@@ -174,7 +174,7 @@ protected:
     /// Add one latency sample to the rolling window used by getLatencyStats().
     void recordLatencySample(std::chrono::steady_clock::duration sample);
 
-    /// Set host-estimated device buffer capacity for default getBufferState().
+    /// Set host-estimated controller buffer capacity for default getBufferState().
     void setEstimatedBufferCapacity(int totalBufferPoints);
 
     /// Clear host-estimated buffer state; default getBufferState() returns nullopt.
@@ -201,10 +201,16 @@ protected:
         int fallbackBufferFullness,
         bool* projected = nullptr) const;
 
+    static std::uint16_t encodeUnsigned16FromSignedUnit(float value);
+    static std::uint16_t encodeUnsigned16FromUnit(float value);
+    static std::uint16_t encodeUnsigned12FromSignedUnit(float value);
+    static std::uint16_t encodeUnsigned12FromUnit(float value);
+    static std::uint8_t encodeUnsigned8FromUnit(float value);
+
     static int clampBufferFullnessToCapacity(int pointsInBuffer,
                                              int totalBufferPoints);
 
-    /// Shared helper for devices that expose point-buffer fullness.
+    /// Shared helper for controllers that expose point-buffer fullness.
     static std::optional<DacBufferState> buildBufferState(int totalBufferPoints,
                                                           int pointsInBuffer);
 

@@ -8,7 +8,7 @@ namespace libera::net {
 /**
  * UdpSocket
  *
- * Small helper for UDP use-cases like device discovery or broadcast.
+ * Small helper for UDP use-cases like controller discovery or broadcast.
  *
  * Notes for openFrameworks users:
  * - UDP in Asio is also async; here we provide `send_to` / `recv_from` that use

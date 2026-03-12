@@ -5,9 +5,9 @@
 
 namespace libera::lasercubenet {
 
-class LaserCubeNetDeviceInfo : public core::DacInfo {
+class LaserCubeNetControllerInfo : public core::DacInfo {
 public:
-    LaserCubeNetDeviceInfo(const LaserCubeNetStatus& status);
+    LaserCubeNetControllerInfo(const LaserCubeNetStatus& status);
 
     const std::string& ipAddress() const { return ip; }
     const std::string& serial() const { return serialNumber; }

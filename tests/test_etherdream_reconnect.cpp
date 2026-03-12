@@ -1,4 +1,4 @@
-#include "libera/etherdream/EtherDreamDevice.hpp"
+#include "libera/etherdream/EtherDreamController.hpp"
 
 #ifdef _WIN32
 #include <cstdio>
@@ -113,15 +113,15 @@ private:
 int main() {
     DummyTcpServer server;
 
-    libera::etherdream::EtherDreamDevice device;
-    libera::etherdream::EtherDreamDeviceInfo info{"loopback", "Loopback", "127.0.0.1", server.port()};
+    libera::etherdream::EtherDreamController controller;
+    libera::etherdream::EtherDreamControllerInfo info{"loopback", "Loopback", "127.0.0.1", server.port()};
 
     constexpr int tries = 3000;
     for (int i = 0; i < tries; ++i) {
-        auto connected = device.connect(info);
+        auto connected = controller.connect(info);
         ASSERT_TRUE(connected, "connect should succeed");
 
-        device.close();
+        controller.close();
 
         // Give the server a moment to observe the close
         std::this_thread::sleep_for(50ms);

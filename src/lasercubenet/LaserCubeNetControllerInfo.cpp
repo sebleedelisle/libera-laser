@@ -1,10 +1,10 @@
-#include "libera/lasercubenet/LaserCubeNetDeviceInfo.hpp"
+#include "libera/lasercubenet/LaserCubeNetControllerInfo.hpp"
 
 namespace libera::lasercubenet {
 
-const std::string LaserCubeNetDeviceInfo::typeName{"lasercube_net"};
+const std::string LaserCubeNetControllerInfo::typeName{"lasercube_net"};
 
-LaserCubeNetDeviceInfo::LaserCubeNetDeviceInfo(const LaserCubeNetStatus& status)
+LaserCubeNetControllerInfo::LaserCubeNetControllerInfo(const LaserCubeNetStatus& status)
     : core::DacInfo(status.serialNumber, status.modelName.empty() ? status.serialNumber : status.modelName,
                     status.pointRateMax),
       ip(status.ipAddress),

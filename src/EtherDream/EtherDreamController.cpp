@@ -1,7 +1,7 @@
 /**
  * @brief Implements the EtherDream DAC worker loop: connection, polling, and streaming.
  */
-#include "libera/etherdream/EtherDreamDevice.hpp"
+#include "libera/etherdream/EtherDreamController.hpp"
 
 #include "libera/core/BufferEstimator.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
@@ -26,47 +26,47 @@ namespace libera::etherdream {
 
 using libera::expected;
 using libera::unexpected;
-using DacAck = EtherDreamDevice::DacAck;
+using DacAck = EtherDreamController::DacAck;
 namespace ip = libera::net::asio::ip;
 namespace asio = libera::net::asio;
 
-EtherDreamDevice::EtherDreamDevice() {
+EtherDreamController::EtherDreamController() {
     //setPointRate(config::ETHERDREAM_TARGET_POINT_RATE);
 }
 
-EtherDreamDevice::EtherDreamDevice(EtherDreamDeviceInfo info)
-: deviceInfo(std::move(info)) {
+EtherDreamController::EtherDreamController(EtherDreamControllerInfo info)
+: controllerInfo(std::move(info)) {
     //setPointRate(config::ETHERDREAM_TARGET_POINT_RATE);
 }
 
-EtherDreamDevice::~EtherDreamDevice() {
+EtherDreamController::~EtherDreamController() {
     // Orderly shutdown: stop the worker thread and close the TCP connection.
     stop();
     close();
 }
 
-expected<void> EtherDreamDevice::connect(const EtherDreamDeviceInfo& info) {
-    deviceInfo = info;
+expected<void> EtherDreamController::connect(const EtherDreamControllerInfo& info) {
+    controllerInfo = info;
     return connect();
 }
 
-expected<void> EtherDreamDevice::connect() {
-    if (!deviceInfo) {
+expected<void> EtherDreamController::connect() {
+    if (!controllerInfo) {
         return unexpected(make_error_code(std::errc::invalid_argument));
     }
 
     std::error_code ec;
-    auto ip = libera::net::asio::ip::make_address(deviceInfo->ip(), ec);
+    auto ip = libera::net::asio::ip::make_address(controllerInfo->ip(), ec);
     if (ec) {
         logError("Invalid IP", ec.message());
         return unexpected(ec);
     }
 
-    libera::net::tcp::endpoint endpoint(ip, deviceInfo->port());
+    libera::net::tcp::endpoint endpoint(ip, controllerInfo->port());
 
     if (auto connectError = tcpClient.connect(endpoint); connectError) {
-        logError("[EtherDreamDevice] connect failed", connectError.message(),
-                 "target", deviceInfo->ip(), deviceInfo->port(),
+        logError("[EtherDreamController] connect failed", connectError.message(),
+                 "target", controllerInfo->ip(), controllerInfo->port(),
                  "timeout_ms", tcpClient.defaultTimeout().count());
         return unexpected(connectError);
     }
@@ -79,18 +79,18 @@ expected<void> EtherDreamDevice::connect() {
     tcpClient.setConnectTimeout(1s);
 
 
-    logInfoVerbose("[EtherDreamDevice] connected to", deviceInfo->ip(), deviceInfo->port());
+    logInfoVerbose("[EtherDreamController] connected to", controllerInfo->ip(), controllerInfo->port());
     lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
 
     return {};
 }
 
-void EtherDreamDevice::run() {
+void EtherDreamController::run() {
     constexpr auto retryDelay = std::chrono::milliseconds(100);
     networkFailureEncountered = false;
 
     while (running) {
-        if (!deviceInfo) {
+        if (!controllerInfo) {
             std::this_thread::sleep_for(retryDelay);
             continue;
         }
@@ -146,7 +146,7 @@ void EtherDreamDevice::run() {
 }
 
 expected<DacAck>
-EtherDreamDevice::waitForResponse(char command) {
+EtherDreamController::waitForResponse(char command) {
     if (!running) {
         return unexpected(std::make_error_code(std::errc::operation_canceled));
     }
@@ -168,7 +168,7 @@ EtherDreamDevice::waitForResponse(char command) {
 
         EtherDreamResponse response;
         if (!response.decode(raw.data(), raw.size())) {
-            logError("[EtherDreamDevice] Failed to decode ACK for command", command);
+            logError("[EtherDreamController] Failed to decode ACK for command", command);
             return unexpected(make_error_code(std::errc::protocol_error));
         }
 
@@ -209,8 +209,8 @@ EtherDreamDevice::waitForResponse(char command) {
 
 
 
-void EtherDreamDevice::close() {
-    logInfoVerbose("[EtherDreamDevice] close()");
+void EtherDreamController::close() {
+    logInfoVerbose("[EtherDreamController] close()");
     connectionActive = false;
     // Keep the operation idempotent so repeated calls are harmless.
     if (!tcpClient.is_open()) {
@@ -221,15 +221,15 @@ void EtherDreamDevice::close() {
     clearNetworkError();
 }
 
-bool EtherDreamDevice::isConnected() const {
+bool EtherDreamController::isConnected() const {
     return tcpClient.is_open();
 }
 
-bool EtherDreamDevice::hasActiveConnection() const {
+bool EtherDreamController::hasActiveConnection() const {
     return tcpClient.is_open() && !lastNetworkError().has_value() && connectionActive;
 }
 
-void EtherDreamDevice::setPointRate(std::uint32_t pointRateValue) {
+void EtherDreamController::setPointRate(std::uint32_t pointRateValue) {
     LaserControllerStreaming::setPointRate(pointRateValue);
     {
         std::lock_guard<std::mutex> lock(pendingRatesMutex);
@@ -237,7 +237,7 @@ void EtherDreamDevice::setPointRate(std::uint32_t pointRateValue) {
     }
 }
 
-std::optional<std::uint16_t> EtherDreamDevice::nextPendingRateChange() {
+std::optional<std::uint16_t> EtherDreamController::nextPendingRateChange() {
     std::lock_guard<std::mutex> lock(pendingRatesMutex);
     if (pendingRateChanges.empty()) {
         return std::nullopt;
@@ -249,7 +249,7 @@ std::optional<std::uint16_t> EtherDreamDevice::nextPendingRateChange() {
 
 
 
-expected<DacAck> EtherDreamDevice::sendCommand() {
+expected<DacAck> EtherDreamController::sendCommand() {
 
     if (!running) {
         return unexpected(std::make_error_code(std::errc::operation_canceled));
@@ -275,7 +275,7 @@ expected<DacAck> EtherDreamDevice::sendCommand() {
     return ack;
 }
 
-expected<DacAck> EtherDreamDevice::sendPointRate(std::uint16_t rate) {
+expected<DacAck> EtherDreamController::sendPointRate(std::uint16_t rate) {
 
     commandBuffer.setPointRateCommand(static_cast<std::uint32_t>(rate));
 
@@ -296,7 +296,7 @@ expected<DacAck> EtherDreamDevice::sendPointRate(std::uint16_t rate) {
     return ack;
 }
 
-std::size_t EtherDreamDevice::calculateMinimumPoints() {
+std::size_t EtherDreamController::calculateMinimumPoints() {
 
 
     const int bufferFullness = estimateBufferFullness();
@@ -311,16 +311,16 @@ std::size_t EtherDreamDevice::calculateMinimumPoints() {
 }
 
 
-void EtherDreamDevice::handleNetworkFailure(std::string_view where,
+void EtherDreamController::handleNetworkFailure(std::string_view where,
                                      const std::error_code& ec) {
-    logError("[EtherDreamDevice] failure", where, ec.message());
+    logError("[EtherDreamController] failure", where, ec.message());
     connectionActive = false;
     networkFailureEncountered = true;
     lastError = ec;
 }
 
 
-void EtherDreamDevice::updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked) {
+void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked) {
     lastKnownStatus = status;
     lastReceiveTime = std::chrono::steady_clock::now();
     lastEstimatedBufferFullness.store(status.bufferFullness, std::memory_order_relaxed);
@@ -342,7 +342,7 @@ void EtherDreamDevice::updatePlaybackRequirements(const EtherDreamStatus& status
         && bufferFullness >= config::ETHERDREAM_MIN_PACKET_POINTS;
 }
 
-core::PointFillRequest EtherDreamDevice::getFillRequest() {
+core::PointFillRequest EtherDreamController::getFillRequest() {
 
     const auto bufferFullness = estimateBufferFullness();
 
@@ -361,15 +361,15 @@ core::PointFillRequest EtherDreamDevice::getFillRequest() {
     req.estimatedFirstPointRenderTime =
         std::chrono::steady_clock::now() + bufferLead; 
 
-    logInfoVerbose("[EtherDreamDevice :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
-   //logInfo("[EtherDreamDevice Point fill request ", bufferFullness, ',',bufferCapacity,',', req.minimumPointsRequired,
+    logInfoVerbose("[EtherDreamController :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
+   //logInfo("[EtherDreamController Point fill request ", bufferFullness, ',',bufferCapacity,',', req.minimumPointsRequired,
    //          ' ', req.maximumPointsRequired, "\n");
 
     pointsToSend.clear();
     return req;
 }
 
-void EtherDreamDevice::sendPoints() {
+void EtherDreamController::sendPoints() {
     if (clearRequired || prepareRequired) {
         resetPoints();
         return;
@@ -414,7 +414,7 @@ void EtherDreamDevice::sendPoints() {
     resetPoints();
 }
 
-void EtherDreamDevice::sendClear() {
+void EtherDreamController::sendClear() {
     logInfoVerbose("[EtherDream] clear required -> send 'c'");
     commandBuffer.setSingleByteCommand('c');
     if (auto ack = sendCommand(); !ack) {
@@ -424,7 +424,7 @@ void EtherDreamDevice::sendClear() {
     }
 }
 
-void EtherDreamDevice::sendPrepare() {
+void EtherDreamController::sendPrepare() {
     logError("[EtherDream] prepare required -> send 'p'");
     commandBuffer.setSingleByteCommand('p');
     if (auto ack = sendCommand(); !ack) {
@@ -434,7 +434,7 @@ void EtherDreamDevice::sendPrepare() {
     }
 }
 
-void EtherDreamDevice::sendBegin() {
+void EtherDreamController::sendBegin() {
     logError("[EtherDream] begin required -> send 'b'");
     const auto targetRate = getPointRate();
     //logInfo("[EtherDream] TX 'b'", "rate", targetRate,
@@ -452,12 +452,12 @@ void EtherDreamDevice::sendBegin() {
         }
 }
 
-expected<DacAck> EtherDreamDevice::sendPing() {
+expected<DacAck> EtherDreamController::sendPing() {
     commandBuffer.setSingleByteCommand('?');
     return sendCommand();
 }
 
-int EtherDreamDevice::estimateBufferFullness() const {
+int EtherDreamController::estimateBufferFullness() const {
     bool projected = false;
     const int estimated = calculateBufferFullnessFromAnchor(
         lastKnownStatus.bufferFullness,
@@ -479,7 +479,7 @@ int EtherDreamDevice::estimateBufferFullness() const {
     return clamped;
 }
 
-// void EtherDreamDevice::ensureTargetPointRate() {
+// void EtherDreamController::ensureTargetPointRate() {
 //     if (clearRequired || prepareRequired || beginRequired) {
 //         return;
 //     }
@@ -494,7 +494,7 @@ int EtherDreamDevice::estimateBufferFullness() const {
 //     }
 // }
 
-void EtherDreamDevice::sleepUntilNextPoints() {
+void EtherDreamController::sleepUntilNextPoints() {
 
     // strategy is : 
     // wait until the buffer has the minimum points in a packet available
@@ -530,18 +530,18 @@ void EtherDreamDevice::sleepUntilNextPoints() {
         minSleep,
         maxSleep);
 
-    logInfoVerbose("[EtherDreamDevice] Sleeping for", millisToWait, "ms");
+    logInfoVerbose("[EtherDreamController] Sleeping for", millisToWait, "ms");
     std::this_thread::sleep_for(std::chrono::milliseconds{millisToWait});
 }
 
-void EtherDreamDevice::resetPoints() {
+void EtherDreamController::resetPoints() {
     pointsToSend.clear();
 }
 
 
-int EtherDreamDevice::getBufferSize() const {
-    if (deviceInfo) {
-        const int size = deviceInfo->bufferSizeValue();
+int EtherDreamController::getBufferSize() const {
+    if (controllerInfo) {
+        const int size = controllerInfo->bufferSizeValue();
         if (size > 0) {
             return size;
         }
@@ -549,13 +549,13 @@ int EtherDreamDevice::getBufferSize() const {
     return 0;
 }
 
-std::optional<core::DacBufferState> EtherDreamDevice::getBufferState() const {
+std::optional<core::DacBufferState> EtherDreamController::getBufferState() const {
     return buildBufferState(
         lastKnownBufferCapacity.load(std::memory_order_relaxed),
         lastEstimatedBufferFullness.load(std::memory_order_relaxed));
 }
 
-bool EtherDreamDevice::ensureConnected() {
+bool EtherDreamController::ensureConnected() {
     if (tcpClient.is_open()) {
         return true;
     }
@@ -572,7 +572,7 @@ bool EtherDreamDevice::ensureConnected() {
     return true;
 }
 
-bool EtherDreamDevice::performHandshake() {
+bool EtherDreamController::performHandshake() {
     if (auto initialAck = waitForResponse('?'); initialAck) {
         return true;
     }
@@ -586,11 +586,11 @@ bool EtherDreamDevice::performHandshake() {
     return false;
 }
 
-std::optional<std::error_code> EtherDreamDevice::lastNetworkError() const {
+std::optional<std::error_code> EtherDreamController::lastNetworkError() const {
     return lastError;
 }
 
-void EtherDreamDevice::clearNetworkError() {
+void EtherDreamController::clearNetworkError() {
     lastError.reset();
 }
 

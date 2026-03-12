@@ -1,8 +1,8 @@
 #pragma once
 
 #include "libera/core/GlobalDacManager.hpp"
-#include "libera/etherdream/EtherDreamDeviceInfo.hpp"
-#include "libera/etherdream/EtherDreamDevice.hpp"
+#include "libera/etherdream/EtherDreamControllerInfo.hpp"
+#include "libera/etherdream/EtherDreamController.hpp"
 #include "libera/net/NetService.hpp"
 #include "libera/net/UdpSocket.hpp"
 #include "libera/log/Log.hpp"
@@ -34,8 +34,8 @@ private:
     using Clock = std::chrono::steady_clock;
     static constexpr std::string_view typeName{"etherdream"};
 
-    struct DeviceEntry {
-        EtherDreamDeviceInfo info;
+    struct ControllerEntry {
+        EtherDreamControllerInfo info;
         Clock::time_point lastSeen;
     };
 
@@ -47,10 +47,10 @@ private:
     std::thread listener;
     std::atomic<bool> running{false};
 
-    std::mutex devicesMutex;
-    std::unordered_map<std::string, DeviceEntry> devices;
+    std::mutex controllersMutex;
+    std::unordered_map<std::string, ControllerEntry> controllers;
     std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<EtherDreamDevice>> activeDevices;
+    std::unordered_map<std::string, std::weak_ptr<EtherDreamController>> activeControllers;
 };
 
 } // namespace libera::etherdream

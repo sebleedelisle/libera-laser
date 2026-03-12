@@ -32,9 +32,9 @@ bool isLaserCubeUsb(const libusb_device_descriptor& descriptor) {
            descriptor.idProduct == LaserCubeUsbConfig::PRODUCT_ID;
 }
 
-std::optional<std::string> readSerialNumber(libusb_device* device) {
+std::optional<std::string> readSerialNumber(libusb_device* controller) {
     libusb_device_descriptor descriptor{};
-    const int rc = libusb_get_device_descriptor(device, &descriptor);
+    const int rc = libusb_get_device_descriptor(controller, &descriptor);
     if (rc != 0) {
         return std::nullopt;
     }
@@ -48,7 +48,7 @@ std::optional<std::string> readSerialNumber(libusb_device* device) {
     }
 
     libusb_device_handle* handle = nullptr;
-    if (libusb_open(device, &handle) != 0 || !handle) {
+    if (libusb_open(controller, &handle) != 0 || !handle) {
         return std::nullopt;
     }
 
@@ -93,14 +93,14 @@ std::vector<std::unique_ptr<core::DacInfo>> LaserCubeUsbManager::discover() {
     }
 
     for (ssize_t i = 0; i < count; ++i) {
-        libusb_device* device = deviceList[i];
-        auto serial = readSerialNumber(device);
+        libusb_device* controller = deviceList[i];
+        auto serial = readSerialNumber(controller);
         if (!serial) {
             continue;
         }
         const std::string label = serial->empty() ? std::string("LaserCube USB")
                                                   : std::string("LaserCube USB ") + *serial;
-        results.emplace_back(std::make_unique<LaserCubeUsbDeviceInfo>(*serial, label));
+        results.emplace_back(std::make_unique<LaserCubeUsbControllerInfo>(*serial, label));
     }
 
     libusb_free_device_list(deviceList, 1);
@@ -109,54 +109,54 @@ std::vector<std::unique_ptr<core::DacInfo>> LaserCubeUsbManager::discover() {
 
 std::shared_ptr<core::LaserController>
 LaserCubeUsbManager::getAndConnectToDac(const core::DacInfo& info) {
-    const auto* usbInfo = dynamic_cast<const LaserCubeUsbDeviceInfo*>(&info);
+    const auto* usbInfo = dynamic_cast<const LaserCubeUsbControllerInfo*>(&info);
     if (!usbInfo || !usbContext) {
         return nullptr;
     }
 
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        auto it = activeDevices.find(usbInfo->idValue());
-        if (it != activeDevices.end()) {
+        auto it = activeControllers.find(usbInfo->idValue());
+        if (it != activeControllers.end()) {
             if (auto existing = it->second.lock()) {
                 return existing;
             }
-            activeDevices.erase(it);
+            activeControllers.erase(it);
         }
     }
 
-    auto device = std::make_shared<LaserCubeUsbDevice>(usbContext);
-    const auto result = device->connect(*usbInfo);
+    auto controller = std::make_shared<LaserCubeUsbController>(usbContext);
+    const auto result = controller->connect(*usbInfo);
     if (!result) {
         logError("[LaserCubeUsbManager] connect failed", result.error().message());
         return nullptr;
     }
-    device->start();
+    controller->start();
 
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        activeDevices[usbInfo->idValue()] = device;
+        activeControllers[usbInfo->idValue()] = controller;
     }
 
-    return device;
+    return controller;
 }
 
 void LaserCubeUsbManager::closeAll() {
-    std::unordered_map<std::string, std::shared_ptr<LaserCubeUsbDevice>> snapshot;
+    std::unordered_map<std::string, std::shared_ptr<LaserCubeUsbController>> snapshot;
     {
         std::lock_guard<std::mutex> lock(activeMutex);
-        for (auto& [id, weak] : activeDevices) {
-            if (auto device = weak.lock()) {
-                snapshot.emplace(id, device);
+        for (auto& [id, weak] : activeControllers) {
+            if (auto controller = weak.lock()) {
+                snapshot.emplace(id, controller);
             }
         }
-        activeDevices.clear();
+        activeControllers.clear();
     }
 
-    for (auto& [id, device] : snapshot) {
-        if (device) {
-            device->stop();
-            device->close();
+    for (auto& [id, controller] : snapshot) {
+        if (controller) {
+            controller->stop();
+            controller->close();
         }
     }
 }

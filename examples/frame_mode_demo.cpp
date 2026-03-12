@@ -164,7 +164,7 @@ int main() {
     std::vector<std::unique_ptr<core::DacInfo>> results = dacManager.discoverAll();
 
     if (results.empty()) {
-        libera::logInfo("No devices discovered.");
+        libera::logInfo("No controllers discovered.");
         return 1;
     }
 

@@ -30,25 +30,25 @@ void IdnManager::openIfNeeded() {
 
     const int count = sdk->OpenDevicesOnlyNetwork();
     opened = true;
-    deviceCount = count > 0 ? static_cast<std::size_t>(count) : 0;
+    controllerCount = count > 0 ? static_cast<std::size_t>(count) : 0;
 }
 
-std::size_t IdnManager::refreshDeviceCount(bool allowRescan) {
+std::size_t IdnManager::refreshControllerCount(bool allowRescan) {
     openIfNeeded();
     if (!sdk) {
-        deviceCount = 0;
-        return deviceCount;
+        controllerCount = 0;
+        return controllerCount;
     }
 
     if (!allowRescan) {
-        return deviceCount;
+        return controllerCount;
     }
 
     const int count = sdk->ReScanDevicesOnlyNetwork();
     if (count > 0) {
-        deviceCount = static_cast<std::size_t>(count);
+        controllerCount = static_cast<std::size_t>(count);
     }
-    return deviceCount;
+    return controllerCount;
 }
 
 std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
@@ -57,9 +57,9 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
     bool hasActive = false;
     {
         std::lock_guard lock(activeMutex);
-        for (auto it = activeDevices.begin(); it != activeDevices.end();) {
+        for (auto it = activeControllers.begin(); it != activeControllers.end();) {
             if (it->second.expired()) {
-                it = activeDevices.erase(it);
+                it = activeControllers.erase(it);
             } else {
                 hasActive = true;
                 ++it;
@@ -67,7 +67,7 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
         }
     }
 
-    const auto count = refreshDeviceCount(!hasActive);
+    const auto count = refreshControllerCount(!hasActive);
     if (!sdk || count == 0) {
         return results;
     }
@@ -95,7 +95,7 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
         const int firmware = sdk->GetFirmwareVersion(index);
         std::string id = "idn-" + std::to_string(index);
 
-        results.emplace_back(std::make_unique<IdnDeviceInfo>(
+        results.emplace_back(std::make_unique<IdnControllerInfo>(
             std::move(id),
             std::move(label),
             HELIOS_MAX_PPS_IDN,
@@ -108,46 +108,46 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
 
 std::shared_ptr<core::LaserController>
 IdnManager::getAndConnectToDac(const core::DacInfo& info) {
-    const auto* idnInfo = dynamic_cast<const IdnDeviceInfo*>(&info);
+    const auto* idnInfo = dynamic_cast<const IdnControllerInfo*>(&info);
     if (!idnInfo) {
         return nullptr;
     }
 
-    std::shared_ptr<helios::HeliosDevice> device;
+    std::shared_ptr<helios::HeliosController> controller;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeDevices.find(idnInfo->index());
-        if (it != activeDevices.end()) {
+        auto it = activeControllers.find(idnInfo->index());
+        if (it != activeControllers.end()) {
             if (auto existing = it->second.lock()) {
-                device = existing;
+                controller = existing;
             } else {
-                activeDevices.erase(it);
+                activeControllers.erase(it);
             }
         }
 
-        if (!device) {
-            device = std::make_shared<helios::HeliosDevice>(sdk, idnInfo->index());
-            activeDevices[idnInfo->index()] = device;
+        if (!controller) {
+            controller = std::make_shared<helios::HeliosController>(sdk, idnInfo->index());
+            activeControllers[idnInfo->index()] = controller;
         }
     }
 
-    if (device) {
-        device->start();
+    if (controller) {
+        controller->start();
     }
 
-    return device;
+    return controller;
 }
 
 void IdnManager::closeAll() {
-    std::unordered_map<unsigned int, std::shared_ptr<helios::HeliosDevice>> snapshot;
+    std::unordered_map<unsigned int, std::shared_ptr<helios::HeliosController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
-        for (auto& [index, weak] : activeDevices) {
+        for (auto& [index, weak] : activeControllers) {
             if (auto dev = weak.lock()) {
                 snapshot.emplace(index, std::move(dev));
             }
         }
-        activeDevices.clear();
+        activeControllers.clear();
     }
 
     for (auto& [index, dev] : snapshot) {
@@ -161,7 +161,7 @@ void IdnManager::closeAll() {
     }
 
     opened = false;
-    deviceCount = 0;
+    controllerCount = 0;
 }
 
 } // namespace libera::idn

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "libera/core/GlobalDacManager.hpp"
-#include "libera/idn/IdnDeviceInfo.hpp"
-#include "libera/helios/HeliosDevice.hpp"
+#include "libera/idn/IdnControllerInfo.hpp"
+#include "libera/helios/HeliosController.hpp"
 
 #include <memory>
 #include <mutex>
@@ -28,15 +28,15 @@ private:
     static constexpr std::string_view typeName{"idn"};
 
     void openIfNeeded();
-    std::size_t refreshDeviceCount(bool allowRescan);
+    std::size_t refreshControllerCount(bool allowRescan);
 
     std::mutex sdkMutex;
     std::shared_ptr<HeliosDac> sdk;
     bool opened = false;
-    std::size_t deviceCount = 0;
+    std::size_t controllerCount = 0;
 
     std::mutex activeMutex;
-    std::unordered_map<unsigned int, std::weak_ptr<helios::HeliosDevice>> activeDevices;
+    std::unordered_map<unsigned int, std::weak_ptr<helios::HeliosController>> activeControllers;
 };
 
 } // namespace libera::idn
