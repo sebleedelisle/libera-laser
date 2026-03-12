@@ -82,7 +82,7 @@ using RequestPointsCallback =
  * - Derived classes implement `run()` (e.g., poll status, send points).
  * - `running` is an atomic flag checked by the loop.
  */
-class LaserDeviceBase {
+class LaserControllerStreaming {
 public:
     /**
      * @brief Construct the controller and reserve internal buffers.
@@ -90,8 +90,8 @@ public:
      * Currently reserves ~30k points for the transmission buffer, which is
      * more than most hardware FIFOs. This avoids most reallocations in practice.
      */
-    LaserDeviceBase();
-    virtual ~LaserDeviceBase();
+    LaserControllerStreaming();
+    virtual ~LaserControllerStreaming();
     /**
      * @brief Install or replace the callback that generates points.
      * @param callback Function object or lambda conforming to RequestPointsCallback.

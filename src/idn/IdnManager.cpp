@@ -106,7 +106,7 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserDevice>
+std::shared_ptr<core::LaserController>
 IdnManager::getAndConnectToDac(const core::DacInfo& info) {
     const auto* idnInfo = dynamic_cast<const IdnDeviceInfo*>(&info);
     if (!idnInfo) {

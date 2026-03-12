@@ -1,4 +1,4 @@
-#include "libera/core/LaserDevice.hpp"
+#include "libera/core/LaserController.hpp"
 #include <cassert>
 #include <atomic>
 
@@ -15,29 +15,29 @@ bool frameIsDueAt(const Frame& frame,
 }
 
 std::atomic<std::int64_t>& targetRenderLatencyMsStorage() {
-    // One shared frame scheduling latency for all LaserDevice instances.
+    // One shared frame scheduling latency for all LaserController instances.
     static std::atomic<std::int64_t> latencyMs{0};
     return latencyMs;
 }
 
 } // namespace
 
-LaserDevice::LaserDevice() = default;
-LaserDevice::~LaserDevice() = default;
+LaserController::LaserController() = default;
+LaserController::~LaserController() = default;
 
-void LaserDevice::setTargetRenderLatency(std::chrono::milliseconds latency) {
+void LaserController::setTargetRenderLatency(std::chrono::milliseconds latency) {
     const auto clamped = std::max<std::int64_t>(0, latency.count());
     targetRenderLatencyMsStorage().store(clamped, std::memory_order_relaxed);
 }
 
-std::chrono::milliseconds LaserDevice::targetRenderLatency() {
+std::chrono::milliseconds LaserController::targetRenderLatency() {
     return std::chrono::milliseconds(
         targetRenderLatencyMsStorage().load(std::memory_order_relaxed));
 }
 
 // returns false if the device isn't ready for a new frame or if the frame is empty. 
 
-bool LaserDevice::sendFrame(Frame&& frame) {
+bool LaserController::sendFrame(Frame&& frame) {
     if (!frameModeActive) {
         startFrameMode();
     }
@@ -60,7 +60,7 @@ bool LaserDevice::sendFrame(Frame&& frame) {
     return true;
 }
 
-void LaserDevice::startFrameMode() {
+void LaserController::startFrameMode() {
     if (frameModeActive) {
         return;
     }
@@ -70,7 +70,7 @@ void LaserDevice::startFrameMode() {
     });
 }
 
-void LaserDevice::stopFrameMode() {
+void LaserController::stopFrameMode() {
     if (!frameModeActive) {
         return;
     }
@@ -82,25 +82,25 @@ void LaserDevice::stopFrameMode() {
     frameModeActive = false;
 }
 
-bool LaserDevice::frameModeEnabled() const {
+bool LaserController::frameModeEnabled() const {
     return frameModeActive;
 }
 
-bool LaserDevice::isReadyForNewFrame() const {
+bool LaserController::isReadyForNewFrame() const {
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
     const std::size_t pendingCount = pendingFrames.size();
     const std::size_t activeCount = frameQueue.size();
     return (activeCount + pendingCount) <= 1;
 }
 
-std::size_t LaserDevice::queuedFrameCount() const {
+std::size_t LaserController::queuedFrameCount() const {
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
     const std::size_t pendingCount = pendingFrames.size();
     const std::size_t activeCount = frameQueue.size();
     return activeCount + pendingCount;
 }
 
-void LaserDevice::frameFillCallback(const PointFillRequest& request,
+void LaserController::frameFillCallback(const PointFillRequest& request,
                                     std::vector<LaserPoint>& outputBuffer) {
     // Pull any frames provided by other threads into the local queue so the
     // remainder of this function can operate without locking.
@@ -182,7 +182,7 @@ void LaserDevice::frameFillCallback(const PointFillRequest& request,
 
 }
 
-void LaserDevice::drainPendingFrames() {
+void LaserController::drainPendingFrames() {
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
     while (!pendingFrames.empty()) {
         frameQueue.push_back(pendingFrames.front());
@@ -190,7 +190,7 @@ void LaserDevice::drainPendingFrames() {
     }
 }
 
-void LaserDevice::appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count) {
+void LaserController::appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count) {
     if (count == 0) {
         return;
     }

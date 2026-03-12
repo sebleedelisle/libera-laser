@@ -184,7 +184,7 @@ std::vector<std::unique_ptr<core::DacInfo>> LaserCubeNetManager::discover() {
     return out;
 }
 
-std::shared_ptr<core::LaserDevice>
+std::shared_ptr<core::LaserController>
 LaserCubeNetManager::getAndConnectToDac(const core::DacInfo& info) {
     const auto* lcInfo = dynamic_cast<const LaserCubeNetDeviceInfo*>(&info);
     if (!lcInfo) {

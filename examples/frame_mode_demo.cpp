@@ -92,7 +92,7 @@ float getBufferFillFraction(const std::optional<core::DacBufferState>& bufferSta
         1.0f);
 }
 
-void printBufferState(const std::shared_ptr<core::LaserDevice>& dac,
+void printBufferState(const std::shared_ptr<core::LaserController>& dac,
                       const std::optional<core::DacBufferState>& bufferState,
                       int frameIndex,
                       int totalFrames) {
@@ -183,7 +183,7 @@ int main() {
     }
 
 
-    std::shared_ptr<core::LaserDevice> dac = dacManager.getAndConnectToDac(*results[choice]);
+    std::shared_ptr<core::LaserController> dac = dacManager.getAndConnectToDac(*results[choice]);
     if (!dac) {
         libera :: logError("Failed to acquire DAC from manager.");
         return 1;

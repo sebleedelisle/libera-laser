@@ -107,7 +107,7 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserDevice>
+std::shared_ptr<core::LaserController>
 HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
     const auto* heliosInfo = dynamic_cast<const HeliosDeviceInfo*>(&info);
     if (!heliosInfo) {

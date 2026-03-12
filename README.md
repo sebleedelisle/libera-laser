@@ -38,7 +38,7 @@ Streaming mode is inspired by audio engines: you provide a callback, and the dev
 - An estimated timestamp for when the first point will be rendered.
 
 ### Frame mode
-Frame mode is built into the `LaserDevice` base class. You can enqueue frames, query whether the device is ready for another frame, and let the frame management system feed the streaming callback internally.
+Frame mode is built into the `LaserController` base class. You can enqueue frames, query whether the device is ready for another frame, and let the frame management system feed the streaming callback internally.
 
 ## Build
 

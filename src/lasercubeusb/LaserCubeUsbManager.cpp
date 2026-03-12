@@ -107,7 +107,7 @@ std::vector<std::unique_ptr<core::DacInfo>> LaserCubeUsbManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserDevice>
+std::shared_ptr<core::LaserController>
 LaserCubeUsbManager::getAndConnectToDac(const core::DacInfo& info) {
     const auto* usbInfo = dynamic_cast<const LaserCubeUsbDeviceInfo*>(&info);
     if (!usbInfo || !usbContext) {

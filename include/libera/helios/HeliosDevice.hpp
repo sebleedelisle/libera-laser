@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/LaserDevice.hpp"
+#include "libera/core/LaserController.hpp"
 #include "HeliosDac.h"
 
 #include <atomic>
@@ -9,7 +9,7 @@
 
 namespace libera::helios {
 
-class HeliosDevice : public core::LaserDevice {
+class HeliosDevice : public core::LaserController {
 public:
     explicit HeliosDevice(std::shared_ptr<HeliosDac> sdk, unsigned int deviceIndex);
     ~HeliosDevice() override;

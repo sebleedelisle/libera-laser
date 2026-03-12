@@ -1,4 +1,4 @@
-#include "libera/core/LaserDeviceBase.hpp"
+#include "libera/core/LaserControllerStreaming.hpp"
 #include "libera/log/Log.hpp"
 #include <cassert>
 #include <algorithm>
@@ -25,7 +25,7 @@ void elevateWorkerThreadPriority() {
     // macOS: use QoS to request a higher scheduling class without root.
     const int rc = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
     if (rc != 0) {
-        logInfo("[LaserDeviceBase] pthread_set_qos_class_self_np failed", rc);
+        logInfo("[LaserControllerStreaming] pthread_set_qos_class_self_np failed", rc);
     }
 #elif defined(__linux__)
     // Linux: try realtime scheduling; may require CAP_SYS_NICE or root.
@@ -33,31 +33,31 @@ void elevateWorkerThreadPriority() {
     sch.sched_priority = 10; // modest priority within FIFO range
     const int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
     if (rc != 0) {
-        logInfo("[LaserDeviceBase] pthread_setschedparam failed", rc, std::strerror(rc));
+        logInfo("[LaserControllerStreaming] pthread_setschedparam failed", rc, std::strerror(rc));
     }
 #elif defined(_WIN32)
     // Windows: boost thread priority within the process.
     if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
-        logInfo("[LaserDeviceBase] SetThreadPriority failed", static_cast<int>(GetLastError()));
+        logInfo("[LaserControllerStreaming] SetThreadPriority failed", static_cast<int>(GetLastError()));
     }
 #endif
 }
 } // namespace
 
-LaserDeviceBase::LaserDeviceBase() {
+LaserControllerStreaming::LaserControllerStreaming() {
     pointsToSend.reserve(30000);
 }
 
-LaserDeviceBase::~LaserDeviceBase() {
+LaserControllerStreaming::~LaserControllerStreaming() {
     stop();
 }
 
-void LaserDeviceBase::setRequestPointsCallback(const RequestPointsCallback &callback) {
+void LaserControllerStreaming::setRequestPointsCallback(const RequestPointsCallback &callback) {
     // Store the callback (copied into the functor).
     requestPointsCallback = callback;
 }
 
-bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
+bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
     if (!requestPointsCallback) {
         // No callback set, so there is no way to produce points.
         return false;
@@ -77,8 +77,8 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
                "Callback produced more points than allowed by maximumPointsRequired.");
     if(pointsToSend.size()>request.maximumPointsRequired) { 
         // get rid of extra points
-        logError("[LaserDeviceBase::requestPoints] - too many points sent! Maximum :", request.maximumPointsRequired, " actual :", pointsToSend.size()); 
-        logError("[LaserDeviceBase::requestPoints] - removing additional points"); 
+        logError("[LaserControllerStreaming::requestPoints] - too many points sent! Maximum :", request.maximumPointsRequired, " actual :", pointsToSend.size()); 
+        logError("[LaserControllerStreaming::requestPoints] - removing additional points"); 
         pointsToSend.resize(request.maximumPointsRequired); 
 
     } else if(pointsToSend.size()<request.minimumPointsRequired) { 
@@ -146,7 +146,7 @@ bool LaserDeviceBase::requestPoints(const PointFillRequest &request) {
 }
 
 
-void LaserDeviceBase::start() {
+void LaserControllerStreaming::start() {
     if (running) return; // Already running.
     running = true;
     worker = std::thread([this] {
@@ -155,19 +155,19 @@ void LaserDeviceBase::start() {
     });
 }
 
-void LaserDeviceBase::stop() {
-    logInfoVerbose("[LaserDeviceBase] stop()");
+void LaserControllerStreaming::stop() {
+    logInfoVerbose("[LaserControllerStreaming] stop()");
     running = false;
     if (worker.joinable()) {
         worker.join();
     }
 }
 
-double LaserDeviceBase::pointsToMillis(std::size_t pointCount) const {
+double LaserControllerStreaming::pointsToMillis(std::size_t pointCount) const {
     return pointsToMillis(pointCount, getPointRate());
 }
 
-double LaserDeviceBase::pointsToMillis(std::size_t pointCount, std::uint32_t rate) const {
+double LaserControllerStreaming::pointsToMillis(std::size_t pointCount, std::uint32_t rate) const {
     if (rate == 0 || pointCount == 0) {
         return 0.0;
     }
@@ -178,7 +178,7 @@ double LaserDeviceBase::pointsToMillis(std::size_t pointCount, std::uint32_t rat
     return std::max(millis, 0.0);
 }
 
-int LaserDeviceBase::millisToPoints(double millis) const {
+int LaserControllerStreaming::millisToPoints(double millis) const {
     const auto rate = getPointRate();
     if (rate == 0 || millis <= 0.0) {
         return 0;
@@ -195,51 +195,51 @@ int LaserDeviceBase::millisToPoints(double millis) const {
     return static_cast<int>(std::min<long long>(rounded, std::numeric_limits<int>::max()));
 }
 
-bool LaserDeviceBase::getArmed() const noexcept { 
+bool LaserControllerStreaming::getArmed() const noexcept { 
     return armed.load(std::memory_order_relaxed);
 }
 
-void LaserDeviceBase::setArmed(bool state) { 
+void LaserControllerStreaming::setArmed(bool state) { 
     armed.store(state, std::memory_order_relaxed);
 } 
 
-void LaserDeviceBase::setPointRate(std::uint32_t pointRateValue) {
+void LaserControllerStreaming::setPointRate(std::uint32_t pointRateValue) {
     pointRate.store(pointRateValue, std::memory_order_relaxed);
 }
 
-std::uint32_t LaserDeviceBase::getPointRate() const noexcept {
+std::uint32_t LaserControllerStreaming::getPointRate() const noexcept {
     return pointRate.load(std::memory_order_relaxed);
 }
 
-std::optional<DacBufferState> LaserDeviceBase::getBufferState() const {
+std::optional<DacBufferState> LaserControllerStreaming::getBufferState() const {
     return std::nullopt;
 }
 
-std::optional<DacLatencyStats> LaserDeviceBase::getLatencyStats() const {
+std::optional<DacLatencyStats> LaserControllerStreaming::getLatencyStats() const {
     return std::nullopt;
 }
 
-void LaserDeviceBase::resetStartupBlank() {
+void LaserControllerStreaming::resetStartupBlank() {
     const int blankPoints = millisToPoints(1.0f);
     startupBlankPointsRemaining.store(blankPoints, std::memory_order_relaxed);
     scannerSyncColourDelayLine.clear();
 }
 
-void LaserDeviceBase::setVerbose(bool enabled) {
+void LaserControllerStreaming::setVerbose(bool enabled) {
     verbose.store(enabled, std::memory_order_relaxed);
 }
 
-bool LaserDeviceBase::isVerbose() const noexcept {
+bool LaserControllerStreaming::isVerbose() const noexcept {
     return verbose.load(std::memory_order_relaxed);
 }
 
-void LaserDeviceBase::setScannerSync(double offsetTenThousandths) {
-   // logInfo("[LaserDeviceBase::setScannerSync]", offsetTenThousandths); 
+void LaserControllerStreaming::setScannerSync(double offsetTenThousandths) {
+   // logInfo("[LaserControllerStreaming::setScannerSync]", offsetTenThousandths); 
     const double clamped = std::max(offsetTenThousandths, 0.0);
     scannerSyncTime.store(clamped, std::memory_order_relaxed);
 }
 
-double LaserDeviceBase::getScannerSync() const noexcept {
+double LaserControllerStreaming::getScannerSync() const noexcept {
     return scannerSyncTime.load(std::memory_order_relaxed);
 }
 

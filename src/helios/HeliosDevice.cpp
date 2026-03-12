@@ -55,7 +55,7 @@ bool HeliosDevice::isConnected() const {
 }
 
 void HeliosDevice::setPointRate(std::uint32_t pointRateValue) {
-    LaserDeviceBase::setPointRate(pointRateValue);
+    LaserControllerStreaming::setPointRate(pointRateValue);
 }
 
 void HeliosDevice::setFramePointCount(std::size_t points) {

@@ -23,7 +23,7 @@ public:
 
     std::vector<std::unique_ptr<core::DacInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserDevice> getAndConnectToDac(const core::DacInfo& info) override;
+    std::shared_ptr<core::LaserController> getAndConnectToDac(const core::DacInfo& info) override;
     void closeAll() override;
 
     static inline core::DacManagerRegistry registrar{

@@ -247,7 +247,7 @@ bool EtherDreamDevice::hasActiveConnection() const {
 }
 
 void EtherDreamDevice::setPointRate(std::uint32_t pointRateValue) {
-    LaserDeviceBase::setPointRate(pointRateValue);
+    LaserControllerStreaming::setPointRate(pointRateValue);
     {
         std::lock_guard<std::mutex> lock(pendingRatesMutex);
         pendingRateChanges.push_back(pointRateValue);

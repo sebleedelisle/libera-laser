@@ -2,7 +2,7 @@
 
 #include "libera/core/Expected.hpp"
 #include "libera/core/ByteBuffer.hpp"
-#include "libera/core/LaserDevice.hpp"
+#include "libera/core/LaserController.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbDeviceInfo.hpp"
 
 #include <atomic>
@@ -17,7 +17,7 @@ namespace libera::lasercubeusb {
 
 class UsbDeviceHandle;
 
-class LaserCubeUsbDevice : public core::LaserDevice {
+class LaserCubeUsbDevice : public core::LaserController {
 public:
     explicit LaserCubeUsbDevice(std::shared_ptr<libusb_context> context);
     ~LaserCubeUsbDevice() override;

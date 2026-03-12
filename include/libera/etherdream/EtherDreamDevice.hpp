@@ -1,6 +1,6 @@
 #pragma once
 #include "libera/core/Expected.hpp"
-#include "libera/core/LaserDevice.hpp"
+#include "libera/core/LaserController.hpp"
 #include "libera/net/NetConfig.hpp"
 #include "libera/net/TcpClient.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
@@ -23,7 +23,7 @@ namespace ip = libera::net::asio::ip;
  * @brief Streaming controller that talks to an EtherDream DAC.
  *
  * The device inherits the worker thread lifecycle and point buffering from
- * `LaserDeviceBase`. Streaming-specific timing (minimum refill sizes, sleep
+ * `LaserControllerStreaming`. Streaming-specific timing (minimum refill sizes, sleep
  * cadence, etc.) is handled entirely within this class.
  *
  * Responsibilities:
@@ -32,7 +32,7 @@ namespace ip = libera::net::asio::ip;
  * - Request points from the user callback and stream device-formatted frames.
  * - Drive the worker loop supplied by the base class.
  */
-class EtherDreamDevice : public libera::core::LaserDevice {
+class EtherDreamDevice : public libera::core::LaserController {
 public:
     EtherDreamDevice();
     explicit EtherDreamDevice(EtherDreamDeviceInfo info);

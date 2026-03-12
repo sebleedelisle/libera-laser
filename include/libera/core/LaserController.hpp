@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/LaserDeviceBase.hpp"
+#include "libera/core/LaserControllerStreaming.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,10 +20,10 @@ struct Frame {
     std::size_t nextPoint = 0; // cursor of the next sample to emit
 };
 
-class LaserDevice : public LaserDeviceBase {
+class LaserController : public LaserControllerStreaming {
 public:
-    LaserDevice();
-    virtual ~LaserDevice();
+    LaserController();
+    virtual ~LaserController();
 
     /**
      * @brief Set global frame presentation latency used by sendFrame().

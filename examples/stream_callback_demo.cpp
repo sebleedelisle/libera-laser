@@ -11,7 +11,7 @@ using namespace libera;
 
 namespace {
 
-void installCirclePointsCallback(const std::shared_ptr<core::LaserDevice>& device) {
+void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& device) {
     // Register a callback that continuously feeds a coloured circle to the DAC.
     // The lambda keeps all state internally (static precomputed points + cursor)
     // so the outer application only has to install it once.
@@ -150,7 +150,7 @@ int main() {
     // the discovery manager getAndConnectToDac should create and connect the dac if it hasn't already. 
     // if it has already it just returns the existing dac
 
-    std::shared_ptr<core::LaserDevice> dac = dacManager.getAndConnectToDac(*results[choice]); 
+    std::shared_ptr<core::LaserController> dac = dacManager.getAndConnectToDac(*results[choice]); 
     if (!dac) {
         logError("Failed to acquire DAC from manager.");
         return 1;

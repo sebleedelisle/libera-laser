@@ -1,7 +1,7 @@
 #pragma once
 
 #include "libera/core/Expected.hpp"
-#include "libera/core/LaserDevice.hpp"
+#include "libera/core/LaserController.hpp"
 #include "libera/lasercubenet/LaserCubeNetConfig.hpp"
 #include "libera/lasercubenet/LaserCubeNetDeviceInfo.hpp"
 #include "libera/net/NetService.hpp"
@@ -19,7 +19,7 @@
 
 namespace libera::lasercubenet {
 
-class LaserCubeNetDevice : public core::LaserDevice {
+class LaserCubeNetDevice : public core::LaserController {
 public:
     LaserCubeNetDevice();
     explicit LaserCubeNetDevice(LaserCubeNetDeviceInfo info);

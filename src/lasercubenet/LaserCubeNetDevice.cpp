@@ -146,7 +146,7 @@ void LaserCubeNetDevice::run() {
 }
 
 void LaserCubeNetDevice::setPointRate(std::uint32_t pointRateValue) {
-    core::LaserDeviceBase::setPointRate(pointRateValue);
+    core::LaserControllerStreaming::setPointRate(pointRateValue);
     if (pointRateValue > maxPointRate.load(std::memory_order_relaxed)) {
         pointRateValue = maxPointRate.load(std::memory_order_relaxed);
     }

@@ -276,7 +276,7 @@ libera::expected<void> LaserCubeUsbDevice::connect(const LaserCubeUsbDeviceInfo&
     const auto initialRate = maxPointRate.load(std::memory_order_relaxed) > 0
                                  ? std::min(getPointRate(), maxPointRate.load(std::memory_order_relaxed))
                                  : getPointRate();
-    LaserDeviceBase::setPointRate(initialRate);
+    LaserControllerStreaming::setPointRate(initialRate);
     targetPps.store(initialRate, std::memory_order_relaxed);
     currentPps.store(0, std::memory_order_relaxed);
     lastDataSentTime = std::chrono::steady_clock::time_point{};
@@ -297,7 +297,7 @@ void LaserCubeUsbDevice::setPointRate(std::uint32_t pointRateValue) {
         pointRateValue = maxRate;
     }
 
-    LaserDeviceBase::setPointRate(pointRateValue);
+    LaserControllerStreaming::setPointRate(pointRateValue);
     targetPps.store(pointRateValue, std::memory_order_relaxed);
 }
 
