@@ -11,6 +11,9 @@
 #include <optional>
 #include <mutex>
 #include <utility>
+#include <string>
+#include <string_view>
+#include <unordered_map>
 #include "LaserPoint.hpp"
 #include "libera/log/Log.hpp"
 
@@ -49,6 +52,18 @@ struct DacLatencyStats {
     double p99Ms = 0.0;
     double maxMs = 0.0;
     std::size_t sampleCount = 0;
+};
+
+enum class ControllerStatus {
+    Good,
+    Issues,
+    Error
+};
+
+struct ControllerErrorInfo {
+    std::string code;
+    std::string label;
+    std::uint64_t count = 0;
 };
 
 /**
@@ -135,6 +150,15 @@ public:
     /// Rolling latency percentiles (transport/admission), if supported.
     virtual std::optional<DacLatencyStats> getLatencyStats() const;
 
+    /// Overall controller health.
+    ControllerStatus getStatus() const noexcept;
+
+    /// Aggregated controller errors since the last clear.
+    std::vector<ControllerErrorInfo> getErrors() const;
+
+    /// Clear aggregated error counters and intermittent warning state.
+    void clearErrors();
+
     // arm status - needs to be set or no output! 
     bool getArmed() const noexcept; 
     void setArmed(bool state = true); 
@@ -214,6 +238,15 @@ protected:
     static std::optional<DacBufferState> buildBufferState(int totalBufferPoints,
                                                           int pointsInBuffer);
 
+    /// Update whether the DAC connection is currently healthy.
+    void setConnectionState(bool connected) noexcept;
+
+    /// Increment a transient/intermittent error type counter.
+    void recordIntermittentError(std::string_view errorType);
+
+    /// Increment a connection failure error type counter and mark disconnected.
+    void recordConnectionError(std::string_view errorType);
+
     std::atomic<bool> armed{false};
 
     std::thread worker;
@@ -239,11 +272,18 @@ private:
     mutable std::mutex latencySamplesMutex;
     std::deque<double> latencySamplesMs;
 
+    void incrementErrorCount(std::string_view errorType);
+
     std::atomic<int> estimatedBufferCapacity{0};
     std::atomic<int> estimatedBufferAnchorFullness{0};
     std::atomic<std::uint32_t> estimatedBufferAnchorPointRate{0};
     std::atomic<SteadyRep> estimatedBufferAnchorTick{0};
     std::atomic<bool> estimatedBufferAnchorValid{false};
+
+    std::atomic<bool> controllerConnected{false};
+    std::atomic<bool> hasIntermittentErrors{false};
+    mutable std::mutex errorCountsMutex;
+    std::unordered_map<std::string, std::uint64_t> errorCounts;
 };
 
 } // namespace libera::core

@@ -40,6 +40,16 @@ Streaming mode is inspired by audio engines: you provide a callback, and the con
 ### Frame mode
 Frame mode is built into the `LaserController` base class. You can enqueue frames, query whether the controller is ready for another frame, and let the frame management system feed the streaming callback internally.
 
+### Controller health/status
+Every controller now exposes a shared status/error API:
+- `getStatus()` returns `Good`, `Issues`, or `Error`.
+- `getErrors()` returns `{code, label, count}` entries.
+- `clearErrors()` resets error counters and intermittent warning state.
+
+Error type keys are shared by transport class:
+- Network DACs use `network.*` types (for example `network.timeout`, `network.packet_loss`, `network.buffer_underflow`).
+- USB DACs use `usb.*` types (for example `usb.timeout`, `usb.transfer_failed`, `usb.connection_lost`).
+
 ## Build
 
 This project uses CMake presets. Typical flow:

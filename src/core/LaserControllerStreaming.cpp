@@ -1,5 +1,6 @@
 #include "libera/core/LaserControllerStreaming.hpp"
 #include "libera/core/BufferEstimator.hpp"
+#include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/log/Log.hpp"
 #include <cassert>
 #include <algorithm>
@@ -282,6 +283,45 @@ std::optional<DacLatencyStats> LaserControllerStreaming::getLatencyStats() const
     return stats;
 }
 
+ControllerStatus LaserControllerStreaming::getStatus() const noexcept {
+    if (!controllerConnected.load(std::memory_order_relaxed)) {
+        return ControllerStatus::Error;
+    }
+    if (hasIntermittentErrors.load(std::memory_order_relaxed)) {
+        return ControllerStatus::Issues;
+    }
+    return ControllerStatus::Good;
+}
+
+std::vector<ControllerErrorInfo> LaserControllerStreaming::getErrors() const {
+    std::vector<ControllerErrorInfo> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(errorCountsMutex);
+        snapshot.reserve(errorCounts.size());
+        for (const auto& entry : errorCounts) {
+            snapshot.push_back(ControllerErrorInfo{
+                entry.first,
+                std::string(error_types::labelFor(entry.first)),
+                entry.second});
+        }
+    }
+
+    std::sort(snapshot.begin(), snapshot.end(),
+              [](const ControllerErrorInfo& a, const ControllerErrorInfo& b) {
+                  if (a.count != b.count) {
+                      return a.count > b.count;
+                  }
+                  return a.code < b.code;
+              });
+    return snapshot;
+}
+
+void LaserControllerStreaming::clearErrors() {
+    hasIntermittentErrors.store(false, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(errorCountsMutex);
+    errorCounts.clear();
+}
+
 void LaserControllerStreaming::recordLatencySample(std::chrono::steady_clock::duration sample) {
     const double sampleMs =
         std::chrono::duration<double, std::milli>(sample).count();
@@ -398,6 +438,29 @@ std::optional<DacBufferState> LaserControllerStreaming::buildBufferState(
     state.totalBufferPoints = totalBufferPoints;
     state.pointsInBuffer = clampBufferFullnessToCapacity(pointsInBuffer, totalBufferPoints);
     return state;
+}
+
+void LaserControllerStreaming::setConnectionState(bool connected) noexcept {
+    controllerConnected.store(connected, std::memory_order_relaxed);
+}
+
+void LaserControllerStreaming::recordIntermittentError(std::string_view errorType) {
+    incrementErrorCount(errorType);
+    hasIntermittentErrors.store(true, std::memory_order_relaxed);
+}
+
+void LaserControllerStreaming::recordConnectionError(std::string_view errorType) {
+    incrementErrorCount(errorType);
+    setConnectionState(false);
+}
+
+void LaserControllerStreaming::incrementErrorCount(std::string_view errorType) {
+    if (errorType.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(errorCountsMutex);
+    ++errorCounts[std::string(errorType)];
 }
 
 void LaserControllerStreaming::resetStartupBlank() {

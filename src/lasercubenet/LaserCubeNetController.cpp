@@ -2,6 +2,7 @@
 
 #include "libera/core/ByteRead.hpp"
 #include "libera/core/ByteBuffer.hpp"
+#include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -9,6 +10,8 @@
 #include <thread>
 
 namespace libera::lasercubenet {
+
+namespace error_types = libera::core::error_types;
 
 LaserCubeNetController::LaserCubeNetController() {
     // Reuse the shared IO context so sockets share the same network thread.
@@ -50,21 +53,26 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
     commandSocket = std::make_unique<net::UdpSocket>(*io);
 
     if (auto ec = dataSocket->open_v4()) {
+        recordConnectionError(error_types::network::connectFailed);
         return libera::unexpected(ec);
     }
     if (auto ec = dataSocket->bind_any(0)) {
+        recordConnectionError(error_types::network::connectFailed);
         return libera::unexpected(ec);
     }
     if (auto ec = commandSocket->open_v4()) {
+        recordConnectionError(error_types::network::connectFailed);
         return libera::unexpected(ec);
     }
     if (auto ec = commandSocket->bind_any(0)) {
+        recordConnectionError(error_types::network::connectFailed);
         return libera::unexpected(ec);
     }
 
     std::error_code ecAddr;
     auto address = libera::net::asio::ip::make_address(ipAddress, ecAddr);
     if (ecAddr) {
+        recordConnectionError(error_types::network::connectFailed);
         return libera::unexpected(std::make_error_code(std::errc::invalid_argument));
     }
 
@@ -72,11 +80,13 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
     commandEndpoint = libera::net::asio::ip::udp::endpoint(address, LaserCubeNetConfig::COMMAND_PORT);
 
     networkConnected.store(true, std::memory_order_relaxed);
+    setConnectionState(true);
     return {};
 }
 
 void LaserCubeNetController::close() {
     networkConnected.store(false, std::memory_order_relaxed);
+    setConnectionState(false);
     if (dataSocket) {
         dataSocket->close();
     }
@@ -90,6 +100,7 @@ void LaserCubeNetController::run() {
 
     while (running.load()) {
         if (networkConnected.load(std::memory_order_relaxed)) {
+            setConnectionState(true);
             // Push point-rate changes down to the controller when requested.
             const auto targetPps = newPps.load(std::memory_order_relaxed);
             const auto currentPps = pps.load(std::memory_order_relaxed);
@@ -102,6 +113,8 @@ void LaserCubeNetController::run() {
             // Send at most one packet per loop; pacing is handled by buffer estimation.
             (void)sendPointsToDac();
             checkAcks();
+        } else {
+            setConnectionState(false);
         }
 
         // Avoid a busy loop when the controller cannot accept more data yet.
@@ -226,11 +239,15 @@ bool LaserCubeNetController::sendPointRate(std::uint32_t rate) {
 
 bool LaserCubeNetController::sendData(const std::uint8_t* buffer, std::size_t size) {
     if (!dataSocket || !buffer || size == 0) {
+        recordConnectionError(error_types::network::sendFailed);
+        networkConnected.store(false, std::memory_order_relaxed);
         return false;
     }
     auto ec = dataSocket->send_to(buffer, size, dataEndpoint, std::chrono::milliseconds(50));
     if (ec) {
         logError("[LaserCubeNetController] Failed to send data", ec.message());
+        recordConnectionError(error_types::network::sendFailed);
+        networkConnected.store(false, std::memory_order_relaxed);
         return false;
     }
     return true;
@@ -238,6 +255,8 @@ bool LaserCubeNetController::sendData(const std::uint8_t* buffer, std::size_t si
 
 bool LaserCubeNetController::sendCommand(std::uint8_t cmd, const std::uint8_t* payload, std::size_t size) {
     if (!commandSocket) {
+        recordConnectionError(error_types::network::sendFailed);
+        networkConnected.store(false, std::memory_order_relaxed);
         return false;
     }
 
@@ -250,6 +269,8 @@ bool LaserCubeNetController::sendCommand(std::uint8_t cmd, const std::uint8_t* p
     auto ec = commandSocket->send_to(buffer.data(), buffer.size(), commandEndpoint, std::chrono::milliseconds(200));
     if (ec) {
         logError("[LaserCubeNetController] command send failed", ec.message());
+        recordConnectionError(error_types::network::sendFailed);
+        networkConnected.store(false, std::memory_order_relaxed);
         return false;
     }
     return true;
@@ -276,6 +297,7 @@ void LaserCubeNetController::checkAcks() {
         }
         if (ec) {
             logInfo("[LaserCubeNetController] ack receive failed", ec.message());
+            recordIntermittentError(error_types::network::receiveFailed);
             break;
         }
         ++polls;
@@ -287,6 +309,7 @@ void LaserCubeNetController::checkAcks() {
                 logInfo("[LaserCubeNetController] ignoring ack from unexpected sender",
                         sender.address().to_string(), sender.port(),
                         "expected", dataEndpoint.address().to_string(), dataEndpoint.port());
+                recordIntermittentError(error_types::network::packetLoss);
                 lastUnexpectedAckSenderLogTime = now;
             }
             continue;
@@ -295,12 +318,14 @@ void LaserCubeNetController::checkAcks() {
         if (received != 4) {
             if (received > 0) {
                 logInfo("[LaserCubeNetController] ack packet unexpected size", received);
+                recordIntermittentError(error_types::network::protocolError);
             }
             continue;
         }
 
         if (buffer[0] != LaserCubeNetConfig::CMD_GET_RINGBUFFER_FREE) {
             logInfo("[LaserCubeNetController] DIFFERENT RESPONSE", static_cast<int>(buffer[0]));
+            recordIntermittentError(error_types::network::protocolError);
             continue;
         }
 
@@ -312,6 +337,7 @@ void LaserCubeNetController::checkAcks() {
         const std::uint8_t receivedMessageNumber = buffer[1];
         const auto it = messageTimes.find(receivedMessageNumber);
         if (it == messageTimes.end()) {
+            recordIntermittentError(error_types::network::packetLoss);
             continue;
         }
 
@@ -334,6 +360,7 @@ void LaserCubeNetController::checkAcks() {
 
         if (bufferSpace == 0) {
             logInfo("[LaserCubeNetController] BUFFER OVERRUN ------------------");
+            recordIntermittentError(error_types::network::bufferOverrun);
         }
 
         messageTimes.erase(it);
@@ -363,6 +390,7 @@ void LaserCubeNetController::checkAcks() {
                 logInfo("[LaserCubeNetController] waiting for ack",
                         "pending", static_cast<int>(messageTimes.size()),
                         "oldest_ms", oldestMs);
+                recordIntermittentError(error_types::network::packetLoss);
                 lastAckWarningTime = now;
             }
         }

@@ -1,5 +1,6 @@
 #include "libera/helios/HeliosController.hpp"
 
+#include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -16,6 +17,8 @@ constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
 } // namespace
 
+namespace error_types = libera::core::error_types;
+
 HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsigned int controllerIndex)
 : sdk(std::move(sdkInstance))
 , index(controllerIndex) {
@@ -31,6 +34,7 @@ HeliosController::~HeliosController() {
 }
 
 void HeliosController::close() {
+    setConnectionState(false);
     clearEstimatedBufferState();
     if (!sdk) {
         return;
@@ -64,26 +68,41 @@ void HeliosController::run() {
     using namespace std::chrono_literals;
 
     resetStartupBlank();
+    bool wasConnected = false;
 
     while (running) {
         if (!sdk) {
+            if (wasConnected) {
+                recordConnectionError(error_types::usb::connectionLost);
+            }
+            setConnectionState(false);
+            wasConnected = false;
             std::this_thread::sleep_for(100ms);
             continue;
         }
 
         if (sdk->GetIsClosed(index) != 0) {
+            if (wasConnected) {
+                recordConnectionError(error_types::usb::connectionLost);
+            }
+            setConnectionState(false);
+            wasConnected = false;
             std::this_thread::sleep_for(100ms);
             continue;
         }
+        setConnectionState(true);
+        wasConnected = true;
 
         const int status = sdk->GetStatus(index);
         if (status < 0) {
             // -5007 is a libusb timeout from status polling. Treat as transient.
             if (status == -5007) {
+                recordIntermittentError(error_types::usb::timeout);
                 std::this_thread::sleep_for(2ms);
                 continue;
             }
             logError("[HeliosController] status error", status);
+            recordIntermittentError(error_types::usb::statusError);
             std::this_thread::sleep_for(5ms);
             continue;
         }
@@ -144,6 +163,11 @@ void HeliosController::run() {
 
         if (result < 0) {
             logError("[HeliosController] WriteFrameExtended failed", result);
+            if (result == -5007) {
+                recordIntermittentError(error_types::usb::timeout);
+            } else {
+                recordIntermittentError(error_types::usb::transferFailed);
+            }
         } else {
             recordLatencySample(sendDone - sendStart);
             setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));

@@ -4,6 +4,7 @@
 #include "libera/etherdream/EtherDreamController.hpp"
 
 #include "libera/core/BufferEstimator.hpp"
+#include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/log/Log.hpp"
 
@@ -29,6 +30,7 @@ using libera::unexpected;
 using DacAck = EtherDreamController::DacAck;
 namespace ip = libera::net::asio::ip;
 namespace asio = libera::net::asio;
+namespace error_types = libera::core::error_types;
 
 EtherDreamController::EtherDreamController() = default;
 
@@ -48,6 +50,7 @@ expected<void> EtherDreamController::connect(const EtherDreamControllerInfo& inf
 
 expected<void> EtherDreamController::connect() {
     if (!controllerInfo) {
+        recordConnectionError(error_types::network::connectFailed);
         return unexpected(make_error_code(std::errc::invalid_argument));
     }
 
@@ -55,6 +58,7 @@ expected<void> EtherDreamController::connect() {
     auto ip = libera::net::asio::ip::make_address(controllerInfo->ip(), ec);
     if (ec) {
         logError("Invalid IP", ec.message());
+        recordConnectionError(error_types::network::connectFailed);
         return unexpected(ec);
     }
 
@@ -64,6 +68,7 @@ expected<void> EtherDreamController::connect() {
         logError("[EtherDreamController] connect failed", connectError.message(),
                  "target", controllerInfo->ip(), controllerInfo->port(),
                  "timeout_ms", tcpClient.defaultTimeout().count());
+        recordConnectionError(error_types::network::connectFailed);
         return unexpected(connectError);
     }
     // Ask the socket to send small packets right away and keep the connection alive.
@@ -75,6 +80,7 @@ expected<void> EtherDreamController::connect() {
 
     logInfoVerbose("[EtherDreamController] connected to", controllerInfo->ip(), controllerInfo->port());
     lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
+    setConnectionState(true);
 
     return {};
 }
@@ -84,6 +90,7 @@ void EtherDreamController::run() {
 
     while (running) {
         if (!controllerInfo) {
+            setConnectionState(false);
             std::this_thread::sleep_for(retryDelay);
             continue;
         }
@@ -94,6 +101,7 @@ void EtherDreamController::run() {
         }
 
         connectionActive = true;
+        setConnectionState(true);
 
         if (!performHandshake()) {
             close();
@@ -154,14 +162,17 @@ EtherDreamController::waitForResponse(char command) {
         if (auto ec = tcpClient.read_exact(raw.data(), raw.size(), &bytesTransferred); ec) {
             if (ec == asio::error::timed_out) {
                 logError("[EtherDream] RX timeout waiting for command", command);
+                recordIntermittentError(error_types::network::timeout);
             }
             logError("[EtherDream] RX error", ec.value(), ec.category().name(), ec.message());
+            recordConnectionError(error_types::network::receiveFailed);
             return unexpected(std::error_code(ec.value(), ec.category()));
         }
 
         EtherDreamResponse response;
         if (!response.decode(raw.data(), raw.size())) {
             logError("[EtherDreamController] Failed to decode ACK for command", command);
+            recordIntermittentError(error_types::network::protocolError);
             return unexpected(make_error_code(std::errc::protocol_error));
         }
 
@@ -172,6 +183,7 @@ EtherDreamController::waitForResponse(char command) {
             updatePlaybackRequirements(response.status, /*commandAcked*/ false);
             logError("[EtherDream] received 'I' (invalid/idle) for command", command,
                      "sts", response.status.describe());
+            recordIntermittentError(error_types::network::protocolError);
             return unexpected(make_error_code(std::errc::operation_canceled));
         }
 
@@ -192,6 +204,7 @@ EtherDreamController::waitForResponse(char command) {
                      "got response", static_cast<char>(response.response),
                      "for command", static_cast<char>(response.command),
                      "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
+            recordIntermittentError(error_types::network::protocolError);
             return unexpected(make_error_code(std::errc::protocol_error));
         }
 
@@ -204,6 +217,7 @@ EtherDreamController::waitForResponse(char command) {
 void EtherDreamController::close() {
     logInfoVerbose("[EtherDreamController] close()");
     connectionActive = false;
+    setConnectionState(false);
     // Keep the operation idempotent so repeated calls are harmless.
     if (!tcpClient.is_open()) {
         return;
@@ -256,6 +270,7 @@ expected<DacAck> EtherDreamController::sendCommand() {
 
     if (auto ec = tcpClient.write_all(commandBuffer.data(), commandBuffer.size()); ec) {
         commandBuffer.reset();
+        recordConnectionError(error_types::network::sendFailed);
         return unexpected(ec);
     }
 
@@ -279,6 +294,7 @@ expected<DacAck> EtherDreamController::sendPointRate(std::uint16_t rate) {
         if (ack.error() == asio::error::timed_out) {
         logError("[EtherDream] point-rate command timed out after",
                  tcpClient.defaultTimeout().count(), "ms");
+        recordIntermittentError(error_types::network::timeout);
         }
         return ack;
     }
@@ -308,10 +324,12 @@ void EtherDreamController::handleNetworkFailure(std::string_view where,
     logError("[EtherDreamController] failure", where, ec.message());
     connectionActive = false;
     lastError = ec;
+    recordConnectionError(error_types::network::connectionLost);
 }
 
 
 void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked) {
+    const bool wasUnderflow = (lastKnownStatus.playbackFlags & 0x04u) != 0;
     lastKnownStatus = status;
     lastReceiveTime = std::chrono::steady_clock::now();
     lastEstimatedBufferFullness.store(status.bufferFullness, std::memory_order_relaxed);
@@ -320,6 +338,9 @@ void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& st
 
     const bool estop = status.lightEngineState == LightEngineState::Estop;
     const bool underflow = (status.playbackFlags & 0x04u) != 0;
+    if (underflow && !wasUnderflow) {
+        recordIntermittentError(error_types::network::bufferUnderflow);
+    }
     clearRequired = estop || underflow || !commandAcked;
 
     prepareRequired = !clearRequired
@@ -429,6 +450,7 @@ void EtherDreamController::sendBegin() {
             if (ack.error() == asio::error::timed_out) {
                 logError("[EtherDream] begin write timeout after",
                          tcpClient.defaultTimeout().count(), "ms");
+                recordIntermittentError(error_types::network::timeout);
             }
             if (ack.error() != asio::error::timed_out &&
                 ack.error() != std::errc::operation_canceled) {
@@ -522,16 +544,19 @@ std::optional<core::DacBufferState> EtherDreamController::getBufferState() const
 
 bool EtherDreamController::ensureConnected() {
     if (tcpClient.is_open()) {
+        setConnectionState(true);
         return true;
     }
 
     auto result = connect();
     if (!result) {
         lastError = result.error();
+        setConnectionState(false);
         return false;
     }
 
     lastError.reset();
+    setConnectionState(true);
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "libera/lasercubeusb/LaserCubeUsbController.hpp"
 
 #include "libera/core/ByteBuffer.hpp"
+#include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbConfig.hpp"
 #include "libera/log/Log.hpp"
 
@@ -17,6 +18,8 @@
 #include "libusb.h"
 
 namespace libera::lasercubeusb {
+
+namespace error_types = libera::core::error_types;
 
 class UsbControllerHandle {
 public:
@@ -171,12 +174,14 @@ LaserCubeUsbController::~LaserCubeUsbController() {
 
 libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControllerInfo& info) {
     if (!usbContext) {
+        recordConnectionError(error_types::usb::connectFailed);
         return libera::unexpected(std::make_error_code(std::errc::not_connected));
     }
 
     libusb_device** deviceList = nullptr;
     const ssize_t count = libusb_get_device_list(usbContext.get(), &deviceList);
     if (count < 0 || !deviceList) {
+        recordConnectionError(error_types::usb::connectFailed);
         return libera::unexpected(std::make_error_code(std::errc::io_error));
     }
 
@@ -221,14 +226,17 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
 
     if (!matchedHandle) {
         if (foundSerial) {
+            recordConnectionError(error_types::usb::connectFailed);
             return libera::unexpected(std::make_error_code(std::errc::io_error));
         }
+        recordConnectionError(error_types::usb::connectFailed);
         return libera::unexpected(std::make_error_code(std::errc::no_such_device));
     }
     usbHandle = std::move(matchedHandle);
 
     if (!send_uint8(usbHandle->get(), 0x80, 0x01)) {
         logError("[LaserCubeUsbController] Failed to enable output");
+        recordIntermittentError(error_types::usb::statusError);
     }
 
     std::uint32_t maxRate = 0;
@@ -261,6 +269,7 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
     send_raw(usbHandle->get(), runnerPacket.data(), runnerPacket.size());
 
     usbConnected.store(true, std::memory_order_relaxed);
+    setConnectionState(true);
 
     const auto initialRate = maxPointRate.load(std::memory_order_relaxed) > 0
                                  ? std::min(getPointRate(), maxPointRate.load(std::memory_order_relaxed))
@@ -278,6 +287,7 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
 
 void LaserCubeUsbController::close() {
     usbConnected.store(false, std::memory_order_relaxed);
+    setConnectionState(false);
     clearEstimatedBufferState();
     usbHandle.reset();
 }
@@ -299,9 +309,11 @@ void LaserCubeUsbController::run() {
 
     while (running.load()) {
         if (!usbConnected.load(std::memory_order_relaxed) || !usbHandle) {
+            setConnectionState(false);
             std::this_thread::sleep_for(20ms);
             continue;
         }
+        setConnectionState(true);
 
         const auto desired = targetPps.load(std::memory_order_relaxed);
         const auto active = currentPps.load(std::memory_order_relaxed);
@@ -319,9 +331,14 @@ void LaserCubeUsbController::run() {
 
 bool LaserCubeUsbController::sendPointRate(std::uint32_t rate) {
     if (!usbHandle) {
+        recordConnectionError(error_types::usb::connectionLost);
         return false;
     }
-    return send_uint32(usbHandle->get(), 0x82, rate);
+    const bool ok = send_uint32(usbHandle->get(), 0x82, rate);
+    if (!ok) {
+        recordIntermittentError(error_types::usb::statusError);
+    }
+    return ok;
 }
 
 void LaserCubeUsbController::waitUntilReadyToSend() {
@@ -360,6 +377,7 @@ int LaserCubeUsbController::getDacTotalPointBufferCapacity() const {
 
 bool LaserCubeUsbController::sendPointsToDac() {
     if (!usbHandle) {
+        recordConnectionError(error_types::usb::connectionLost);
         return false;
     }
 
@@ -431,6 +449,11 @@ bool LaserCubeUsbController::sendPointsToDac() {
     if (rc != 0 || transferred != static_cast<int>(packetBuffer.size())) {
         logError("[LaserCubeUsbController] send failed", libusb_error_name(rc));
         usbConnected.store(false, std::memory_order_relaxed);
+        if (rc == LIBUSB_ERROR_TIMEOUT) {
+            recordIntermittentError(error_types::usb::timeout);
+        } else {
+            recordConnectionError(error_types::usb::transferFailed);
+        }
         return false;
     }
 
