@@ -93,6 +93,13 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
         }
 
         const int firmware = sdk->GetFirmwareVersion(index);
+        std::optional<core::DacInfo::NetworkInfo> networkInfo;
+        static constexpr const char* idnIpPrefix = "IDN: ";
+        if (label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
+            networkInfo = core::DacInfo::NetworkInfo{
+                label.substr(5),
+                static_cast<std::uint16_t>(IDN_PORT)};
+        }
         std::string id = "idn-" + std::to_string(index);
 
         results.emplace_back(std::make_unique<IdnControllerInfo>(
@@ -100,7 +107,8 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
             std::move(label),
             HELIOS_MAX_PPS_IDN,
             index,
-            firmware));
+            firmware,
+            std::move(networkInfo)));
     }
 
     return results;
@@ -113,7 +121,7 @@ IdnManager::getAndConnectToDac(const core::DacInfo& info) {
         return nullptr;
     }
 
-    std::shared_ptr<helios::HeliosController> controller;
+    std::shared_ptr<IdnController> controller;
     {
         std::lock_guard lock(activeMutex);
         auto it = activeControllers.find(idnInfo->index());
@@ -126,7 +134,7 @@ IdnManager::getAndConnectToDac(const core::DacInfo& info) {
         }
 
         if (!controller) {
-            controller = std::make_shared<helios::HeliosController>(sdk, idnInfo->index());
+            controller = std::make_shared<IdnController>(sdk, idnInfo->index());
             activeControllers[idnInfo->index()] = controller;
         }
     }
@@ -139,7 +147,7 @@ IdnManager::getAndConnectToDac(const core::DacInfo& info) {
 }
 
 void IdnManager::closeAll() {
-    std::unordered_map<unsigned int, std::shared_ptr<helios::HeliosController>> snapshot;
+    std::unordered_map<unsigned int, std::shared_ptr<IdnController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
         for (auto& [index, weak] : activeControllers) {

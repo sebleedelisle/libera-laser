@@ -12,8 +12,9 @@ public:
                   std::string label,
                   std::uint32_t maxPointRateValue,
                   unsigned int controllerIndexValue,
-                  int firmwareVersionValue)
-    : DacInfo(std::move(id), std::move(label), maxPointRateValue)
+                  int firmwareVersionValue,
+                  std::optional<core::DacInfo::NetworkInfo> networkInfo = std::nullopt)
+    : DacInfo(std::move(id), std::move(label), maxPointRateValue, std::move(networkInfo))
     , controllerIndex(controllerIndexValue)
     , firmwareVersion(firmwareVersionValue) {}
 
@@ -23,7 +24,7 @@ public:
     int firmwareVersionValue() const { return firmwareVersion; }
 
 private:
-    static inline const std::string typeName{"idn"};
+    static inline const std::string typeName{"IDN"};
 
     unsigned int controllerIndex = 0;
     int firmwareVersion = 0;

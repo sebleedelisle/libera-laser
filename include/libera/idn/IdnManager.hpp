@@ -2,7 +2,7 @@
 
 #include "libera/core/GlobalDacManager.hpp"
 #include "libera/idn/IdnControllerInfo.hpp"
-#include "libera/helios/HeliosController.hpp"
+#include "libera/idn/IdnController.hpp"
 
 #include <memory>
 #include <mutex>
@@ -25,7 +25,7 @@ public:
     };
 
 private:
-    static constexpr std::string_view typeName{"idn"};
+    static constexpr std::string_view typeName{"IDN"};
 
     void openIfNeeded();
     std::size_t refreshControllerCount(bool allowRescan);
@@ -36,7 +36,7 @@ private:
     std::size_t controllerCount = 0;
 
     std::mutex activeMutex;
-    std::unordered_map<unsigned int, std::weak_ptr<helios::HeliosController>> activeControllers;
+    std::unordered_map<unsigned int, std::weak_ptr<IdnController>> activeControllers;
 };
 
 } // namespace libera::idn

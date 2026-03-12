@@ -8,6 +8,7 @@
 #include <vector>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 
 #include "libera/core/LaserController.hpp"
 
@@ -15,11 +16,19 @@ namespace libera::core {
 
 class DacInfo {
 public:
-    DacInfo(std::string id, std::string label, std::uint32_t maxPointRateValue = 0) {
-        this->id = std::move(id);
-        this->label = std::move(label);
-        this->maxPointRateValue = maxPointRateValue;
-    }
+    struct NetworkInfo {
+        std::string ip;
+        std::uint16_t port = 0;
+    };
+
+    DacInfo(std::string id,
+            std::string label,
+            std::uint32_t maxPointRateValue = 0,
+            std::optional<NetworkInfo> networkInfo = std::nullopt)
+    : id(std::move(id))
+    , label(std::move(label))
+    , maxPointRateValue(maxPointRateValue)
+    , networkInfoValue(std::move(networkInfo)) {}
 
     virtual ~DacInfo() = default;
 
@@ -27,12 +36,14 @@ public:
     const std::string& labelValue() const { return label; }
     std::uint32_t maxPointRate() const { return maxPointRateValue; }
     void setMaxPointRate(std::uint32_t value) { maxPointRateValue = value; }
+    const std::optional<NetworkInfo>& networkInfo() const { return networkInfoValue; }
     virtual const std::string& type() const = 0;
 
 protected:
     std::string id;
     std::string label;
     std::uint32_t maxPointRateValue = 0;
+    std::optional<NetworkInfo> networkInfoValue;
 };
 
 class DacManagerBase {
