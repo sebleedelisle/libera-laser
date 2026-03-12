@@ -210,8 +210,9 @@ bool LaserCubeNetController::sendPointsToDac() {
     packet.appendUInt8(frameNumber);
 
     for (const auto& pt : pointsToSend) {
-        // Each component is clamped and quantized to 12 bits.
-        packet.appendUInt16(encodeUnsigned12FromSignedUnit(pt.x));
+        // LaserCube Net's scan orientation is mirrored on X relative to the
+        // rest of libera backends, so flip X at controller output.
+        packet.appendUInt16(encodeUnsigned12FromSignedUnit(-pt.x));
         packet.appendUInt16(encodeUnsigned12FromSignedUnit(pt.y));
         packet.appendUInt16(encodeUnsigned12FromUnit(pt.r));
         packet.appendUInt16(encodeUnsigned12FromUnit(pt.g));
