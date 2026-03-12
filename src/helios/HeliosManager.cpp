@@ -4,6 +4,7 @@
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <unordered_set>
@@ -13,6 +14,38 @@ namespace {
 
 std::string makeFallbackLabel(unsigned int index) {
     return "Helios " + std::to_string(index);
+}
+
+std::string truncateHeliosName(const std::string& label) {
+    // Firmware stores up to 31 bytes including trailing null terminator.
+    constexpr std::size_t kMaxNameLength = 30;
+    if (label.size() <= kMaxNameLength) {
+        return label;
+    }
+    return label.substr(0, kMaxNameLength);
+}
+
+std::string makeUniqueRenameLabel(unsigned int index,
+                                  std::unordered_set<std::string>& usedLabels) {
+    std::string base = makeFallbackLabel(index);
+    base = truncateHeliosName(base);
+    std::string candidate = base;
+    int suffix = 2;
+    while (usedLabels.find(candidate) != usedLabels.end()) {
+        const std::string withSuffix = base + "-" + std::to_string(suffix++);
+        candidate = truncateHeliosName(withSuffix);
+    }
+    usedLabels.insert(candidate);
+    return candidate;
+}
+
+bool trySetHeliosName(HeliosDac& sdk,
+                      unsigned int index,
+                      const std::string& newLabel) {
+    std::array<char, 31> name = {};
+    const std::string safeName = truncateHeliosName(newLabel);
+    std::strncpy(name.data(), safeName.c_str(), name.size() - 1);
+    return sdk.SetName(index, name.data()) == HELIOS_SUCCESS;
 }
 
 bool isSdkFallbackUnknownLabel(const char* label) {
@@ -145,6 +178,7 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
 
     results.reserve(count);
     std::unordered_set<std::string> usedIds;
+    std::unordered_set<std::string> usedLabels;
     std::unordered_set<unsigned int> seenIndices;
     for (unsigned int index = 0; index < count; ++index) {
         const int closed = sdk->GetIsClosed(index);
@@ -189,6 +223,29 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
             }
         } else {
             stableLabelByIndex[index] = label;
+        }
+
+        // Device names should be unique for stable UX/routing. If duplicates are
+        // found and no active stream is running, auto-repair by persisting a
+        // synthesized unique label to the duplicate device.
+        const bool duplicateLabel = usedLabels.find(label) != usedLabels.end();
+        if (duplicateLabel && !hasActive) {
+            const std::string renamedLabel = makeUniqueRenameLabel(index, usedLabels);
+            if (trySetHeliosName(*sdk, index, renamedLabel)) {
+                logInfo("[HeliosManager] duplicate Helios name auto-renamed",
+                        "index", index,
+                        "old_label", label,
+                        "new_label", renamedLabel);
+                label = renamedLabel;
+                stableLabelByIndex[index] = label;
+            } else {
+                logError("[HeliosManager] failed to auto-rename duplicate Helios name",
+                         "index", index,
+                         "label", label);
+                usedLabels.insert(label);
+            }
+        } else {
+            usedLabels.insert(label);
         }
 
         const int isUsb = sdk->GetIsUsb(index);
