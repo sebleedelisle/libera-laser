@@ -8,7 +8,6 @@
 #include <array>
 #include <cmath>
 #include <thread>
-#include <vector>
 
 namespace libera::lasercubenet {
 namespace {
@@ -27,22 +26,6 @@ inline std::uint16_t encodeColour(float value) {
 inline std::uint16_t read_u16_le(const std::uint8_t* data) {
     return static_cast<std::uint16_t>(data[0]) |
            (static_cast<std::uint16_t>(data[1]) << 8);
-}
-
-double percentileFromSortedSamples(const std::vector<double>& sorted, double percentile) {
-    if (sorted.empty()) {
-        return 0.0;
-    }
-
-    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
-    const double rawIndex = clampedPercentile * static_cast<double>(sorted.size() - 1);
-    const auto lower = static_cast<std::size_t>(std::floor(rawIndex));
-    const auto upper = static_cast<std::size_t>(std::ceil(rawIndex));
-    if (lower == upper) {
-        return sorted[lower];
-    }
-    const double weight = rawIndex - static_cast<double>(lower);
-    return sorted[lower] + ((sorted[upper] - sorted[lower]) * weight);
 }
 }
 
@@ -418,55 +401,9 @@ int LaserCubeNetDevice::getDacTotalPointBufferCapacity() const {
 }
 
 std::optional<core::DacBufferState> LaserCubeNetDevice::getBufferState() const {
-    const int total = pointBufferCapacity.load(std::memory_order_relaxed);
-    if (total <= 0) {
-        return std::nullopt;
-    }
-
-    const int fullness = std::clamp(
-        lastEstimatedBufferFullness.load(std::memory_order_relaxed),
-        0,
-        total);
-
-    core::DacBufferState state;
-    state.pointsInBuffer = fullness;
-    state.totalBufferPoints = total;
-    return state;
-}
-
-void LaserCubeNetDevice::recordLatencySample(std::chrono::steady_clock::duration sample) {
-    const double sampleMs =
-        std::chrono::duration<double, std::milli>(sample).count();
-    if (sampleMs < 0.0) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(latencySamplesMutex);
-    latencySamplesMs.push_back(sampleMs);
-    while (latencySamplesMs.size() > latencySampleWindow) {
-        latencySamplesMs.pop_front();
-    }
-}
-
-std::optional<core::DacLatencyStats> LaserCubeNetDevice::getLatencyStats() const {
-    std::vector<double> sortedSamples;
-    {
-        std::lock_guard<std::mutex> lock(latencySamplesMutex);
-        if (latencySamplesMs.empty()) {
-            return std::nullopt;
-        }
-        sortedSamples.assign(latencySamplesMs.begin(), latencySamplesMs.end());
-    }
-
-    std::sort(sortedSamples.begin(), sortedSamples.end());
-
-    core::DacLatencyStats stats;
-    stats.sampleCount = sortedSamples.size();
-    stats.p50Ms = percentileFromSortedSamples(sortedSamples, 0.50);
-    stats.p95Ms = percentileFromSortedSamples(sortedSamples, 0.95);
-    stats.p99Ms = percentileFromSortedSamples(sortedSamples, 0.99);
-    stats.maxMs = sortedSamples.back();
-    return stats;
+    return buildBufferState(
+        pointBufferCapacity.load(std::memory_order_relaxed),
+        lastEstimatedBufferFullness.load(std::memory_order_relaxed));
 }
 
 } // namespace libera::lasercubenet

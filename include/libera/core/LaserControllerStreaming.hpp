@@ -9,6 +9,7 @@
 #include <type_traits>
 #include <chrono>
 #include <optional>
+#include <mutex>
 #include <utility>
 #include "LaserPoint.hpp"
 #include "libera/log/Log.hpp"
@@ -170,6 +171,13 @@ protected:
         return millisToPoints(millis);
     }
 
+    /// Add one latency sample to the rolling window used by getLatencyStats().
+    void recordLatencySample(std::chrono::steady_clock::duration sample);
+
+    /// Shared helper for devices that expose point-buffer fullness.
+    static std::optional<DacBufferState> buildBufferState(int totalBufferPoints,
+                                                          int pointsInBuffer);
+
     std::atomic<bool> armed{false};
 
     std::thread worker;
@@ -187,6 +195,11 @@ protected:
     std::atomic<double> scannerSyncTime{2.0}; // in 1/10,000 of a second
     std::deque<LaserPoint> scannerSyncColourDelayLine;
     std::atomic<int> startupBlankPointsRemaining{0};
+
+private:
+    static constexpr std::size_t latencySampleWindow = 512;
+    mutable std::mutex latencySamplesMutex;
+    std::deque<double> latencySamplesMs;
 };
 
 } // namespace libera::core

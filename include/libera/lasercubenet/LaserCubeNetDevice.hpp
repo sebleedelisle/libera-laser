@@ -14,8 +14,6 @@
 #include <string>
 #include <chrono>
 #include <optional>
-#include <deque>
-#include <mutex>
 
 namespace libera::lasercubenet {
 
@@ -28,7 +26,6 @@ public:
     libera::expected<void> connect(const LaserCubeNetDeviceInfo& info);
     void close();
     std::optional<core::DacBufferState> getBufferState() const override;
-    std::optional<core::DacLatencyStats> getLatencyStats() const override;
 
 protected:
     void run() override;
@@ -44,7 +41,6 @@ private:
     int calculateBufferFullnessByTimeSent();
     int calculateBufferFullnessByTimeAcked();
     int getDacTotalPointBufferCapacity() const;
-    void recordLatencySample(std::chrono::steady_clock::duration sample);
 
     std::shared_ptr<asio::io_context> io;
     std::unique_ptr<net::UdpSocket> dataSocket;
@@ -76,9 +72,6 @@ private:
     std::atomic<int> lastEstimatedBufferFullness{0};
 
     static constexpr int minPacketDataSize = 128;
-    static constexpr std::size_t latencySampleWindow = 512;
-    mutable std::mutex latencySamplesMutex;
-    std::deque<double> latencySamplesMs;
 };
 
 } // namespace libera::lasercubenet

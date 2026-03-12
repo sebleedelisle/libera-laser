@@ -42,6 +42,23 @@ void elevateWorkerThreadPriority() {
     }
 #endif
 }
+
+double percentileFromSortedSamples(const std::vector<double>& sorted, double percentile) {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+
+    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
+    const double rawIndex = clampedPercentile * static_cast<double>(sorted.size() - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(rawIndex));
+    const auto upper = static_cast<std::size_t>(std::ceil(rawIndex));
+    if (lower == upper) {
+        return sorted[lower];
+    }
+
+    const double weight = rawIndex - static_cast<double>(lower);
+    return sorted[lower] + ((sorted[upper] - sorted[lower]) * weight);
+}
 } // namespace
 
 LaserControllerStreaming::LaserControllerStreaming() {
@@ -216,7 +233,51 @@ std::optional<DacBufferState> LaserControllerStreaming::getBufferState() const {
 }
 
 std::optional<DacLatencyStats> LaserControllerStreaming::getLatencyStats() const {
-    return std::nullopt;
+    std::vector<double> sortedSamples;
+    {
+        std::lock_guard<std::mutex> lock(latencySamplesMutex);
+        if (latencySamplesMs.empty()) {
+            return std::nullopt;
+        }
+        sortedSamples.assign(latencySamplesMs.begin(), latencySamplesMs.end());
+    }
+
+    std::sort(sortedSamples.begin(), sortedSamples.end());
+
+    DacLatencyStats stats;
+    stats.sampleCount = sortedSamples.size();
+    stats.p50Ms = percentileFromSortedSamples(sortedSamples, 0.50);
+    stats.p95Ms = percentileFromSortedSamples(sortedSamples, 0.95);
+    stats.p99Ms = percentileFromSortedSamples(sortedSamples, 0.99);
+    stats.maxMs = sortedSamples.back();
+    return stats;
+}
+
+void LaserControllerStreaming::recordLatencySample(std::chrono::steady_clock::duration sample) {
+    const double sampleMs =
+        std::chrono::duration<double, std::milli>(sample).count();
+    if (sampleMs < 0.0 || !std::isfinite(sampleMs)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(latencySamplesMutex);
+    latencySamplesMs.push_back(sampleMs);
+    while (latencySamplesMs.size() > latencySampleWindow) {
+        latencySamplesMs.pop_front();
+    }
+}
+
+std::optional<DacBufferState> LaserControllerStreaming::buildBufferState(
+    int totalBufferPoints,
+    int pointsInBuffer) {
+    if (totalBufferPoints <= 0) {
+        return std::nullopt;
+    }
+
+    DacBufferState state;
+    state.totalBufferPoints = totalBufferPoints;
+    state.pointsInBuffer = std::clamp(pointsInBuffer, 0, totalBufferPoints);
+    return state;
 }
 
 void LaserControllerStreaming::resetStartupBlank() {

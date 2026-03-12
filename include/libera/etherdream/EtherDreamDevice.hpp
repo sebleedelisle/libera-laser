@@ -62,7 +62,6 @@ public:
     /// Returns true when the TCP link is up and no network failure is recorded.
     bool hasActiveConnection() const;
     std::optional<core::DacBufferState> getBufferState() const override;
-    std::optional<core::DacLatencyStats> getLatencyStats() const override;
 
     
 protected:
@@ -112,7 +111,6 @@ private:
 
     std::optional<std::error_code> lastNetworkError() const;
     void clearNetworkError();
-    void recordLatencySample(std::chrono::steady_clock::duration sample);
     EtherDreamCommand commandBuffer;
 
     EtherDreamStatus lastKnownStatus{};
@@ -135,10 +133,6 @@ private:
     mutable std::atomic<int> lastEstimatedBufferFullness{0};
     mutable std::atomic<int> lastKnownBufferCapacity{0};
     mutable std::atomic<bool> lastBufferEstimateProjected{false};
-
-    static constexpr std::size_t latencySampleWindow = 512;
-    mutable std::mutex latencySamplesMutex;
-    std::deque<double> latencySamplesMs;
 };
 
 } // namespace libera::etherdream

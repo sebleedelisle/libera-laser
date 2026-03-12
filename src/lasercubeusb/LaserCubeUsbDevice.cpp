@@ -460,20 +460,9 @@ bool LaserCubeUsbDevice::sendPointsToDac() {
 }
 
 std::optional<core::DacBufferState> LaserCubeUsbDevice::getBufferState() const {
-    const int total = getDacTotalPointBufferCapacity();
-    if (total <= 0) {
-        return std::nullopt;
-    }
-
-    const int fullness = std::clamp(
-        lastEstimatedBufferFullness.load(std::memory_order_relaxed),
-        0,
-        total);
-
-    core::DacBufferState state;
-    state.pointsInBuffer = fullness;
-    state.totalBufferPoints = total;
-    return state;
+    return buildBufferState(
+        getDacTotalPointBufferCapacity(),
+        lastEstimatedBufferFullness.load(std::memory_order_relaxed));
 }
 
 } // namespace libera::lasercubeusb
