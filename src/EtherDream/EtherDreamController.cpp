@@ -50,14 +50,16 @@ expected<void> EtherDreamController::connect(const EtherDreamControllerInfo& inf
 
 expected<void> EtherDreamController::connect() {
     if (!controllerInfo) {
+        lastError = std::make_error_code(std::errc::invalid_argument);
         recordConnectionError(error_types::network::connectFailed);
-        return unexpected(make_error_code(std::errc::invalid_argument));
+        return unexpected(*lastError);
     }
 
     std::error_code ec;
     auto ip = libera::net::asio::ip::make_address(controllerInfo->ip(), ec);
     if (ec) {
         logError("Invalid IP", ec.message());
+        lastError = ec;
         recordConnectionError(error_types::network::connectFailed);
         return unexpected(ec);
     }
@@ -68,6 +70,7 @@ expected<void> EtherDreamController::connect() {
         logError("[EtherDreamController] connect failed", connectError.message(),
                  "target", controllerInfo->ip(), controllerInfo->port(),
                  "timeout_ms", tcpClient.defaultTimeout().count());
+        lastError = connectError;
         recordConnectionError(error_types::network::connectFailed);
         return unexpected(connectError);
     }
@@ -80,6 +83,7 @@ expected<void> EtherDreamController::connect() {
 
     logInfoVerbose("[EtherDreamController] connected to", controllerInfo->ip(), controllerInfo->port());
     lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
+    clearNetworkError();
     setConnectionState(true);
 
     return {};
@@ -151,7 +155,7 @@ EtherDreamController::waitForResponse(char command) {
     if (!running) {
         return unexpected(std::make_error_code(std::errc::operation_canceled));
     }
-    if (!tcpClient.is_open()) {
+    if (!tcpClient.is_connected()) {
         return unexpected(make_error_code(std::errc::not_connected));
     }
 
@@ -224,15 +228,14 @@ void EtherDreamController::close() {
     }
     // Future improvement: cancel outstanding async operations before closing.
     tcpClient.close();
-    clearNetworkError();
 }
 
 bool EtherDreamController::isConnected() const {
-    return tcpClient.is_open();
+    return tcpClient.is_connected();
 }
 
 bool EtherDreamController::hasActiveConnection() const {
-    return tcpClient.is_open() && !lastNetworkError().has_value() && connectionActive;
+    return tcpClient.is_connected() && !lastNetworkError().has_value() && connectionActive;
 }
 
 void EtherDreamController::setPointRate(std::uint32_t pointRateValue) {
@@ -543,9 +546,13 @@ std::optional<core::DacBufferState> EtherDreamController::getBufferState() const
 }
 
 bool EtherDreamController::ensureConnected() {
-    if (tcpClient.is_open()) {
+    if (tcpClient.is_connected()) {
         setConnectionState(true);
         return true;
+    }
+
+    if (tcpClient.is_open()) {
+        tcpClient.close();
     }
 
     auto result = connect();

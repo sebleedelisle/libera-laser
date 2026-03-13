@@ -53,7 +53,13 @@ public:
     std::error_code connect(const tcp::endpoint& endpoint, duration timeout) {
         close();
         socket_ = tcp::socket(strand_);
-        return connect_one(endpoint, timeout);
+        auto ec = connect_one(endpoint, timeout);
+        if (ec) {
+            // A timed-out async_connect leaves the socket open but unusable until it
+            // is explicitly closed. Clear that stale state before the caller retries.
+            close();
+        }
+        return ec;
     }
 
     std::error_code connect(const tcp::endpoint& endpoint) {
@@ -155,8 +161,14 @@ public:
     }
 
     bool is_open() const { return socket_.is_open(); }
-    // auto& socket() { return socket_; }
-    // const auto& socket() const { return socket_; }
+    bool is_connected() const {
+        if (!socket_.is_open()) {
+            return false;
+        }
+        std::error_code ec;
+        (void)socket_.remote_endpoint(ec);
+        return !ec;
+    }
 
     // Best-effort cancellation of pending ops on the socket.
     // Useful during shutdown to nudge operations to complete now rather than
@@ -166,8 +178,8 @@ public:
         socket_.cancel(ec);
     }
 
-        void close() {
-            logInfo("[TcpClient] close()");
+    void close() {
+        logInfo("[TcpClient] close()");
         if (!socket_.is_open()) return;
         std::error_code ec;
         // Proactively cancel outstanding operations first (pattern: cancel -> shutdown -> close).

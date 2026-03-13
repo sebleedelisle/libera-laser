@@ -12,31 +12,72 @@
 namespace libera::helios {
 namespace {
 
+constexpr std::size_t maxHeliosNameLength = 30;
+
 std::string makeFallbackLabel(unsigned int index) {
     return "Helios " + std::to_string(index);
 }
 
 std::string truncateHeliosName(const std::string& label) {
     // Firmware stores up to 31 bytes including trailing null terminator.
-    constexpr std::size_t kMaxNameLength = 30;
-    if (label.size() <= kMaxNameLength) {
+    if (label.size() <= maxHeliosNameLength) {
         return label;
     }
-    return label.substr(0, kMaxNameLength);
+    return label.substr(0, maxHeliosNameLength);
+}
+
+std::string makeUniqueRenameLabelWithSuffix(unsigned int index,
+                                            const std::string& preferredBase,
+                                            int suffix) {
+    std::string base = truncateHeliosName(preferredBase);
+    if (base.empty()) {
+        base = truncateHeliosName(makeFallbackLabel(index));
+    }
+
+    const std::string suffixLabel = " (" + std::to_string(suffix) + ")";
+    if (suffixLabel.size() >= maxHeliosNameLength) {
+        return truncateHeliosName(base);
+    }
+
+    const std::size_t maxBaseLength = maxHeliosNameLength - suffixLabel.size();
+    if (base.size() > maxBaseLength) {
+        base.resize(maxBaseLength);
+        while (!base.empty() && base.back() == ' ') {
+            base.pop_back();
+        }
+        if (base.empty()) {
+            base = makeFallbackLabel(index);
+            if (base.size() > maxBaseLength) {
+                base.resize(maxBaseLength);
+            }
+        }
+    }
+
+    return base + suffixLabel;
 }
 
 std::string makeUniqueRenameLabel(unsigned int index,
-                                  std::unordered_set<std::string>& usedLabels) {
-    std::string base = makeFallbackLabel(index);
-    base = truncateHeliosName(base);
-    std::string candidate = base;
-    int suffix = 2;
-    while (usedLabels.find(candidate) != usedLabels.end()) {
-        const std::string withSuffix = base + "-" + std::to_string(suffix++);
-        candidate = truncateHeliosName(withSuffix);
+                                  const std::string& preferredBase,
+                                  const std::string& currentLabel,
+                                  const std::unordered_set<std::string>& usedLabels) {
+    std::string candidate = truncateHeliosName(preferredBase);
+    if (candidate.empty()) {
+        candidate = truncateHeliosName(makeFallbackLabel(index));
     }
-    usedLabels.insert(candidate);
-    return candidate;
+
+    const std::string truncatedCurrentLabel = truncateHeliosName(currentLabel);
+    if (candidate != truncatedCurrentLabel &&
+        usedLabels.find(candidate) == usedLabels.end()) {
+        return candidate;
+    }
+
+    for (int suffix = 2;; ++suffix) {
+        candidate = makeUniqueRenameLabelWithSuffix(index, preferredBase, suffix);
+        if (candidate != truncatedCurrentLabel &&
+            usedLabels.find(candidate) == usedLabels.end()) {
+            return candidate;
+        }
+    }
 }
 
 bool trySetHeliosName(HeliosDac& sdk,
@@ -56,9 +97,9 @@ bool isSdkFallbackUnknownLabel(const char* label) {
     // The bundled Helios SDK synthesizes "Unknown Helios NN" and still returns
     // HELIOS_SUCCESS when GetName() control traffic fails. Treat that label as
     // non-authoritative so we do not churn stable IDs during transient USB errors.
-    constexpr const char kUnknownPrefix[] = "Unknown Helios ";
-    constexpr std::size_t kPrefixLen = sizeof(kUnknownPrefix) - 1;
-    return std::strncmp(label, kUnknownPrefix, kPrefixLen) == 0;
+    constexpr const char unknownPrefix[] = "Unknown Helios ";
+    constexpr std::size_t prefixLen = sizeof(unknownPrefix) - 1;
+    return std::strncmp(label, unknownPrefix, prefixLen) == 0;
 }
 
 std::string sanitizeIdComponent(const std::string& text) {
@@ -209,15 +250,18 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
         // control transfers every discovery tick. We only probe name eagerly
         // when no active stream exists or we have no cached label yet.
         bool attemptedFreshNameRead = false;
+        bool sdkReportedEmptyName = false;
         const bool needsNameRead =
             (!hasActive) || (stableLabelByIndex.find(index) == stableLabelByIndex.end());
         if (needsNameRead) {
             attemptedFreshNameRead = true;
-            if (sdk->GetName(index, name) == HELIOS_SUCCESS &&
-                name[0] != '\0' &&
-                !isSdkFallbackUnknownLabel(name)) {
-                label = name;
-                stableLabelByIndex[index] = label;
+            if (sdk->GetName(index, name) == HELIOS_SUCCESS) {
+                if (name[0] == '\0') {
+                    sdkReportedEmptyName = true;
+                } else if (!isSdkFallbackUnknownLabel(name)) {
+                    label = name;
+                    stableLabelByIndex[index] = label;
+                }
             }
         }
 
@@ -241,22 +285,29 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
         }
 
         // Device names should be unique for stable UX/routing. If duplicates are
-        // found and no active stream is running, auto-repair by persisting a
-        // synthesized unique label to the duplicate device.
+        // found, or the device reports an empty name, auto-repair by persisting
+        // a synthesized unique label while no active stream is running.
         const bool duplicateLabel = usedLabels.find(label) != usedLabels.end();
-        if (duplicateLabel && !hasActive) {
-            const std::string renamedLabel = makeUniqueRenameLabel(index, usedLabels);
+        const bool shouldPersistUniqueLabel = !hasActive && (duplicateLabel || sdkReportedEmptyName);
+        if (shouldPersistUniqueLabel) {
+            const std::string originalDeviceLabel = sdkReportedEmptyName ? std::string() : label;
+            const std::string renamedLabel =
+                makeUniqueRenameLabel(index, label, originalDeviceLabel, usedLabels);
             if (trySetHeliosName(*sdk, index, renamedLabel)) {
-                logInfo("[HeliosManager] duplicate Helios name auto-renamed",
+                logInfo("[HeliosManager] Helios name auto-renamed",
                         "index", index,
-                        "old_label", label,
+                        "reason", sdkReportedEmptyName ? "empty" : "duplicate",
+                        "old_label", sdkReportedEmptyName ? std::string("<empty>") : label,
                         "new_label", renamedLabel);
                 label = renamedLabel;
                 stableLabelByIndex[index] = label;
+                usedLabels.insert(label);
             } else {
-                logError("[HeliosManager] failed to auto-rename duplicate Helios name",
+                logError("[HeliosManager] failed to auto-rename Helios name",
                          "index", index,
-                         "label", label);
+                         "reason", sdkReportedEmptyName ? "empty" : "duplicate",
+                         "label", label,
+                         "requested_label", renamedLabel);
                 usedLabels.insert(label);
             }
         } else {

@@ -143,9 +143,18 @@ void printBufferState(const std::shared_ptr<core::LaserController>& dac,
         std::cout << " latency_ms n/a";
     }
 
-    std::cout
-              << "   "
-              << std::flush;
+        std::cout
+                  << "   "
+                  << std::flush;
+}
+
+std::optional<std::error_code> getFatalTransportError(
+    const std::shared_ptr<core::LaserController>& dac) {
+    auto etherDream = std::dynamic_pointer_cast<etherdream::EtherDreamController>(dac);
+    if (!etherDream || etherDream->hasActiveConnection()) {
+        return std::nullopt;
+    }
+    return etherDream->networkError();
 }
 
 
@@ -198,7 +207,21 @@ int main() {
 
     const int totalFrames = 3000;
     for (int i = 0; i < totalFrames; ++i) {
+        if (auto fatalError = getFatalTransportError(dac)) {
+            std::cout << std::endl;
+            libera::logError("Selected DAC connection failed.", fatalError->message());
+            dacManager.close();
+            return 1;
+        }
+
         while (!dac->isReadyForNewFrame()){
+            if (auto fatalError = getFatalTransportError(dac)) {
+                std::cout << std::endl;
+                libera::logError("Selected DAC connection failed.", fatalError->message());
+                dacManager.close();
+                return 1;
+            }
+
             const auto now = std::chrono::steady_clock::now();
             if (now - lastStatusPrint >= std::chrono::milliseconds(50)) {
                 const auto bufferState = dac->getBufferState();
