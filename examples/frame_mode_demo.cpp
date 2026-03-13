@@ -48,7 +48,6 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
         float r = (std::sin(colourPhase) + 1.0f) * 0.5f;
         float g = (std::sin(colourPhase + tau / 3.0f) + 1.0f) * 0.5f;
         float b = (std::sin(colourPhase + (2.0f * tau / 3.0f)) + 1.0f) * 0.5f;
-        float intensity = 1.0f;
 
         if (i < whitePointCount) {
             r = 1.0f;
@@ -62,7 +61,6 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
                 r = 0.0f;
                 g = 0.0f;
                 b = 0.0f;
-                intensity = 0.0f;
             }
         }
 
@@ -72,7 +70,6 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
             r * brightness,
             g * brightness,
             b * brightness,
-            intensity,
             0.0f,
             0.0f
         });

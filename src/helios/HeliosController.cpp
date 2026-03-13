@@ -58,6 +58,16 @@ bool shouldLogErrorBurst(std::size_t consecutiveCount) {
     return consecutiveCount == 1 || (consecutiveCount % 25 == 0);
 }
 
+float derivedProtocolIntensity(const core::LaserPoint& point) noexcept {
+    // Helios keeps a separate optional intensity channel in its packet format.
+    // With no shared LaserPoint intensity field, use it as a simple beam-enable:
+    // full scale when any output channel is active, zero for blank samples.
+    return (point.r > 0.0f || point.g > 0.0f || point.b > 0.0f ||
+            point.u1 > 0.0f || point.u2 > 0.0f)
+               ? 1.0f
+               : 0.0f;
+}
+
 } // namespace
 
 namespace error_types = libera::core::error_types;
@@ -197,7 +207,7 @@ void HeliosController::run() {
             out.r = encodeUnsigned16FromUnit(p.r);
             out.g = encodeUnsigned16FromUnit(p.g);
             out.b = encodeUnsigned16FromUnit(p.b);
-            out.i = encodeUnsigned16FromUnit(p.i);
+            out.i = encodeUnsigned16FromUnit(derivedProtocolIntensity(p));
             out.user1 = encodeUnsigned16FromUnit(p.u1);
             out.user2 = encodeUnsigned16FromUnit(p.u2);
             out.user3 = 0;

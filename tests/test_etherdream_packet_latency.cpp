@@ -86,7 +86,6 @@ sendDataPoints(libera::net::TcpClient& client, std::uint16_t pointCount) {
     pt.x = 0.0f;
     pt.y = 0.0f;
     pt.r = pt.g = pt.b = 0.0f;
-    pt.i = 0.0f;
     for (std::uint16_t i = 0; i < pointCount; ++i) {
         command.addPoint(pt, i == 0);
     }

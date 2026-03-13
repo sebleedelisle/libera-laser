@@ -119,7 +119,6 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
             point.r = 0.0f;
             point.g = 0.0f;
             point.b = 0.0f;
-            point.i = 0.0f;
             --blankPointsRemaining;
         }
         startupBlankPointsRemaining.store(blankPointsRemaining, std::memory_order_relaxed);
@@ -130,7 +129,6 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
             point.r = 0.0f;
             point.g = 0.0f;
             point.b = 0.0f;
-            point.i = 0.0f;
             point.x = 0; 
             point.y = 0; 
         }
@@ -148,8 +146,8 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
     if(shiftPointCount>0) { 
         // Feed the FIFO with geometry points while reusing the delayed colour sample
         // from `scannerSyncColourDelayLine`. This keeps X/Y data contiguous but shifts
-        // RGB/I intensity by the requested number of points so colour modulation stays
-        // aligned with the mirrors even when their propagation times differ.
+        // RGB by the requested number of points so colour modulation stays aligned
+        // with the mirrors even when their propagation times differ.
         for (auto &point : pointsToSend) {
             scannerSyncColourDelayLine.push_back(point);
             const LaserPoint colourPoint = scannerSyncColourDelayLine.front();
@@ -157,7 +155,6 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
             point.r = colourPoint.r;
             point.g = colourPoint.g;
             point.b = colourPoint.b;
-            point.i = colourPoint.i;
         }
     }
     
