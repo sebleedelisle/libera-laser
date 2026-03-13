@@ -164,14 +164,29 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
     std::vector<std::unique_ptr<core::DacInfo>> results;
 
     bool hasActive = false;
+    bool hasConnectedActive = false;
     {
         std::lock_guard lock(activeMutex);
         hasActive = core::pruneExpiredActiveControllers(activeControllers);
+        if (hasActive) {
+            for (const auto& [controllerName, weakController] : activeControllers) {
+                (void)controllerName;
+                const auto controller = weakController.lock();
+                if (!controller) {
+                    continue;
+                }
+                if (controller->isConnected()) {
+                    hasConnectedActive = true;
+                    break;
+                }
+            }
+        }
     }
 
-    // Re-scan only when there are no live controllers. This avoids resetting
-    // SDK device indices while a controller instance is active.
-    const auto count = refreshControllerCount(!hasActive);
+    // Re-scan when there are no currently connected live controllers.
+    // This preserves stable USB indices while streaming but still allows
+    // unplug/replug recovery for active wrappers.
+    const auto count = refreshControllerCount(!hasConnectedActive);
     if (!sdk || count == 0) {
         return results;
     }
@@ -303,13 +318,31 @@ HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
         return nullptr;
     }
 
+    const std::string& controllerName = heliosInfo->labelValue();
     std::shared_ptr<HeliosController> controller;
+    std::shared_ptr<HeliosController> staleController;
     {
         std::lock_guard lock(activeMutex);
-        controller = core::getOrCreateActiveController(
-            activeControllers,
-            heliosInfo->index(),
-            [this, heliosInfo] { return std::make_shared<HeliosController>(sdk, heliosInfo->index()); });
+        auto it = activeControllers.find(controllerName);
+        if (it != activeControllers.end()) {
+            controller = it->second.lock();
+            if (!controller) {
+                activeControllers.erase(it);
+            } else if (controller->controllerIndex() != heliosInfo->index()) {
+                staleController = std::move(controller);
+                activeControllers.erase(it);
+            }
+        }
+
+        if (!controller) {
+            controller = std::make_shared<HeliosController>(sdk, heliosInfo->index());
+            activeControllers.insert_or_assign(controllerName, controller);
+        }
+    }
+
+    if (staleController) {
+        staleController->stop();
+        staleController->close();
     }
 
     if (controller) {
@@ -321,13 +354,14 @@ HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
 }
 
 void HeliosManager::closeAll() {
-    std::unordered_map<unsigned int, std::shared_ptr<HeliosController>> snapshot;
+    std::unordered_map<std::string, std::shared_ptr<HeliosController>> snapshot;
     {
         std::lock_guard lock(activeMutex);
         snapshot = core::snapshotActiveControllersAndClear(activeControllers);
     }
 
-    for (auto& [index, dev] : snapshot) {
+    for (auto& [name, dev] : snapshot) {
+        (void)name;
         if (!dev) continue;
         dev->stop();
         dev->close();

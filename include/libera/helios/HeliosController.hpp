@@ -16,6 +16,7 @@ public:
 
     void close();
     bool isConnected() const;
+    unsigned int controllerIndex() const { return index; }
 
     void setPointRate(std::uint32_t pointRateValue) override;
 

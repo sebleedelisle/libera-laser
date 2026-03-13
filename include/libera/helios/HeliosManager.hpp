@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 
 namespace libera::helios {
@@ -35,7 +36,9 @@ private:
     std::size_t controllerCount = 0;
 
     std::mutex activeMutex;
-    std::unordered_map<unsigned int, std::weak_ptr<HeliosController>> activeControllers;
+    // Active controller wrappers are keyed by the persisted Helios device name,
+    // not the transient SDK index.
+    std::unordered_map<std::string, std::weak_ptr<HeliosController>> activeControllers;
 
     // Keep IDs/labels stable across transient SDK name-read failures so a
     // briefly unhealthy USB control channel doesn't churn device identity.
