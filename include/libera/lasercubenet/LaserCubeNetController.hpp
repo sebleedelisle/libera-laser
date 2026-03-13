@@ -25,20 +25,20 @@ public:
 
     libera::expected<void> connect(const LaserCubeNetControllerInfo& info);
     void close();
-    std::optional<core::DacBufferState> getBufferState() const override;
+    std::optional<core::BufferState> getBufferState() const override;
 
 protected:
     void run() override;
     void setPointRate(std::uint32_t pointRate) override;
 
 private:
-    bool sendPointsToDac();
+    bool sendPoints();
     bool sendPointRate(std::uint32_t rate);
     bool sendData(const std::uint8_t* buffer, std::size_t size);
     bool sendCommand(std::uint8_t cmd, const std::uint8_t* payload, std::size_t size);
     void checkAcks();
 
-    int getDacTotalPointBufferCapacity() const;
+    int getTotalBufferCapacity() const;
 
     std::shared_ptr<asio::io_context> io;
     std::unique_ptr<net::UdpSocket> dataSocket;

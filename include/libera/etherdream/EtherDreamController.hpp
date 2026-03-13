@@ -44,7 +44,7 @@ public:
     EtherDreamController(EtherDreamController&&) = delete;
     EtherDreamController& operator=(EtherDreamController&&) = delete;
 
-    struct DacAck {
+    struct Ack {
         EtherDreamStatus status{};
         char command = 0;
     };
@@ -61,7 +61,7 @@ public:
     std::optional<std::error_code> networkError() const { return lastNetworkError(); }
     /// Returns true when the TCP link is up and no network failure is recorded.
     bool hasActiveConnection() const;
-    std::optional<core::DacBufferState> getBufferState() const override;
+    std::optional<core::BufferState> getBufferState() const override;
 
     
 protected:
@@ -72,15 +72,15 @@ private:
     std::optional<std::uint16_t> nextPendingRateChange();
 
     /// Wait for the response frame to a specific command.
-    expected<DacAck>
+    expected<Ack>
     waitForResponse(char command);
 
     /// Send the prepared command stored in commandBuffer_ and wait for its ACK.
-    expected<DacAck>
+    expected<Ack>
     sendCommand();
 
     /// Issue the point-rate command ('q') and return the associated ACK.
-    expected<DacAck>
+    expected<Ack>
     sendPointRate(std::uint16_t rate);
 
     std::size_t calculateMinimumPoints();
@@ -99,7 +99,7 @@ private:
     void sendClear();
     void sendPrepare();
     void sendBegin();
-    expected<DacAck> sendPing();
+    expected<Ack> sendPing();
 
     bool ensureConnected();
     bool performHandshake();

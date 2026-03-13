@@ -6,9 +6,9 @@ namespace libera::lasercubenet {
 const std::string LaserCubeNetControllerInfo::typeName{"LaserCubeNet"};
 
 LaserCubeNetControllerInfo::LaserCubeNetControllerInfo(const LaserCubeNetStatus& status)
-    : core::DacInfo(status.serialNumber, status.modelName.empty() ? status.serialNumber : status.modelName,
+    : core::ControllerInfo(status.serialNumber, status.modelName.empty() ? status.serialNumber : status.modelName,
                     status.pointRateMax,
-                    core::DacInfo::NetworkInfo{status.ipAddress, LaserCubeNetConfig::DATA_PORT}),
+                    core::ControllerInfo::NetworkInfo{status.ipAddress, LaserCubeNetConfig::DATA_PORT}),
       ip(status.ipAddress),
       serialNumber(status.serialNumber),
       cachedStatus(status) {}

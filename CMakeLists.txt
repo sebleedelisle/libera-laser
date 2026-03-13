@@ -22,7 +22,7 @@ set_property(CACHE SANITIZE PROPERTY STRINGS none address thread)
 
 option(LIBERA_BUILD_TESTS "Build libera-core tests" ${BUILD_TESTING})
 option(LIBERA_BUILD_INTEGRATION_TESTS "Build integration tests (loopback/network)" OFF)
-option(LIBERA_BUILD_HARDWARE_TESTS "Build hardware tests (requires DAC)" OFF)
+option(LIBERA_BUILD_HARDWARE_TESTS "Build hardware tests (requires controller hardware)" OFF)
 option(LIBERA_BUILD_EXAMPLES "Build example applications" OFF)
 
 # Optional: a few sensible warnings. Comment out if you prefer quiet builds.

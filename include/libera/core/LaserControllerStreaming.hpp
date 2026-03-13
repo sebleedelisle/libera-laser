@@ -41,12 +41,12 @@ struct PointFillRequest {
     }
 };
 
-struct DacBufferState {
+struct BufferState {
     int pointsInBuffer = 0;
     int totalBufferPoints = 0;
 };
 
-struct DacLatencyStats {
+struct LatencyStats {
     double p50Ms = 0.0;
     double p95Ms = 0.0;
     double p99Ms = 0.0;
@@ -118,7 +118,7 @@ public:
      * @brief Ask the callback for more points and append them to the main buffer.
      *
      * Typical usage is from a hardware-specific run loop: call requestPoints() to
-     * invoke the user-supplied callback, then send pointsToSend to the DAC.
+     * invoke the user-supplied callback, then send pointsToSend to the controller.
      *
      * @param request Fill request (min points required, estimated render time).
      * @return false if no callback is installed, true if points were appended.
@@ -144,11 +144,11 @@ public:
      */
     virtual std::uint32_t getPointRate() const noexcept;
 
-    /// Host-side view of DAC buffer fullness, if the backend can provide it.
-    virtual std::optional<DacBufferState> getBufferState() const;
+    /// Host-side view of controller buffer fullness, if the backend can provide it.
+    virtual std::optional<BufferState> getBufferState() const;
 
     /// Rolling latency percentiles (transport/admission), if supported.
-    virtual std::optional<DacLatencyStats> getLatencyStats() const;
+    virtual std::optional<LatencyStats> getLatencyStats() const;
 
     /// Overall controller health.
     ControllerStatus getStatus() const noexcept;
@@ -235,10 +235,10 @@ protected:
                                              int totalBufferPoints);
 
     /// Shared helper for controllers that expose point-buffer fullness.
-    static std::optional<DacBufferState> buildBufferState(int totalBufferPoints,
+    static std::optional<BufferState> buildBufferState(int totalBufferPoints,
                                                           int pointsInBuffer);
 
-    /// Update whether the DAC connection is currently healthy.
+    /// Update whether the controller connection is currently healthy.
     void setConnectionState(bool connected) noexcept;
 
     /// Increment a transient/intermittent error type counter.
@@ -258,7 +258,7 @@ protected:
     /// The installed callback that generates points (may be empty if not set).
     RequestPointsCallback requestPointsCallback{};
 
-    /// Main buffer of points pending transmission to the DAC.
+    /// Main buffer of points pending transmission to the controller.
     std::vector<LaserPoint> pointsToSend;
     // Stores 1/10,000th of a second units so we match legacy colour-shift semantics.
     std::atomic<double> scannerSyncTime{2.0}; // in 1/10,000 of a second

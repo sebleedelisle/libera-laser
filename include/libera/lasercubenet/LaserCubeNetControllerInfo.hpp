@@ -1,11 +1,11 @@
 #pragma once
 
 #include "libera/lasercubenet/LaserCubeNetStatus.hpp"
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 
 namespace libera::lasercubenet {
 
-class LaserCubeNetControllerInfo : public core::DacInfo {
+class LaserCubeNetControllerInfo : public core::ControllerInfo {
 public:
     LaserCubeNetControllerInfo(const LaserCubeNetStatus& status);
 

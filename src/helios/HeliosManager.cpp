@@ -201,8 +201,8 @@ std::size_t HeliosManager::refreshControllerCount(bool allowRescan) {
     return controllerCount;
 }
 
-std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
-    std::vector<std::unique_ptr<core::DacInfo>> results;
+std::vector<std::unique_ptr<core::ControllerInfo>> HeliosManager::discover() {
+    std::vector<std::unique_ptr<core::ControllerInfo>> results;
 
     bool hasActive = false;
     bool hasConnectedActive = false;
@@ -363,7 +363,7 @@ std::vector<std::unique_ptr<core::DacInfo>> HeliosManager::discover() {
 }
 
 std::shared_ptr<core::LaserController>
-HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
+HeliosManager::connectController(const core::ControllerInfo& info) {
     const auto* heliosInfo = dynamic_cast<const HeliosControllerInfo*>(&info);
     if (!heliosInfo) {
         return nullptr;
@@ -397,7 +397,7 @@ HeliosManager::getAndConnectToDac(const core::DacInfo& info) {
     }
 
     if (controller) {
-        // Keep existing behavior: calling getAndConnectToDac can re-start a controller.
+        // Keep existing behavior: calling connectController can re-start a controller.
         controller->start();
     }
 

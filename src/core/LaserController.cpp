@@ -123,7 +123,7 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
 
     if (frameQueue.empty()) {
         // Nothing ready yet, so provide the minimum number of blank samples to
-        // keep downstream DAC logic satisfied.
+        // keep downstream controller logic satisfied.
         appendBlankPoints(outputBuffer, minPoints);
         return;
     }

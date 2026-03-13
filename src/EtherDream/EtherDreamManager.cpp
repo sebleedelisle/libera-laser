@@ -62,9 +62,9 @@ EtherDreamManager::~EtherDreamManager() {
     closeAll();
 }
 
-std::vector<std::unique_ptr<core::DacInfo>>
+std::vector<std::unique_ptr<core::ControllerInfo>>
 EtherDreamManager::discover() {
-    std::vector<std::unique_ptr<core::DacInfo>> results;
+    std::vector<std::unique_ptr<core::ControllerInfo>> results;
     const auto now = Clock::now();
     std::lock_guard lock(controllersMutex);
     pruneStaleUnlocked(now);
@@ -76,7 +76,7 @@ EtherDreamManager::discover() {
 }
 
 std::shared_ptr<core::LaserController>
-EtherDreamManager::getAndConnectToDac(const core::DacInfo& info) {
+EtherDreamManager::connectController(const core::ControllerInfo& info) {
     const auto* etherInfo = dynamic_cast<const EtherDreamControllerInfo*>(&info);
     if (!etherInfo) {
         return nullptr;
@@ -166,7 +166,7 @@ void EtherDreamManager::threadedFunction() {
         }
 
         std::string ip = sender.address().to_string();
-        unsigned short dacPort = config::ETHERDREAM_DAC_PORT_DEFAULT;
+        unsigned short port = config::ETHERDREAM_DAC_PORT_DEFAULT;
 
         if (received < MIN_DISCOVERY_PACKET_BYTES) {
             continue;
@@ -193,7 +193,7 @@ void EtherDreamManager::threadedFunction() {
             id,
             label,
             ip,
-            dacPort,
+            port,
             static_cast<int>(bufferCapacity),
             std::move(hardwareVersion),
             maxPointRate};

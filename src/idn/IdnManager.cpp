@@ -37,8 +37,8 @@ std::string ipv4ToString(const in_addr& addr) {
            std::to_string(hostOrder & 0xFFu);
 }
 
-std::unordered_map<std::string, core::DacInfo::NetworkInfo> discoverIdnNetworkInfoByLabel() {
-    std::unordered_map<std::string, core::DacInfo::NetworkInfo> infoByLabel;
+std::unordered_map<std::string, core::ControllerInfo::NetworkInfo> discoverIdnNetworkInfoByLabel() {
+    std::unordered_map<std::string, core::ControllerInfo::NetworkInfo> infoByLabel;
     std::unordered_set<std::string> ambiguousLabels;
 
     IDNSL_SERVER_INFO* firstServerInfo = nullptr;
@@ -52,13 +52,13 @@ std::unordered_map<std::string, core::DacInfo::NetworkInfo> discoverIdnNetworkIn
     }
 
     for (auto* serverInfo = firstServerInfo; serverInfo != nullptr; serverInfo = serverInfo->next) {
-        std::optional<core::DacInfo::NetworkInfo> endpoint;
+        std::optional<core::ControllerInfo::NetworkInfo> endpoint;
         for (unsigned int i = 0; i < serverInfo->addressCount; ++i) {
             const auto& addressInfo = serverInfo->addressTable[i];
             if (addressInfo.errorFlags != 0) {
                 continue;
             }
-            endpoint = core::DacInfo::NetworkInfo{
+            endpoint = core::ControllerInfo::NetworkInfo{
                 ipv4ToString(addressInfo.addr),
                 static_cast<std::uint16_t>(IDN_PORT)};
             break;
@@ -128,8 +128,8 @@ std::size_t IdnManager::refreshControllerCount(bool allowRescan) {
     return controllerCount;
 }
 
-std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
-    std::vector<std::unique_ptr<core::DacInfo>> results;
+std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
+    std::vector<std::unique_ptr<core::ControllerInfo>> results;
 
     bool hasActive = false;
     {
@@ -167,14 +167,14 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
         }
 
         const int firmware = sdk->GetFirmwareVersion(index);
-        std::optional<core::DacInfo::NetworkInfo> networkInfo;
+        std::optional<core::ControllerInfo::NetworkInfo> networkInfo;
         if (const auto it = networkInfoByLabel.find(truncateToSdkNameLength(label));
             it != networkInfoByLabel.end()) {
             networkInfo = it->second;
         }
         static constexpr const char* idnIpPrefix = "IDN: ";
         if (!networkInfo && label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
-            networkInfo = core::DacInfo::NetworkInfo{
+            networkInfo = core::ControllerInfo::NetworkInfo{
                 label.substr(5),
                 static_cast<std::uint16_t>(IDN_PORT)};
         }
@@ -193,7 +193,7 @@ std::vector<std::unique_ptr<core::DacInfo>> IdnManager::discover() {
 }
 
 std::shared_ptr<core::LaserController>
-IdnManager::getAndConnectToDac(const core::DacInfo& info) {
+IdnManager::connectController(const core::ControllerInfo& info) {
     const auto* idnInfo = dynamic_cast<const IdnControllerInfo*>(&info);
     if (!idnInfo) {
         return nullptr;
@@ -209,7 +209,7 @@ IdnManager::getAndConnectToDac(const core::DacInfo& info) {
     }
 
     if (controller) {
-        // Keep existing behavior: calling getAndConnectToDac can re-start a controller.
+        // Keep existing behavior: calling connectController can re-start a controller.
         controller->start();
     }
 

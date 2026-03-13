@@ -29,8 +29,8 @@ public:
      * @brief Set global frame presentation latency used by sendFrame().
      *
      * When a frame has an empty timestamp (`Frame::time{}`), sendFrame() will
-     * stamp it to now + this latency so all frame-mode DACs can share one
-     * scheduling target.
+     * stamp it to now + this latency so all frame-mode controllers can share
+     * one scheduling target.
      */
     static void setTargetRenderLatency(std::chrono::milliseconds latency);
 

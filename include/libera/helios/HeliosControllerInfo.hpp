@@ -1,12 +1,12 @@
 #pragma once
 
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 
 #include <string>
 
 namespace libera::helios {
 
-class HeliosControllerInfo : public core::DacInfo {
+class HeliosControllerInfo : public core::ControllerInfo {
 public:
     HeliosControllerInfo(std::string id,
                      std::string label,
@@ -14,7 +14,7 @@ public:
                      unsigned int controllerIndexValue,
                      bool usbController,
                      int firmwareVersionValue)
-    : DacInfo(std::move(id), std::move(label), maxPointRateValue)
+    : ControllerInfo(std::move(id), std::move(label), maxPointRateValue)
     , controllerIndex(controllerIndexValue)
     , isUsb(usbController)
     , firmwareVersion(firmwareVersionValue) {}

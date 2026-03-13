@@ -78,7 +78,7 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
     return frame;
 }
 
-float getBufferFillFraction(const std::optional<core::DacBufferState>& bufferState) {
+float getBufferFillFraction(const std::optional<core::BufferState>& bufferState) {
     if (!bufferState || bufferState->totalBufferPoints <= 0) {
         return 0.0f;
     }
@@ -89,12 +89,12 @@ float getBufferFillFraction(const std::optional<core::DacBufferState>& bufferSta
         1.0f);
 }
 
-void printBufferState(const std::shared_ptr<core::LaserController>& dac,
-                      const std::optional<core::DacBufferState>& bufferState,
+void printBufferState(const std::shared_ptr<core::LaserController>& controller,
+                      const std::optional<core::BufferState>& bufferState,
                       int frameIndex,
                       int totalFrames) {
-    const std::size_t queuedFrames = dac->queuedFrameCount();
-    const bool readyForNewFrame = dac->isReadyForNewFrame();
+    const std::size_t queuedFrames = controller->queuedFrameCount();
+    const bool readyForNewFrame = controller->isReadyForNewFrame();
 
     constexpr std::size_t queueBarSize = 2;
     const std::size_t filled =
@@ -109,7 +109,7 @@ void printBufferState(const std::shared_ptr<core::LaserController>& dac,
     // printing the latest status snapshot.
     std::cout << "\r\033[2K"
               << "frame " << (frameIndex + 1) << "/" << totalFrames
-              << " dac_buffer ";
+              << " controller_buffer ";
     if (bufferState && bufferState->totalBufferPoints > 0) {
         const int pointsInBuffer = std::clamp(
             bufferState->pointsInBuffer,
@@ -127,7 +127,7 @@ void printBufferState(const std::shared_ptr<core::LaserController>& dac,
               << " queued=" << queuedFrames
               << " state=" << (readyForNewFrame ? "ready" : "busy");
 
-    const auto latencyStats = dac->getLatencyStats();
+    const auto latencyStats = controller->getLatencyStats();
     if (latencyStats) {
         std::cout << std::fixed << std::setprecision(2)
                   << " latency_ms p50/p95/p99 "
@@ -146,8 +146,8 @@ void printBufferState(const std::shared_ptr<core::LaserController>& dac,
 }
 
 std::optional<std::error_code> getFatalTransportError(
-    const std::shared_ptr<core::LaserController>& dac) {
-    auto etherDream = std::dynamic_pointer_cast<etherdream::EtherDreamController>(dac);
+    const std::shared_ptr<core::LaserController>& controller) {
+    auto etherDream = std::dynamic_pointer_cast<etherdream::EtherDreamController>(controller);
     if (!etherDream || etherDream->hasActiveConnection()) {
         return std::nullopt;
     }
@@ -160,14 +160,15 @@ std::optional<std::error_code> getFatalTransportError(
 
 int main() {
 
-    core::GlobalDacManager dacManager;
+    System liberaSystem;
 
-    libera::logInfo("Waiting for DACs to be discovered...");
+    libera::logInfo("Waiting for controllers to be discovered...");
     
     std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 
-    // get all the discovered controllers from the dacManager
-    std::vector<std::unique_ptr<core::DacInfo>> results = dacManager.discoverAll();
+    // Ask the top-level Libera system for all discovered controllers.
+    std::vector<std::unique_ptr<core::ControllerInfo>> results =
+        liberaSystem.discoverControllers();
 
     if (results.empty()) {
         libera::logInfo("No controllers discovered.");
@@ -175,27 +176,28 @@ int main() {
     }
 
     // display list and offer selection to user
-    libera::logInfo("Discovered DACs: ");
+    libera::logInfo("Discovered controllers:");
     for (std::size_t idx = 0; idx < results.size(); ++idx) {
         const auto& entry = results[idx];
         libera::logInfo(idx, entry->labelValue(), "type", entry->type());
     }
 
     std::size_t choice = 0;
-    libera::logInfo("Select DAC index: ");
+    libera::logInfo("Select controller index: ");
     if (!(std::cin >> choice) || choice >= results.size()) {
         libera::logError("Invalid selection.");
         return 1;
     }
 
 
-    std::shared_ptr<core::LaserController> dac = dacManager.getAndConnectToDac(*results[choice]);
-    if (!dac) {
-        libera :: logError("Failed to acquire DAC from manager.");
+    std::shared_ptr<core::LaserController> controller =
+        liberaSystem.connectController(*results[choice]);
+    if (!controller) {
+        libera :: logError("Failed to acquire controller from system.");
         return 1;
     }
 
-    dac->setArmed(true); 
+    controller->setArmed(true); 
     
     const float phaseStep = 0.05f;
     float phase = 0.0f;
@@ -204,50 +206,50 @@ int main() {
 
     const int totalFrames = 3000;
     for (int i = 0; i < totalFrames; ++i) {
-        if (auto fatalError = getFatalTransportError(dac)) {
+        if (auto fatalError = getFatalTransportError(controller)) {
             std::cout << std::endl;
-            libera::logError("Selected DAC connection failed.", fatalError->message());
-            dacManager.close();
+            libera::logError("Selected controller connection failed.", fatalError->message());
+            liberaSystem.shutdown();
             return 1;
         }
 
-        while (!dac->isReadyForNewFrame()){
-            if (auto fatalError = getFatalTransportError(dac)) {
+        while (!controller->isReadyForNewFrame()){
+            if (auto fatalError = getFatalTransportError(controller)) {
                 std::cout << std::endl;
-                libera::logError("Selected DAC connection failed.", fatalError->message());
-                dacManager.close();
+                libera::logError("Selected controller connection failed.", fatalError->message());
+                liberaSystem.shutdown();
                 return 1;
             }
 
             const auto now = std::chrono::steady_clock::now();
             if (now - lastStatusPrint >= std::chrono::milliseconds(50)) {
-                const auto bufferState = dac->getBufferState();
+                const auto bufferState = controller->getBufferState();
                 if (bufferState) {
                     lastKnownBufferFillFraction = getBufferFillFraction(bufferState);
                 }
-                printBufferState(dac, bufferState, i, totalFrames);
+                printBufferState(controller, bufferState, i, totalFrames);
                 lastStatusPrint = now;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
-        const auto bufferState = dac->getBufferState();
+        const auto bufferState = controller->getBufferState();
         if (bufferState) {
             lastKnownBufferFillFraction = getBufferFillFraction(bufferState);
         }
 
         core::Frame frame = makeCircleFrame(phase, lastKnownBufferFillFraction);
-        if (!dac->sendFrame(std::move(frame))) {
+        if (!controller->sendFrame(std::move(frame))) {
             logError("Failed to queue frame ", i);
         }
 
-        printBufferState(dac, bufferState, i, totalFrames);
+        printBufferState(controller, bufferState, i, totalFrames);
 
         phase += phaseStep;
     }
     std::cout << std::endl;
 
-    dacManager.close();
+    liberaSystem.shutdown();
     libera::logInfo("Done.");
 
     return 0;

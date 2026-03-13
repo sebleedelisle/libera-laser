@@ -111,7 +111,7 @@ void LaserCubeNetController::run() {
             }
 
             // Send at most one packet per loop; pacing is handled by buffer estimation.
-            (void)sendPointsToDac();
+            (void)sendPoints();
             checkAcks();
         } else {
             setConnectionState(false);
@@ -135,7 +135,7 @@ void LaserCubeNetController::setPointRate(std::uint32_t pointRateValue) {
     }
 }
 
-bool LaserCubeNetController::sendPointsToDac() {
+bool LaserCubeNetController::sendPoints() {
     // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
@@ -158,7 +158,7 @@ bool LaserCubeNetController::sendPointsToDac() {
     const int latencyPointAdjustment = 300;
     int maxPointsToAdd = std::max(
         0,
-        getDacTotalPointBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
+        getTotalBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
 
     const int maxPointsInPacket = static_cast<int>(LaserCubeNetConfig::MAX_POINTS_PER_PACKET);
 
@@ -349,7 +349,7 @@ void LaserCubeNetController::checkAcks() {
 
         const std::uint16_t bufferSpace = core::bytes::readLe16(&buffer[2]);
         // Convert free-space to fullness (capacity - free).
-        const int bufferFullness = getDacTotalPointBufferCapacity() - static_cast<int>(bufferSpace);
+        const int bufferFullness = getTotalBufferCapacity() - static_cast<int>(bufferSpace);
         lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
         lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
 
@@ -398,11 +398,11 @@ void LaserCubeNetController::checkAcks() {
     }
 }
 
-int LaserCubeNetController::getDacTotalPointBufferCapacity() const {
+int LaserCubeNetController::getTotalBufferCapacity() const {
     return pointBufferCapacity.load(std::memory_order_relaxed);
 }
 
-std::optional<core::DacBufferState> LaserCubeNetController::getBufferState() const {
+std::optional<core::BufferState> LaserCubeNetController::getBufferState() const {
     return buildBufferState(
         pointBufferCapacity.load(std::memory_order_relaxed),
         lastEstimatedBufferFullness.load(std::memory_order_relaxed));

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosController.hpp"
 
@@ -11,17 +11,17 @@
 
 namespace libera::helios {
 
-class HeliosManager : public core::DacManagerBase {
+class HeliosManager : public core::ControllerManagerBase {
 public:
     HeliosManager();
     ~HeliosManager() override;
 
-    std::vector<std::unique_ptr<core::DacInfo>> discover() override;
+    std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserController> getAndConnectToDac(const core::DacInfo& info) override;
+    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
     void closeAll() override;
 
-    static inline core::DacManagerRegistry registrar{
+    static inline core::ControllerManagerRegistry registrar{
         [] { return std::make_unique<HeliosManager>(); }
     };
 

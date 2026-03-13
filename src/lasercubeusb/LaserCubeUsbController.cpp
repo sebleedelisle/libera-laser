@@ -279,7 +279,7 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
     currentPps.store(0, std::memory_order_relaxed);
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
-    setEstimatedBufferCapacity(getDacTotalPointBufferCapacity());
+    setEstimatedBufferCapacity(getTotalBufferCapacity());
     updateEstimatedBufferAnchorNow(0, initialRate);
 
     return {};
@@ -323,7 +323,7 @@ void LaserCubeUsbController::run() {
             }
         }
         waitUntilReadyToSend();
-        if (!sendPointsToDac()) {
+        if (!sendPoints()) {
             std::this_thread::sleep_for(2ms);
         }
     }
@@ -371,11 +371,11 @@ int LaserCubeUsbController::estimateBufferFullness() const {
         0);
 }
 
-int LaserCubeUsbController::getDacTotalPointBufferCapacity() const {
+int LaserCubeUsbController::getTotalBufferCapacity() const {
     return LaserCubeUsbConfig::BUFFER_CAPACITY;
 }
 
-bool LaserCubeUsbController::sendPointsToDac() {
+bool LaserCubeUsbController::sendPoints() {
     if (!usbHandle) {
         recordConnectionError(error_types::usb::connectionLost);
         return false;
@@ -385,7 +385,7 @@ bool LaserCubeUsbController::sendPointsToDac() {
         return true;
     }
 
-    const int capacity = getDacTotalPointBufferCapacity();
+    const int capacity = getTotalBufferCapacity();
     const int bufferFullness = estimateBufferFullness();
     int maxPointsToAdd = capacity - bufferFullness;
     if (maxPointsToAdd <= 0) {

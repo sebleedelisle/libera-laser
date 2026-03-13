@@ -30,12 +30,12 @@ protected:
     void run() override;
 
 private:
-    bool sendPointsToDac();
+    bool sendPoints();
     bool sendPointRate(std::uint32_t rate);
     void waitUntilReadyToSend();
 
     int estimateBufferFullness() const;
-    int getDacTotalPointBufferCapacity() const;
+    int getTotalBufferCapacity() const;
 
     std::shared_ptr<libusb_context> usbContext;
     std::unique_ptr<UsbControllerHandle> usbHandle;

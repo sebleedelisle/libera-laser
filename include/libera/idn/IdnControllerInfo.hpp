@@ -1,20 +1,20 @@
 #pragma once
 
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 
 #include <string>
 
 namespace libera::idn {
 
-class IdnControllerInfo : public core::DacInfo {
+class IdnControllerInfo : public core::ControllerInfo {
 public:
     IdnControllerInfo(std::string id,
                   std::string label,
                   std::uint32_t maxPointRateValue,
                   unsigned int controllerIndexValue,
                   int firmwareVersionValue,
-                  std::optional<core::DacInfo::NetworkInfo> networkInfo = std::nullopt)
-    : DacInfo(std::move(id), std::move(label), maxPointRateValue, std::move(networkInfo))
+                  std::optional<core::ControllerInfo::NetworkInfo> networkInfo = std::nullopt)
+    : ControllerInfo(std::move(id), std::move(label), maxPointRateValue, std::move(networkInfo))
     , controllerIndex(controllerIndexValue)
     , firmwareVersion(firmwareVersionValue) {}
 

@@ -2,12 +2,12 @@
 
 // Default public umbrella include:
 // - pulls in the core API
-// - registers all built-in DAC managers via their static registrars
+// - registers all built-in controller managers via their static registrars
 //
-// For selective registration, include `libera/core/GlobalDacManager.hpp`
+// For selective registration, include `libera/System.hpp`
 // and only the specific `*Manager.hpp` headers you want.
 
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 #include "libera/core/LaserController.hpp"
 #include "libera/core/LaserPoint.hpp"
 #include "libera/log/Log.hpp"

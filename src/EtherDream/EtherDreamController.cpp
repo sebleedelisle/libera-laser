@@ -27,7 +27,7 @@ namespace libera::etherdream {
 
 using libera::expected;
 using libera::unexpected;
-using DacAck = EtherDreamController::DacAck;
+using Ack = EtherDreamController::Ack;
 namespace ip = libera::net::asio::ip;
 namespace asio = libera::net::asio;
 namespace error_types = libera::core::error_types;
@@ -150,7 +150,7 @@ void EtherDreamController::run() {
     }
 }
 
-expected<DacAck>
+expected<Ack>
 EtherDreamController::waitForResponse(char command) {
     if (!running) {
         return unexpected(std::make_error_code(std::errc::operation_canceled));
@@ -212,7 +212,7 @@ EtherDreamController::waitForResponse(char command) {
             return unexpected(make_error_code(std::errc::protocol_error));
         }
 
-        return DacAck{response.status, static_cast<char>(response.command)};
+        return Ack{response.status, static_cast<char>(response.command)};
     }
 }
 
@@ -258,7 +258,7 @@ std::optional<std::uint16_t> EtherDreamController::nextPendingRateChange() {
 
 
 
-expected<DacAck> EtherDreamController::sendCommand() {
+expected<Ack> EtherDreamController::sendCommand() {
 
     if (!running) {
         return unexpected(std::make_error_code(std::errc::operation_canceled));
@@ -285,7 +285,7 @@ expected<DacAck> EtherDreamController::sendCommand() {
     return ack;
 }
 
-expected<DacAck> EtherDreamController::sendPointRate(std::uint16_t rate) {
+expected<Ack> EtherDreamController::sendPointRate(std::uint16_t rate) {
 
     commandBuffer.setPointRateCommand(static_cast<std::uint32_t>(rate));
 
@@ -462,7 +462,7 @@ void EtherDreamController::sendBegin() {
         }
 }
 
-expected<DacAck> EtherDreamController::sendPing() {
+expected<Ack> EtherDreamController::sendPing() {
     commandBuffer.setSingleByteCommand('?');
     return sendCommand();
 }
@@ -539,7 +539,7 @@ int EtherDreamController::getBufferSize() const {
     return 0;
 }
 
-std::optional<core::DacBufferState> EtherDreamController::getBufferState() const {
+std::optional<core::BufferState> EtherDreamController::getBufferState() const {
     return buildBufferState(
         lastKnownBufferCapacity.load(std::memory_order_relaxed),
         lastEstimatedBufferFullness.load(std::memory_order_relaxed));

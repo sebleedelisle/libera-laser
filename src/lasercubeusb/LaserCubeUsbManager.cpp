@@ -85,8 +85,8 @@ LaserCubeUsbManager::~LaserCubeUsbManager() {
     usbContext.reset();
 }
 
-std::vector<std::unique_ptr<core::DacInfo>> LaserCubeUsbManager::discover() {
-    std::vector<std::unique_ptr<core::DacInfo>> results;
+std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeUsbManager::discover() {
+    std::vector<std::unique_ptr<core::ControllerInfo>> results;
     if (!usbContext) {
         return results;
     }
@@ -114,7 +114,7 @@ std::vector<std::unique_ptr<core::DacInfo>> LaserCubeUsbManager::discover() {
 }
 
 std::shared_ptr<core::LaserController>
-LaserCubeUsbManager::getAndConnectToDac(const core::DacInfo& info) {
+LaserCubeUsbManager::connectController(const core::ControllerInfo& info) {
     const auto* usbInfo = dynamic_cast<const LaserCubeUsbControllerInfo*>(&info);
     if (!usbInfo || !usbContext) {
         return nullptr;

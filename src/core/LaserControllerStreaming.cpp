@@ -227,7 +227,7 @@ std::uint32_t LaserControllerStreaming::getPointRate() const noexcept {
     return pointRate.load(std::memory_order_relaxed);
 }
 
-std::optional<DacBufferState> LaserControllerStreaming::getBufferState() const {
+std::optional<BufferState> LaserControllerStreaming::getBufferState() const {
     const int totalBufferPoints =
         estimatedBufferCapacity.load(std::memory_order_relaxed);
     if (totalBufferPoints <= 0) {
@@ -259,7 +259,7 @@ std::optional<DacBufferState> LaserControllerStreaming::getBufferState() const {
     return buildBufferState(totalBufferPoints, estimatedBufferFullness);
 }
 
-std::optional<DacLatencyStats> LaserControllerStreaming::getLatencyStats() const {
+std::optional<LatencyStats> LaserControllerStreaming::getLatencyStats() const {
     std::vector<double> sortedSamples;
     {
         std::lock_guard<std::mutex> lock(latencySamplesMutex);
@@ -271,7 +271,7 @@ std::optional<DacLatencyStats> LaserControllerStreaming::getLatencyStats() const
 
     std::sort(sortedSamples.begin(), sortedSamples.end());
 
-    DacLatencyStats stats;
+    LatencyStats stats;
     stats.sampleCount = sortedSamples.size();
     stats.p50Ms = percentileFromSortedSamples(sortedSamples, 0.50);
     stats.p95Ms = percentileFromSortedSamples(sortedSamples, 0.95);
@@ -424,14 +424,14 @@ int LaserControllerStreaming::clampBufferFullnessToCapacity(
     return std::clamp(pointsInBuffer, 0, totalBufferPoints);
 }
 
-std::optional<DacBufferState> LaserControllerStreaming::buildBufferState(
+std::optional<BufferState> LaserControllerStreaming::buildBufferState(
     int totalBufferPoints,
     int pointsInBuffer) {
     if (totalBufferPoints <= 0) {
         return std::nullopt;
     }
 
-    DacBufferState state;
+    BufferState state;
     state.totalBufferPoints = totalBufferPoints;
     state.pointsInBuffer = clampBufferFullnessToCapacity(pointsInBuffer, totalBufferPoints);
     return state;

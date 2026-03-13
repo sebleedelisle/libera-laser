@@ -6,8 +6,8 @@ Libera aims to be a de facto standard for laser control, with support for a grow
 - Helios Pro
 - IDN (ILDA Digital Network)
 - Laser Cube USB (LaserDock)
-- Laser Cube Network
-- AVB (LA Sollinger lasers)
+- Laser Cube Network (for Wifi laser cubes - wired network strongly recommended!)
+- AVB (LA Sollinger lasers) (coming soon)
 
 The project uses a permissive license and is intended for broad adoption in laser control software.
 
@@ -17,7 +17,7 @@ The library discovers laser controllers on the system and provides a list of ava
 
 ## Include patterns
 
-Default (all built-in DAC managers registered):
+Default (all built-in controller managers registered):
 
 ```cpp
 #include "libera.h"
@@ -26,7 +26,7 @@ Default (all built-in DAC managers registered):
 Selective (register only chosen managers):
 
 ```cpp
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 #include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/helios/HeliosManager.hpp"
 ```
@@ -47,8 +47,8 @@ Every controller now exposes a shared status/error API:
 - `clearErrors()` resets error counters and intermittent warning state.
 
 Error type keys are shared by transport class:
-- Network DACs use `network.*` types (for example `network.timeout`, `network.packet_loss`, `network.buffer_underflow`).
-- USB DACs use `usb.*` types (for example `usb.timeout`, `usb.transfer_failed`, `usb.connection_lost`).
+- Network controllers use `network.*` types (for example `network.timeout`, `network.packet_loss`, `network.buffer_underflow`).
+- USB controllers use `usb.*` types (for example `usb.timeout`, `usb.transfer_failed`, `usb.connection_lost`).
 
 ## Build
 
@@ -88,13 +88,17 @@ Other options:
 ctest --preset debug
 ```
 
-Integration/hardware tests require enabling their options and may need actual controllers on the network.
+## A note on terminology
 
+Throughout this library (and in Liberation) I generally avoid the term **“DAC”** (Digital-to-Analogue Converter), which is the traditional name for a laser control interface.
 
+Today, most laser controllers do indeed perform digital-to-analogue conversion in order to drive the analogue ILDA interface used by scanning lasers. However, the role of these devices is broader than simply converting signals - they also implement protocols, manage streaming, and translate data between software and hardware.
 
-## Coding Conventions
-- Compile-time constants use ALL_CAPS snake case (for example `ETHERDREAM_MIN_POINTS_PER_TICK`) to make immutability obvious in hot code paths.
-- File headers provide a brief summary of responsibilities and cross-component touch points to reduce orientation time for new contributors.
+Looking forward, this distinction will become even more relevant as laser systems increasingly move towards fully digital communication between controllers and drivers. In those cases there may be no analogue conversion at all, and the device functions purely as a controller and protocol bridge.
+
+For this reason Libera generally refers to these devices as **controllers** rather than DACs.
+
+Similarly, I avoid the term **“projector”** when referring to scanning show lasers. The term has become ambiguous as pixel-based video projectors with laser light sources are now widely marketed as “laser projectors”. In Libera and Liberation these devices are simply referred to as **lasers**.
 
 ## Licence
 

@@ -53,10 +53,9 @@ core::Frame makeWhiteCircleFrame(int framenum) {
 
 int main() {
     // This is the single top-level object. It
-    // handles discovery across all controller types, creation and clean destruction 
-    // of controller objects
-    
-    core::GlobalDacManager dacManager;
+    // handles discovery across all controller types, creation and clean destruction
+    // of controller objects.
+    System liberaSystem;
 
     logInfo("Searching for controllers...");
 
@@ -64,24 +63,26 @@ int main() {
 
     while (!controller) {
 
-        // discoverAll returns all the controllers that 
-        std::vector<std::unique_ptr<core::DacInfo>> discovered = dacManager.discoverAll();
+        // discoverControllers returns all controllers currently visible through
+        // the registered backend managers.
+        std::vector<std::unique_ptr<core::ControllerInfo>> discovered =
+            liberaSystem.discoverControllers();
         if (!discovered.empty()) {
-            const core::DacInfo& firstDevice = *discovered.front();
+            const core::ControllerInfo& firstDevice = *discovered.front();
             
             logInfo("Found controller:",
                     firstDevice.labelValue(),
                     "type",
                     firstDevice.type());
 
-            // getAndConnectToDac() asks the matching backend manager to return a
-            // controller for this DacInfo and start it if needed. The returned
+            // connectController() asks the matching backend manager to return a
+            // controller for this ControllerInfo and start it if needed. The returned
             // LaserController gives us the common frame/streaming API regardless
-            // of which concrete DAC type was discovered.
-            controller = dacManager.getAndConnectToDac(firstDevice);
+            // of which concrete controller type was discovered.
+            controller = liberaSystem.connectController(firstDevice);
             if (!controller) {
                 logError("A device was discovered, but the library could not create a controller.");
-                dacManager.close();
+                liberaSystem.shutdown();
                 return 1;
             }
             
@@ -131,8 +132,8 @@ int main() {
         
     }
 
-    // close() shuts down the system and cleanly destroys all controllers
-    dacManager.close();
+    // shutdown() stops the backend managers and cleanly destroys all controllers.
+    liberaSystem.shutdown();
 
     logInfo("Done. Submitted frames:", submittedFrameCount);
     return 0;

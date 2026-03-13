@@ -131,8 +131,8 @@ void LaserCubeNetManager::sendProbe() {
     socket->send_to(&cmd, 1, broadcastEndpoint, std::chrono::milliseconds(200));
 }
 
-std::vector<std::unique_ptr<core::DacInfo>> LaserCubeNetManager::discover() {
-    std::vector<std::unique_ptr<core::DacInfo>> out;
+std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeNetManager::discover() {
+    std::vector<std::unique_ptr<core::ControllerInfo>> out;
     std::lock_guard lock(controllersMutex);
     out.reserve(controllers.size());
     for (const auto& [id, entry] : controllers) {
@@ -142,7 +142,7 @@ std::vector<std::unique_ptr<core::DacInfo>> LaserCubeNetManager::discover() {
 }
 
 std::shared_ptr<core::LaserController>
-LaserCubeNetManager::getAndConnectToDac(const core::DacInfo& info) {
+LaserCubeNetManager::connectController(const core::ControllerInfo& info) {
     const auto* lcInfo = dynamic_cast<const LaserCubeNetControllerInfo*>(&info);
     if (!lcInfo) {
         return nullptr;

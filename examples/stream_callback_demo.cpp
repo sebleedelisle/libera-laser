@@ -12,7 +12,7 @@ using namespace libera;
 namespace {
 
 void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& controller) {
-    // Register a callback that continuously feeds a coloured circle to the DAC.
+    // Register a callback that continuously feeds a coloured circle to the controller.
     // The lambda keeps all state internally (static precomputed points + cursor)
     // so the outer application only has to install it once.
     controller->setRequestPointsCallback(
@@ -110,17 +110,17 @@ void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& c
 
 int main() {
 
-    core::GlobalDacManager dacManager;
+    System liberaSystem;
 
-    logInfo("Waiting for DACs to be discovered..."); 
+    logInfo("Waiting for controllers to be discovered..."); 
     constexpr auto discoveryTimeout = std::chrono::milliseconds(1500);
     constexpr auto discoveryPollInterval = std::chrono::milliseconds(100);
     const auto discoveryStart = std::chrono::steady_clock::now();
-    std::vector<std::unique_ptr<core::DacInfo>> results;
+    std::vector<std::unique_ptr<core::ControllerInfo>> results;
     do {
-        results = dacManager.discoverAll();
+        results = liberaSystem.discoverControllers();
         if (!results.empty()) {
-            break; // stop waiting as soon as at least one DAC is found
+            break; // stop waiting as soon as at least one controller is found
         }
         std::this_thread::sleep_for(discoveryPollInterval);
     } while (std::chrono::steady_clock::now() - discoveryStart < discoveryTimeout);
@@ -130,7 +130,7 @@ int main() {
         return 1;
     }
 
-    logInfo("Discovered DACs:");
+    logInfo("Discovered controllers:");
     for (std::size_t idx = 0; idx < results.size(); ++idx) {
         const auto& entry = results[idx];
         logInfo(idx, entry->labelValue(), "type", entry->type());
@@ -139,30 +139,31 @@ int main() {
     std::size_t choice = 0;
     if(results.size()>1) { 
         
-        logInfo("Select DAC index: ");
+        logInfo("Select controller index: ");
         if (!(std::cin >> choice) || choice >= results.size()) {
             logError("Invalid selection.");
             return 1;
         }
     }
 
-    // the discovery manager getAndConnectToDac should create and connect the dac if it hasn't already. 
-    // if it has already it just returns the existing dac
+    // connectController() should create and connect the controller if it
+    // hasn't already. If it already exists, it returns the existing controller.
 
-    std::shared_ptr<core::LaserController> dac = dacManager.getAndConnectToDac(*results[choice]); 
-    if (!dac) {
-        logError("Failed to acquire DAC from manager.");
+    std::shared_ptr<core::LaserController> controller =
+        liberaSystem.connectController(*results[choice]);
+    if (!controller) {
+        logError("Failed to acquire controller from system.");
         return 1;
     }
     
-    installCirclePointsCallback(dac); 
+    installCirclePointsCallback(controller); 
 
     const float phaseStep = 0.05f;          // smaller => slower change
     constexpr float scannerSyncBaseUnits = 5.0f; // 0.5 ms expressed in 1/10,000 s units
     float phase = 0.f;
 
     for (int i = 0; i < 300; ++i) {
-        dac->setScannerSync(scannerSyncBaseUnits * (std::sin(phase) + 1.f));
+        controller->setScannerSync(scannerSyncBaseUnits * (std::sin(phase) + 1.f));
 
         phase += phaseStep;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));  // or duration<double>(0.1)
@@ -171,8 +172,8 @@ int main() {
 
     
 
-    // dacManager closes down all dacs safely
-    dacManager.close(); 
+    // shutdown() stops the backend managers and closes all controllers safely.
+    liberaSystem.shutdown(); 
 
     logInfo("Done.");
     

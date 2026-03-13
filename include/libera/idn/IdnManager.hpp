@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 #include "libera/idn/IdnControllerInfo.hpp"
 #include "libera/idn/IdnController.hpp"
 
@@ -10,17 +10,17 @@
 
 namespace libera::idn {
 
-class IdnManager : public core::DacManagerBase {
+class IdnManager : public core::ControllerManagerBase {
 public:
     IdnManager();
     ~IdnManager() override;
 
-    std::vector<std::unique_ptr<core::DacInfo>> discover() override;
+    std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserController> getAndConnectToDac(const core::DacInfo& info) override;
+    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
     void closeAll() override;
 
-    static inline core::DacManagerRegistry registrar{
+    static inline core::ControllerManagerRegistry registrar{
         [] { return std::make_unique<IdnManager>(); }
     };
 

@@ -1,12 +1,12 @@
 #pragma once
 
-#include "libera/core/GlobalDacManager.hpp"
+#include "libera/System.hpp"
 
 #include <string>
 
 namespace libera::etherdream {
 
-class EtherDreamControllerInfo : public core::DacInfo {
+class EtherDreamControllerInfo : public core::ControllerInfo {
 public:
     EtherDreamControllerInfo(std::string id,
                          std::string label,
@@ -15,7 +15,7 @@ public:
                          int bufferSizePoints = 0,
                          std::string hardwareVersion = {},
                          std::uint32_t maxPointRateValue = 0)
-    : DacInfo(std::move(id), std::move(label), maxPointRateValue, core::DacInfo::NetworkInfo{ip, port})
+    : ControllerInfo(std::move(id), std::move(label), maxPointRateValue, core::ControllerInfo::NetworkInfo{ip, port})
     , ipAddress(std::move(ip))
     , portNumber(port)
     , bufferSize(bufferSizePoints)
