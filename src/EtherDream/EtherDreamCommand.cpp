@@ -8,16 +8,6 @@ namespace {
 constexpr float COORD_SCALE = 32767.0f;
 constexpr float CHANNEL_SCALE = 65535.0f;
 constexpr std::uint16_t RATE_CHANGE_BIT = 0x8000u;
-
-float derivedProtocolIntensity(const core::LaserPoint& point) noexcept {
-    // EtherDream still expects an intensity word in each sample. The shared
-    // LaserPoint no longer carries a separate master-intensity field, so treat
-    // any non-zero output channel as "beam on" and send full protocol intensity.
-    return (point.r > 0.0f || point.g > 0.0f || point.b > 0.0f ||
-            point.u1 > 0.0f || point.u2 > 0.0f)
-               ? 1.0f
-               : 0.0f;
-}
 }
 
 void EtherDreamCommand::setDataCommand(std::uint16_t pointCount) {
@@ -35,7 +25,8 @@ void EtherDreamCommand::addPoint(const core::LaserPoint& point, bool setRateChan
     buffer.appendUInt16(encodeChannel(point.r));
     buffer.appendUInt16(encodeChannel(point.g));
     buffer.appendUInt16(encodeChannel(point.b));
-    buffer.appendUInt16(encodeChannel(derivedProtocolIntensity(point)));
+    // EtherDream still carries a dedicated intensity word for older devices.
+    buffer.appendUInt16(encodeChannel(point.i));
     buffer.appendUInt16(encodeChannel(point.u1));
     buffer.appendUInt16(encodeChannel(point.u2));
 }

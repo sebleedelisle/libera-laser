@@ -198,7 +198,11 @@ void LaserController::appendBlankPoints(std::vector<LaserPoint>& buffer, std::si
     if (count == 0) {
         return;
     }
-    buffer.insert(buffer.end(), count, LaserPoint{});
+    LaserPoint blankPoint;
+    // Keep library-generated blanks dark on controllers that honour the legacy
+    // intensity channel as well as RGB.
+    blankPoint.i = 0.0f;
+    buffer.insert(buffer.end(), count, blankPoint);
 }
 
 

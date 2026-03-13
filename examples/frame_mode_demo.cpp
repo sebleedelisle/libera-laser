@@ -69,9 +69,7 @@ core::Frame makeCircleFrame(float phase, float bufferFillFraction) {
             y,
             r * brightness,
             g * brightness,
-            b * brightness,
-            0.0f,
-            0.0f
+            b * brightness
         });
     }
 

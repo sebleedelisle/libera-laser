@@ -6,6 +6,7 @@ namespace libera::core {
 // - x, y : normalised coordinates (-1..1)
 // - r, g, b : colour channels (0..1 suggested)
 // - u1, u2 : user fields for extension (waveforms, safety masks, etc.)
+// - i : legacy master intensity for controllers that still require it
 
 struct LaserPoint {
     float x = 0.0f;
@@ -13,8 +14,11 @@ struct LaserPoint {
     float r = 0.0f;
     float g = 0.0f;
     float b = 0.0f;
+    float i = 1.0f;
     float u1 = 0.0f;
     float u2 = 0.0f;
+
+
 };
 
 } // namespace libera::core

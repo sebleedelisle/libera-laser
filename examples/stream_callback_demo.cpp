@@ -53,9 +53,7 @@ void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& c
                         y,
                         r * brightness,
                         g * brightness,
-                        b * brightness,
-                        0.0f,  // u1 unused
-                        0.0f   // u2 unused
+                        b * brightness
                     });
                 }
                 return pts;
