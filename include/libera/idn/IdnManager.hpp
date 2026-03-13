@@ -33,9 +33,10 @@ private:
     std::shared_ptr<HeliosDac> sdk;
     bool opened = false;
     std::size_t controllerCount = 0;
+    std::unordered_map<unsigned int, std::string> stableUnitIdByIndex;
 
     std::mutex activeMutex;
-    std::unordered_map<unsigned int, std::weak_ptr<IdnController>> activeControllers;
+    std::unordered_map<std::string, std::weak_ptr<IdnController>> activeControllers;
 };
 
 } // namespace libera::idn
