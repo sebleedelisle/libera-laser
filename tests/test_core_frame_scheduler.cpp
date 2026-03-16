@@ -71,10 +71,52 @@ void testDoesNotDropFrameMidPlayback() {
     ASSERT_EQ(secondBatch[4].x, 19.0f, "second batch finishes frame1");
 }
 
+void testHighLatencyAllowsMultipleFramesQueued() {
+    FrameSchedulerTestController controller;
+    controller.setPointRate(30000);
+    LaserController::setTargetRenderLatency(std::chrono::milliseconds(150));
+    controller.setArmed(true);
+    controller.startFrameMode();
+
+    std::size_t acceptedFrames = 0;
+    for (; acceptedFrames < 20; ++acceptedFrames) {
+        if (!controller.sendFrame(makeFrame(static_cast<float>(acceptedFrames * 1000), 500))) {
+            break;
+        }
+    }
+
+    ASSERT_TRUE(acceptedFrames >= 10, "150ms latency should admit a multi-frame lead buffer");
+    ASSERT_TRUE(acceptedFrames < 20, "queue should still apply backpressure");
+    ASSERT_EQ(controller.queuedFrameCount(), acceptedFrames, "queued frame count matches pending frames");
+}
+
+void testReadinessReopensAsQueuedPointsDrain() {
+    FrameSchedulerTestController controller;
+    LaserController::setTargetRenderLatency(std::chrono::milliseconds(0));
+    controller.setArmed(true);
+    controller.startFrameMode();
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 5;
+    request.maximumPointsRequired = 5;
+    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+
+    ASSERT_TRUE(controller.sendFrame(makeFrame(10.0f, 10)), "first frame queued");
+    ASSERT_TRUE(controller.requestPoints(request), "first partial drain succeeds");
+    ASSERT_TRUE(controller.sendFrame(makeFrame(100.0f, 10)), "second frame queued");
+    ASSERT_TRUE(!controller.isReadyForNewFrame(), "remaining current+future points still exceed budget");
+
+    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+    ASSERT_TRUE(controller.requestPoints(request), "current frame finishes cleanly");
+    ASSERT_TRUE(controller.isReadyForNewFrame(), "budget reopens once only one frame of points remains");
+}
+
 } // namespace
 
 int main() {
     testDoesNotDropFrameMidPlayback();
+    testHighLatencyAllowsMultipleFramesQueued();
+    testReadinessReopensAsQueuedPointsDrain();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

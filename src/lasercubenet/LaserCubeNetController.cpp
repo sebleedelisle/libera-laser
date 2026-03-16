@@ -155,10 +155,13 @@ bool LaserCubeNetController::sendPoints() {
                 activePps,
                 0));
     lastEstimatedBufferFullness.store(minEstimatedBufferFullness, std::memory_order_relaxed);
-    const int latencyPointAdjustment = 300;
+    // Keep a fixed time-based point cushion so larger controller FIFOs do not
+    // translate into proportionally larger presentation latency.
+    const int targetBufferPoints =
+        LaserCubeNetConfig::targetBufferPoints(activePps, getTotalBufferCapacity());
     int maxPointsToAdd = std::max(
         0,
-        getTotalBufferCapacity() - minEstimatedBufferFullness - latencyPointAdjustment);
+        targetBufferPoints - minEstimatedBufferFullness);
 
     const int maxPointsInPacket = static_cast<int>(LaserCubeNetConfig::MAX_POINTS_PER_PACKET);
 

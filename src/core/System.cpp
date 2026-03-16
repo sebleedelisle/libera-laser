@@ -57,12 +57,21 @@ System::connectController(const core::ControllerInfo& info) {
 }
 
 void System::shutdown() {
-    for (auto& manager : managers) {
-        if (manager) {
-            manager->closeAll();
+    if (shutdownComplete) {
+        return;
+    }
+
+    // Teardown runs in reverse creation order so managers that may depend on
+    // shared lower-level runtimes (e.g. libusb) release their handles before
+    // other managers tear down those runtimes.
+    for (auto it = managers.rbegin(); it != managers.rend(); ++it) {
+        if (*it) {
+            (*it)->closeAll();
         }
     }
     managerByType.clear();
+    managers.clear();
+    shutdownComplete = true;
 }
 
 } // namespace libera

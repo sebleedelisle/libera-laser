@@ -3,6 +3,7 @@
 #include "libera/core/LaserControllerStreaming.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <mutex>
@@ -57,8 +58,15 @@ private:
     mutable std::mutex pendingFramesMutex;
     std::deque<std::shared_ptr<Frame>> frameQueue;
     bool frameModeActive = false;
+    std::atomic<std::size_t> pendingFrameCount{0};
+    std::atomic<std::size_t> pendingPointCount{0};
+    std::atomic<std::size_t> frameQueueCountEstimate{0};
+    std::atomic<std::size_t> frameQueuePointCountEstimate{0};
+    std::atomic<std::size_t> nominalFramePointCount{1};
 
     void appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count);
+    void updateFrameQueueMetricsUnsafe();
+    std::size_t queuedPointBudget() const;
 };
 
 } // namespace libera::core

@@ -82,6 +82,7 @@ public:
 private:
     std::vector<std::unique_ptr<core::ControllerManagerBase>> managers;
     std::unordered_map<std::string, core::ControllerManagerBase*> managerByType;
+    bool shutdownComplete = false;
 };
 
 } // namespace libera

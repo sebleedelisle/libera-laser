@@ -47,6 +47,8 @@ bool LaserController::sendFrame(Frame&& frame) {
     // empty frame 
     assert(frame.points.size()>0 &&  "Empty frame!"); 
     if(frame.points.size()==0) return false; // if it's empty then don't add it and return false
+    const auto framePointCount = frame.points.size();
+    nominalFramePointCount.store(std::max<std::size_t>(framePointCount, 1), std::memory_order_relaxed);
 
     // Auto-stamp unscheduled frames to now + global target latency so callers
     // can queue frames without manually setting Frame::time each time.
@@ -57,6 +59,8 @@ bool LaserController::sendFrame(Frame&& frame) {
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
 
     pendingFrames.push_back(std::make_shared<Frame>(std::move(frame)));
+    pendingFrameCount.fetch_add(1, std::memory_order_relaxed);
+    pendingPointCount.fetch_add(framePointCount, std::memory_order_relaxed);
     return true;
 }
 
@@ -78,6 +82,8 @@ void LaserController::stopFrameMode() {
     {
         std::lock_guard<std::mutex> lock(pendingFramesMutex);
         pendingFrames.clear();
+        pendingFrameCount.store(0, std::memory_order_relaxed);
+        pendingPointCount.store(0, std::memory_order_relaxed);
     }
     frameModeActive = false;
 }
@@ -87,17 +93,15 @@ bool LaserController::frameModeEnabled() const {
 }
 
 bool LaserController::isReadyForNewFrame() const {
-    std::lock_guard<std::mutex> lock(pendingFramesMutex);
-    const std::size_t pendingCount = pendingFrames.size();
-    const std::size_t activeCount = frameQueue.size();
-    return (activeCount + pendingCount) <= 1;
+    const auto queuedPoints =
+        frameQueuePointCountEstimate.load(std::memory_order_relaxed) +
+        pendingPointCount.load(std::memory_order_relaxed);
+    return queuedPoints <= queuedPointBudget();
 }
 
 std::size_t LaserController::queuedFrameCount() const {
-    std::lock_guard<std::mutex> lock(pendingFramesMutex);
-    const std::size_t pendingCount = pendingFrames.size();
-    const std::size_t activeCount = frameQueue.size();
-    return activeCount + pendingCount;
+    return frameQueueCountEstimate.load(std::memory_order_relaxed) +
+           pendingFrameCount.load(std::memory_order_relaxed);
 }
 
 void LaserController::frameFillCallback(const PointFillRequest& request,
@@ -105,8 +109,12 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
     // Pull any frames provided by other threads into the local queue so the
     // remainder of this function can operate without locking.
     drainPendingFrames();
+    const auto publishQueueMetrics = [this]() {
+        updateFrameQueueMetricsUnsafe();
+    };
 
     if (request.maximumPointsRequired == 0) {
+        publishQueueMetrics();
         return;
     }
 
@@ -124,6 +132,7 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
     if (frameQueue.empty()) {
         // Nothing ready yet, so provide the minimum number of blank samples to
         // keep downstream controller logic satisfied.
+        publishQueueMetrics();
         appendBlankPoints(outputBuffer, minPoints);
         return;
     }
@@ -146,6 +155,7 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
     // If the front frame is not due yet and we have nothing earlier to show,
     // output blanks until its presentation time.
     if (!frameIsDueAt(*frameQueue.front(), estimatedFirstRenderTime)) {
+        publishQueueMetrics();
         appendBlankPoints(outputBuffer, minPoints);
         return;
     }
@@ -168,11 +178,14 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
         } 
         // if we're at the end of the frame but we're over minPoints, return
         if ((outputBuffer.size()>=minPoints) && (currentFrame->nextPoint>=currentFrame->points.size())) {
+            publishQueueMetrics();
             return; 
         }
         // if we're at maxPoints, return
-        if(outputBuffer.size()==maxPoints) 
+        if(outputBuffer.size()==maxPoints) {
+            publishQueueMetrics();
             return; 
+        }
         // else it means that we're below minPoints and we're at the end of the
         // current frame. If a queued frame is due, promote it, otherwise repeat
         // the current frame (hold-last-frame behavior).
@@ -192,6 +205,9 @@ void LaserController::drainPendingFrames() {
         frameQueue.push_back(pendingFrames.front());
         pendingFrames.pop_front();
     }
+    pendingFrameCount.store(pendingFrames.size(), std::memory_order_relaxed);
+    pendingPointCount.store(0, std::memory_order_relaxed);
+    updateFrameQueueMetricsUnsafe();
 }
 
 void LaserController::appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count) {
@@ -203,6 +219,28 @@ void LaserController::appendBlankPoints(std::vector<LaserPoint>& buffer, std::si
     // intensity channel as well as RGB.
     blankPoint.i = 0.0f;
     buffer.insert(buffer.end(), count, blankPoint);
+}
+
+void LaserController::updateFrameQueueMetricsUnsafe() {
+    std::size_t remainingPoints = 0;
+    for (const auto& frame : frameQueue) {
+        if (!frame) {
+            continue;
+        }
+        const auto nextPoint = std::min(frame->nextPoint, frame->points.size());
+        remainingPoints += (frame->points.size() - nextPoint);
+    }
+
+    frameQueueCountEstimate.store(frameQueue.size(), std::memory_order_relaxed);
+    frameQueuePointCountEstimate.store(remainingPoints, std::memory_order_relaxed);
+}
+
+std::size_t LaserController::queuedPointBudget() const {
+    const auto latencyPoints = static_cast<std::size_t>(
+        std::max(0, millisToPoints(targetRenderLatency())));
+    const auto nominalFramePoints =
+        std::max<std::size_t>(nominalFramePointCount.load(std::memory_order_relaxed), 1);
+    return latencyPoints + nominalFramePoints;
 }
 
 
