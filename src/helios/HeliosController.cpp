@@ -4,6 +4,7 @@
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <string>
 #include <thread>
@@ -11,8 +12,8 @@
 namespace libera::helios {
 namespace {
 
-constexpr std::size_t DEFAULT_FRAME_POINTS = 1000; // maximum 4096 points
 constexpr std::size_t MIN_FRAME_POINTS = 20;
+constexpr double TARGET_FRAME_DURATION_MS = 10.0;
 
 constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
@@ -62,12 +63,40 @@ bool shouldLogErrorBurst(std::size_t consecutiveCount) {
 
 namespace error_types = libera::core::error_types;
 
+std::size_t detail::defaultFramePointCount(std::uint32_t pointRate) {
+    if (pointRate == 0) {
+        return MIN_FRAME_POINTS;
+    }
+    const double rawPoints =
+        (static_cast<double>(pointRate) * TARGET_FRAME_DURATION_MS) / 1000.0;
+    const auto roundedPoints = static_cast<std::size_t>(std::llround(rawPoints));
+    return std::clamp<std::size_t>(roundedPoints, MIN_FRAME_POINTS, HELIOS_MAX_POINTS);
+}
+
+std::size_t detail::minimumRequestPoints(std::size_t maxFramePoints) {
+    return std::min<std::size_t>(maxFramePoints, MIN_FRAME_POINTS);
+}
+
+std::chrono::steady_clock::duration detail::requestRenderLead(std::chrono::microseconds previousWriteLead) {
+    return std::chrono::microseconds(std::max<std::int64_t>(0, previousWriteLead.count()));
+}
+
+std::int64_t detail::smoothWriteLeadMicros(std::int64_t previousMicros, std::int64_t currentMicros) {
+    const auto clampedPrevious = std::max<std::int64_t>(0, previousMicros);
+    const auto clampedCurrent = std::max<std::int64_t>(0, currentMicros);
+    if (clampedPrevious == 0) {
+        return clampedCurrent;
+    }
+    return ((clampedPrevious * 3) + clampedCurrent) / 4;
+}
+
 HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsigned int controllerIndex)
 : sdk(std::move(sdkInstance))
 , index(controllerIndex) {
-    targetFramePoints.store(DEFAULT_FRAME_POINTS, std::memory_order_relaxed);
-    frameBuffer.reserve(DEFAULT_FRAME_POINTS);
-    setEstimatedBufferCapacity(static_cast<int>(DEFAULT_FRAME_POINTS));
+    const auto defaultFramePoints = detail::defaultFramePointCount(getPointRate());
+    targetFramePoints.store(defaultFramePoints, std::memory_order_relaxed);
+    frameBuffer.reserve(defaultFramePoints);
+    setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
     updateEstimatedBufferAnchorNow(0, getPointRate());
 }
 
@@ -79,6 +108,7 @@ HeliosController::~HeliosController() {
 void HeliosController::close() {
     setConnectionState(false);
     clearEstimatedBufferState();
+    estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
     if (!sdk) {
         return;
     }
@@ -94,10 +124,17 @@ bool HeliosController::isConnected() const {
 
 void HeliosController::setPointRate(std::uint32_t pointRateValue) {
     LaserControllerStreaming::setPointRate(pointRateValue);
+    if (!framePointCountExplicitlySet.load(std::memory_order_relaxed)) {
+        const auto automaticFramePoints = detail::defaultFramePointCount(pointRateValue);
+        targetFramePoints.store(automaticFramePoints, std::memory_order_relaxed);
+        frameBuffer.reserve(automaticFramePoints);
+        setEstimatedBufferCapacity(static_cast<int>(automaticFramePoints));
+    }
 }
 
 void HeliosController::setFramePointCount(std::size_t points) {
-    const auto clamped = std::max(points, MIN_FRAME_POINTS);
+    const auto clamped = std::clamp<std::size_t>(points, MIN_FRAME_POINTS, HELIOS_MAX_POINTS);
+    framePointCountExplicitlySet.store(true, std::memory_order_relaxed);
     targetFramePoints.store(clamped, std::memory_order_relaxed);
     frameBuffer.reserve(clamped);
     setEstimatedBufferCapacity(static_cast<int>(clamped));
@@ -172,11 +209,17 @@ void HeliosController::run() {
         updateEstimatedBufferAnchorNow(0, pps);
 
         core::PointFillRequest req;
-        req.minimumPointsRequired = framePoints;
+        req.minimumPointsRequired = detail::minimumRequestPoints(framePoints);
         req.maximumPointsRequired = framePoints;
+        // Helios only exposes ready/not-ready, not continuous buffer depth.
+        // Once GetStatus() says "ready", the best lead we have is the USB/SDK
+        // write duration we observed on recent successful transfers, not one
+        // whole frame of extra delay.
+        const auto writeLead = detail::requestRenderLead(
+            std::chrono::microseconds(
+                estimatedWriteLeadMicros.load(std::memory_order_relaxed)));
         req.estimatedFirstPointRenderTime =
-            std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(static_cast<int>(pointsToMillis(framePoints)));
+            std::chrono::steady_clock::now() + writeLead;
         req.currentPointIndex = currentPointIndex.load(std::memory_order_relaxed);
 
         if (!requestPoints(req)) {
@@ -233,6 +276,13 @@ void HeliosController::run() {
         } else {
             consecutiveWriteErrors = 0;
             recordLatencySample(sendDone - sendStart);
+            const auto measuredWriteLeadMicros =
+                std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count();
+            const auto previousWriteLeadMicros =
+                estimatedWriteLeadMicros.load(std::memory_order_relaxed);
+            estimatedWriteLeadMicros.store(
+                detail::smoothWriteLeadMicros(previousWriteLeadMicros, measuredWriteLeadMicros),
+                std::memory_order_relaxed);
             setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
             updateEstimatedBufferAnchor(
                 static_cast<int>(frameBuffer.size()),

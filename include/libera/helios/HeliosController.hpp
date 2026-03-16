@@ -4,10 +4,18 @@
 #include "HeliosDac.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
 namespace libera::helios {
+
+namespace detail {
+std::size_t defaultFramePointCount(std::uint32_t pointRate);
+std::size_t minimumRequestPoints(std::size_t maxFramePoints);
+std::chrono::steady_clock::duration requestRenderLead(std::chrono::microseconds previousWriteLead);
+std::int64_t smoothWriteLeadMicros(std::int64_t previousMicros, std::int64_t currentMicros);
+} // namespace detail
 
 class HeliosController : public core::LaserController {
 public:
@@ -30,7 +38,9 @@ private:
     std::shared_ptr<HeliosDac> sdk;
     unsigned int index = 0;
     std::atomic<std::size_t> targetFramePoints{1000};
+    std::atomic<bool> framePointCountExplicitlySet{false};
     std::atomic<std::uint64_t> currentPointIndex{0};
+    std::atomic<std::int64_t> estimatedWriteLeadMicros{0};
     std::vector<HeliosPointExt> frameBuffer;
 
     // Simple counters used for log throttling and health diagnostics.

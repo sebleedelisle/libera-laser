@@ -111,12 +111,42 @@ void testReadinessReopensAsQueuedPointsDrain() {
     ASSERT_TRUE(controller.isReadyForNewFrame(), "budget reopens once only one frame of points remains");
 }
 
+void testPromotesFrameWhenItBecomesDueMidBatch() {
+    FrameSchedulerTestController controller;
+    controller.setPointRate(1000);
+    LaserController::setTargetRenderLatency(std::chrono::milliseconds(20));
+    controller.setArmed(true);
+    controller.startFrameMode();
+
+    const auto startTime = std::chrono::steady_clock::now();
+    Frame frame1 = makeFrame(10.0f, 10);
+    frame1.time = startTime;
+    Frame frame2 = makeFrame(100.0f, 10);
+    frame2.time = startTime + std::chrono::milliseconds(10);
+
+    ASSERT_TRUE(controller.sendFrame(std::move(frame1)), "first timed frame queued");
+    ASSERT_TRUE(controller.sendFrame(std::move(frame2)), "second timed frame queued");
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 15;
+    request.maximumPointsRequired = 15;
+    request.estimatedFirstPointRenderTime = startTime;
+
+    ASSERT_TRUE(controller.requestPoints(request), "mid-batch transition request succeeds");
+    const auto batch = controller.lastBatch();
+    ASSERT_EQ(batch.size(), static_cast<std::size_t>(15), "batch size");
+    ASSERT_EQ(batch[0].x, 10.0f, "batch starts with first frame");
+    ASSERT_EQ(batch[9].x, 19.0f, "first frame ends before transition");
+    ASSERT_EQ(batch[10].x, 100.0f, "second frame starts as soon as it becomes due");
+}
+
 } // namespace
 
 int main() {
     testDoesNotDropFrameMidPlayback();
     testHighLatencyAllowsMultipleFramesQueued();
     testReadinessReopensAsQueuedPointsDrain();
+    testPromotesFrameWhenItBecomesDueMidBatch();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

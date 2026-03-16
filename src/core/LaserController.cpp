@@ -128,6 +128,11 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
     if (estimatedFirstRenderTime == std::chrono::steady_clock::time_point{}) {
         estimatedFirstRenderTime = std::chrono::steady_clock::now();
     }
+    const auto renderTimeForBufferedPoints = [this, estimatedFirstRenderTime](std::size_t bufferedPointCount) {
+        return estimatedFirstRenderTime +
+               std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                   std::chrono::duration<double, std::milli>(pointsToMillis(bufferedPointCount)));
+    };
 
     if (frameQueue.empty()) {
         // Nothing ready yet, so provide the minimum number of blank samples to
@@ -189,7 +194,8 @@ void LaserController::frameFillCallback(const PointFillRequest& request,
         // else it means that we're below minPoints and we're at the end of the
         // current frame. If a queued frame is due, promote it, otherwise repeat
         // the current frame (hold-last-frame behavior).
-        if (frameQueue.size() > 1 && frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
+        if (frameQueue.size() > 1 &&
+            frameIsDueAt(*frameQueue[1], renderTimeForBufferedPoints(outputBuffer.size()))) {
             frameQueue.pop_front();
         } else {
             currentFrame->nextPoint=0; 
