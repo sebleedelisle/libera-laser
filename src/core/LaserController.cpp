@@ -16,7 +16,9 @@ bool frameIsDueAt(const Frame& frame,
 
 std::atomic<std::int64_t>& targetRenderLatencyMsStorage() {
     // One shared frame scheduling latency for all LaserController instances.
-    static std::atomic<std::int64_t> latencyMs{0};
+    // Match ofxLaser's long-standing default so standalone libera examples do
+    // not behave very differently from the wrapper path by default.
+    static std::atomic<std::int64_t> latencyMs{100};
     return latencyMs;
 }
 

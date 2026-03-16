@@ -42,6 +42,12 @@ Frame makeFrame(float start, std::size_t count) {
     return frame;
 }
 
+void testDefaultTargetRenderLatencyMatchesOfxLaser() {
+    ASSERT_EQ(LaserController::targetRenderLatency().count(),
+              100LL,
+              "libera default frame latency should match ofxLaser");
+}
+
 void testDoesNotDropFrameMidPlayback() {
     FrameSchedulerTestController controller;
     LaserController::setTargetRenderLatency(std::chrono::milliseconds(0));
@@ -74,7 +80,7 @@ void testDoesNotDropFrameMidPlayback() {
 void testHighLatencyAllowsMultipleFramesQueued() {
     FrameSchedulerTestController controller;
     controller.setPointRate(30000);
-    LaserController::setTargetRenderLatency(std::chrono::milliseconds(150));
+    LaserController::setTargetRenderLatency(std::chrono::milliseconds(100));
     controller.setArmed(true);
     controller.startFrameMode();
 
@@ -85,7 +91,7 @@ void testHighLatencyAllowsMultipleFramesQueued() {
         }
     }
 
-    ASSERT_TRUE(acceptedFrames >= 10, "150ms latency should admit a multi-frame lead buffer");
+    ASSERT_TRUE(acceptedFrames >= 6, "100ms latency should admit a multi-frame lead buffer");
     ASSERT_TRUE(acceptedFrames < 20, "queue should still apply backpressure");
     ASSERT_EQ(controller.queuedFrameCount(), acceptedFrames, "queued frame count matches pending frames");
 }
@@ -143,6 +149,7 @@ void testPromotesFrameWhenItBecomesDueMidBatch() {
 } // namespace
 
 int main() {
+    testDefaultTargetRenderLatencyMatchesOfxLaser();
     testDoesNotDropFrameMidPlayback();
     testHighLatencyAllowsMultipleFramesQueued();
     testReadinessReopensAsQueuedPointsDrain();
