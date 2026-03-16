@@ -70,6 +70,36 @@ static void testMinimumBufferPoints() {
     ASSERT_EQ(lowRate, 256, "low rate should respect floor");
 }
 
+static void testTargetBufferPointsUsesLatency() {
+    const int target = BufferEstimator::targetBufferPoints(
+        30000,
+        6000,
+        std::chrono::milliseconds(100),
+        140,
+        280);
+    ASSERT_EQ(target, 3000, "100ms at 30kpps should request 3000 points when capacity allows");
+}
+
+static void testTargetBufferPointsRespectsSafetyHeadroom() {
+    const int target = BufferEstimator::targetBufferPoints(
+        30000,
+        1799,
+        std::chrono::milliseconds(100),
+        140,
+        280);
+    ASSERT_EQ(target, 1519, "high latency should clamp to capacity minus safety headroom");
+}
+
+static void testTargetBufferPointsKeepsFloorAtZeroLatency() {
+    const int target = BufferEstimator::targetBufferPoints(
+        2000,
+        1799,
+        std::chrono::milliseconds(0),
+        140,
+        280);
+    ASSERT_EQ(target, 140, "zero latency should still respect the minimum buffer floor");
+}
+
 static void testClampSleepMillis() {
     ASSERT_EQ(BufferEstimator::clampSleepMillis(0, 1, 50), 1, "lower bound clamp");
     ASSERT_EQ(BufferEstimator::clampSleepMillis(100, 1, 50), 50, "upper bound clamp");
@@ -81,6 +111,9 @@ int main() {
     testEstimateFromAnchorFallback();
     testEstimateFromAnchorZeroRateFallback();
     testMinimumBufferPoints();
+    testTargetBufferPointsUsesLatency();
+    testTargetBufferPointsRespectsSafetyHeadroom();
+    testTargetBufferPointsKeepsFloorAtZeroLatency();
     testClampSleepMillis();
 
     if (g_failures) {

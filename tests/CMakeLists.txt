@@ -4,6 +4,7 @@ set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_timing.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_buffer_target.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_point_rate.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_status.cpp
 )
 

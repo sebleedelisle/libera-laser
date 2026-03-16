@@ -14,8 +14,8 @@ bool frameIsDueAt(const Frame& frame,
     return frame.time <= estimatedFirstRenderTime;
 }
 
-std::atomic<std::int64_t>& targetRenderLatencyMsStorage() {
-    // One shared frame scheduling latency for all LaserController instances.
+std::atomic<std::int64_t>& targetLatencyMsStorage() {
+    // One shared target latency for all LaserController instances.
     // Match ofxLaser's long-standing default so standalone libera examples do
     // not behave very differently from the wrapper path by default.
     static std::atomic<std::int64_t> latencyMs{100};
@@ -27,14 +27,14 @@ std::atomic<std::int64_t>& targetRenderLatencyMsStorage() {
 LaserController::LaserController() = default;
 LaserController::~LaserController() = default;
 
-void LaserController::setTargetRenderLatency(std::chrono::milliseconds latency) {
+void LaserController::setTargetLatency(std::chrono::milliseconds latency) {
     const auto clamped = std::max<std::int64_t>(0, latency.count());
-    targetRenderLatencyMsStorage().store(clamped, std::memory_order_relaxed);
+    targetLatencyMsStorage().store(clamped, std::memory_order_relaxed);
 }
 
-std::chrono::milliseconds LaserController::targetRenderLatency() {
+std::chrono::milliseconds LaserController::targetLatency() {
     return std::chrono::milliseconds(
-        targetRenderLatencyMsStorage().load(std::memory_order_relaxed));
+        targetLatencyMsStorage().load(std::memory_order_relaxed));
 }
 
 // returns false if the controller isn't ready for a new frame or if the frame is empty. 
@@ -55,7 +55,7 @@ bool LaserController::sendFrame(Frame&& frame) {
     // Auto-stamp unscheduled frames to now + global target latency so callers
     // can queue frames without manually setting Frame::time each time.
     if (frame.time == std::chrono::steady_clock::time_point{}) {
-        frame.time = std::chrono::steady_clock::now() + targetRenderLatency();
+        frame.time = std::chrono::steady_clock::now() + targetLatency();
     }
 
     std::lock_guard<std::mutex> lock(pendingFramesMutex);
@@ -245,7 +245,7 @@ void LaserController::updateFrameQueueMetricsUnsafe() {
 
 std::size_t LaserController::queuedPointBudget() const {
     const auto latencyPoints = static_cast<std::size_t>(
-        std::max(0, millisToPoints(targetRenderLatency())));
+        std::max(0, millisToPoints(targetLatency())));
     const auto nominalFramePoints =
         std::max<std::size_t>(nominalFramePointCount.load(std::memory_order_relaxed), 1);
     return latencyPoints + nominalFramePoints;

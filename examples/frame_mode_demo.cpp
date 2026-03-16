@@ -19,7 +19,7 @@ using namespace libera;
 
 namespace {
 
-constexpr auto demoTargetRenderLatency = std::chrono::milliseconds(100);
+constexpr auto demoTargetLatency = std::chrono::milliseconds(100);
 
 // function that creates a frame of points to draw a rainbow circle. The phase
 // value changes the colour shift. 
@@ -196,9 +196,9 @@ int main() {
         return 1;
     }
 
-    core::LaserController::setTargetRenderLatency(demoTargetRenderLatency);
-    libera::logInfo("Using target render latency", demoTargetRenderLatency.count(), "ms");
-    controller->setArmed(true); 
+    core::LaserController::setTargetLatency(demoTargetLatency);
+    libera::logInfo("Using target latency", demoTargetLatency.count(), "ms");
+    controller->setArmed(true);
     
     const float phaseStep = 0.05f;
     float phase = 0.0f;

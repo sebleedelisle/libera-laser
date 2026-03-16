@@ -15,7 +15,7 @@ namespace libera::core {
 struct Frame {
     std::vector<LaserPoint> points;
     // Desired first-point presentation time. If left as default (epoch), the
-    // frame will be auto-stamped in sendFrame() using targetRenderLatency().
+    // frame will be auto-stamped in sendFrame() using targetLatency().
     std::chrono::steady_clock::time_point time{};
     std::size_t playCount = 0;
     std::size_t nextPoint = 0; // cursor of the next sample to emit
@@ -27,18 +27,19 @@ public:
     virtual ~LaserController();
 
     /**
-     * @brief Set global frame presentation latency used by sendFrame().
+     * @brief Set the global target latency used by frame-mode controllers.
      *
      * When a frame has an empty timestamp (`Frame::time{}`), sendFrame() will
      * stamp it to now + this latency so all frame-mode controllers can share
-     * one scheduling target.
+     * one scheduling target. Buffer-aware controllers may also use the same
+     * latency target when deciding how much transport lead to keep queued.
      */
-    static void setTargetRenderLatency(std::chrono::milliseconds latency);
+    static void setTargetLatency(std::chrono::milliseconds latency);
 
     /**
-     * @brief Get global frame presentation latency used by sendFrame().
+     * @brief Get the global target latency used by frame-mode controllers.
      */
-    static std::chrono::milliseconds targetRenderLatency();
+    static std::chrono::milliseconds targetLatency();
 
     bool sendFrame(Frame&& frame);
     void startFrameMode();

@@ -30,11 +30,13 @@ LaserCubeNetController::~LaserCubeNetController() {
 
 libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControllerInfo& info) {
     ipAddress = info.ipAddress();
-    // Start with the controller-reported point rate; callers can override via setPointRate().
-    pps.store(info.status().pointRate, std::memory_order_relaxed);
-    newPps.store(info.status().pointRate, std::memory_order_relaxed);
     maxPointRate.store(info.status().pointRateMax, std::memory_order_relaxed);
     pointBufferCapacity.store(info.status().bufferMax, std::memory_order_relaxed);
+    const auto initialRate =
+        LaserCubeNetConfig::clampPointRate(getPointRate(), info.status().pointRateMax);
+    LaserControllerStreaming::setPointRate(initialRate);
+    pps.store(initialRate, std::memory_order_relaxed);
+    newPps.store(initialRate, std::memory_order_relaxed);
 
     lastAckTime = std::chrono::steady_clock::now();
     lastAckWarningTime = std::chrono::steady_clock::time_point{};
@@ -124,9 +126,9 @@ void LaserCubeNetController::run() {
 
 void LaserCubeNetController::setPointRate(std::uint32_t pointRateValue) {
     core::LaserControllerStreaming::setPointRate(pointRateValue);
-    if (pointRateValue > maxPointRate.load(std::memory_order_relaxed)) {
-        pointRateValue = maxPointRate.load(std::memory_order_relaxed);
-    }
+    pointRateValue = LaserCubeNetConfig::clampPointRate(
+        pointRateValue,
+        maxPointRate.load(std::memory_order_relaxed));
     if (!running.load()) {
         pps.store(pointRateValue, std::memory_order_relaxed);
         newPps.store(pointRateValue, std::memory_order_relaxed);
@@ -155,10 +157,13 @@ bool LaserCubeNetController::sendPoints() {
                 activePps,
                 0));
     lastEstimatedBufferFullness.store(minEstimatedBufferFullness, std::memory_order_relaxed);
-    // Keep a fixed time-based point cushion so larger controller FIFOs do not
-    // translate into proportionally larger presentation latency.
+    // Keep a latency-derived point cushion, but leave fixed packet headroom so
+    // estimated fullness + delayed acks do not push the controller into overrun.
     const int targetBufferPoints =
-        LaserCubeNetConfig::targetBufferPoints(activePps, getTotalBufferCapacity());
+        LaserCubeNetConfig::targetBufferPoints(
+            activePps,
+            getTotalBufferCapacity(),
+            targetLatency());
     int maxPointsToAdd = std::max(
         0,
         targetBufferPoints - minEstimatedBufferFullness);

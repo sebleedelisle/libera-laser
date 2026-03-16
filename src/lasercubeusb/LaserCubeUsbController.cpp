@@ -1,5 +1,6 @@
 #include "libera/lasercubeusb/LaserCubeUsbController.hpp"
 
+#include "libera/core/BufferEstimator.hpp"
 #include "libera/core/ByteBuffer.hpp"
 #include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbConfig.hpp"
@@ -77,7 +78,7 @@ constexpr std::uint8_t CONTROL_ENDPOINT_OUT = 1 | LIBUSB_ENDPOINT_OUT;
 constexpr std::uint8_t CONTROL_ENDPOINT_IN = 1 | LIBUSB_ENDPOINT_IN;
 constexpr std::uint8_t DATA_ENDPOINT_OUT = 3 | LIBUSB_ENDPOINT_OUT;
 constexpr int MIN_PACKET_DATA_SIZE = 128;
-constexpr double LATENCY_MILLIS = 10.0;
+constexpr int SAFETY_HEADROOM_POINTS = MIN_PACKET_DATA_SIZE;
 constexpr int WAIT_LEAD_MILLIS = 30;
 
 bool send_uint8(libusb_device_handle* handle, std::uint8_t command, std::uint8_t value) {
@@ -347,9 +348,12 @@ void LaserCubeUsbController::waitUntilReadyToSend() {
         return;
     }
 
-    const int minPointsInBuffer = std::max(
+    const int minPointsInBuffer = core::BufferEstimator::targetBufferPoints(
+        static_cast<std::uint32_t>(rate),
+        getTotalBufferCapacity(),
+        targetLatency(),
         MIN_PACKET_DATA_SIZE,
-        static_cast<int>(std::lround((static_cast<double>(rate) * LATENCY_MILLIS) / 1000.0)));
+        SAFETY_HEADROOM_POINTS);
 
     const int bufferFullness = estimateBufferFullness();
     const int pointsUntilNeedsRefill = std::max(MIN_PACKET_DATA_SIZE, bufferFullness - minPointsInBuffer);
@@ -387,7 +391,13 @@ bool LaserCubeUsbController::sendPoints() {
 
     const int capacity = getTotalBufferCapacity();
     const int bufferFullness = estimateBufferFullness();
-    int maxPointsToAdd = capacity - bufferFullness;
+    const int targetBufferPoints = core::BufferEstimator::targetBufferPoints(
+        currentPps.load(std::memory_order_relaxed),
+        capacity,
+        targetLatency(),
+        MIN_PACKET_DATA_SIZE,
+        SAFETY_HEADROOM_POINTS);
+    int maxPointsToAdd = targetBufferPoints - bufferFullness;
     if (maxPointsToAdd <= 0) {
         return true;
     }

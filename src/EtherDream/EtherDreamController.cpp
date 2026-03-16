@@ -308,14 +308,13 @@ expected<Ack> EtherDreamController::sendPointRate(std::uint16_t rate) {
 }
 
 std::size_t EtherDreamController::calculateMinimumPoints() {
-
-
     const int bufferFullness = estimateBufferFullness();
-
-    const int minPoints = core::BufferEstimator::minimumBufferPoints(
+    const int minPoints = core::BufferEstimator::targetBufferPoints(
         getPointRate(),
-        config::ETHERDREAM_MIN_BUFFER_MS,
-        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
+        getBufferSize(),
+        targetLatency(),
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
+        static_cast<int>(config::ETHERDREAM_SAFETY_HEADROOM_POINTS));
     if(bufferFullness>=minPoints) return 0; 
     else return static_cast<std::size_t>(minPoints - bufferFullness);
     
@@ -494,16 +493,12 @@ void EtherDreamController::sleepUntilNextPoints() {
     // 2) Estimate how long until the current buffer drains to that level.
     // 3) Sleep for that time, clamped to a small min/max window.
 
-    int minPointsInBuffer = core::BufferEstimator::minimumBufferPoints(
+    int minPointsInBuffer = core::BufferEstimator::targetBufferPoints(
         getPointRate(),
-        config::ETHERDREAM_MIN_BUFFER_MS,
-        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS));
-    const int bufferSize = getBufferSize();
-    const int minPacketPoints = static_cast<int>(config::ETHERDREAM_MIN_PACKET_POINTS);
-
-    if ((bufferSize - minPointsInBuffer) < minPacketPoints) {
-        minPointsInBuffer = bufferSize - minPacketPoints;
-    }
+        getBufferSize(),
+        targetLatency(),
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
+        static_cast<int>(config::ETHERDREAM_SAFETY_HEADROOM_POINTS));
 
     // Estimate how long until the buffer drains to that minimum.
     const int fullness = static_cast<int>(estimateBufferFullness());

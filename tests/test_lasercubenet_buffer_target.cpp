@@ -14,41 +14,57 @@ static int g_failures = 0;
 
 namespace {
 
-void testThirtyKppsTargetsTenMilliseconds() {
+void testLowLatencyKeepsOnePacketMinimum() {
     ASSERT_EQ(
-        LaserCubeNetConfig::targetBufferPoints(30000, 1799),
+        LaserCubeNetConfig::targetBufferPoints(2000, 1799, std::chrono::milliseconds(0)),
+        static_cast<int>(LaserCubeNetConfig::MAX_POINTS_PER_PACKET),
+        "zero latency should still keep one packet buffered");
+}
+
+void testLatencyDrivesThirtyKppsTarget() {
+    ASSERT_EQ(
+        LaserCubeNetConfig::targetBufferPoints(30000, 1799, std::chrono::milliseconds(10)),
         300,
-        "30kpps should target about 10ms of buffered points");
+        "30kpps should target latency-derived buffered points");
 }
 
 void testHigherRateScalesTheTarget() {
     ASSERT_EQ(
-        LaserCubeNetConfig::targetBufferPoints(60000, 1799),
+        LaserCubeNetConfig::targetBufferPoints(60000, 1799, std::chrono::milliseconds(10)),
         600,
-        "higher point rates should keep the same time-based buffer");
+        "higher point rates should scale the latency-derived target");
 }
 
-void testLowRateStillKeepsOnePacketBuffered() {
+void testHighLatencyClampsToSafetyHeadroomOnSmallBuffer() {
     ASSERT_EQ(
-        LaserCubeNetConfig::targetBufferPoints(2000, 1799),
-        static_cast<int>(LaserCubeNetConfig::MAX_POINTS_PER_PACKET),
-        "low rates should still keep one packet buffered");
+        LaserCubeNetConfig::targetBufferPoints(30000, 1799, std::chrono::milliseconds(100)),
+        1519,
+        "high latency should fill close to full while preserving safety headroom");
 }
 
-void testSmallBuffersClampToCapacity() {
+void testHighLatencyUsesLargeBufferCapacityWhenAvailable() {
     ASSERT_EQ(
-        LaserCubeNetConfig::targetBufferPoints(30000, 256),
-        256,
-        "small hardware buffers should clamp the target to capacity");
+        LaserCubeNetConfig::targetBufferPoints(30000, 6000, std::chrono::milliseconds(100)),
+        3000,
+        "large hardware buffers should be able to absorb the configured latency");
+}
+
+void testVerySmallBuffersLeaveHeadroom() {
+    ASSERT_EQ(
+        LaserCubeNetConfig::targetBufferPoints(30000, 256, std::chrono::milliseconds(100)),
+        140,
+        "small hardware buffers should still leave safety headroom");
 }
 
 } // namespace
 
 int main() {
-    testThirtyKppsTargetsTenMilliseconds();
+    testLowLatencyKeepsOnePacketMinimum();
+    testLatencyDrivesThirtyKppsTarget();
     testHigherRateScalesTheTarget();
-    testLowRateStillKeepsOnePacketBuffered();
-    testSmallBuffersClampToCapacity();
+    testHighLatencyClampsToSafetyHeadroomOnSmallBuffer();
+    testHighLatencyUsesLargeBufferCapacityWhenAvailable();
+    testVerySmallBuffersLeaveHeadroom();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

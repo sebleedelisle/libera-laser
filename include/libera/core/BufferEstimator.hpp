@@ -23,6 +23,13 @@ public:
         std::chrono::milliseconds minimumBufferTime,
         int minimumBufferFloor);
 
+    static int targetBufferPoints(
+        std::uint32_t pointRate,
+        int bufferCapacity,
+        std::chrono::milliseconds targetLatency,
+        int minimumBufferFloor,
+        int safetyHeadroomPoints);
+
     static int clampSleepMillis(
         int millis,
         int minimumSleepMillis,

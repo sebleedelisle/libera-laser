@@ -47,6 +47,33 @@ int BufferEstimator::minimumBufferPoints(
     return std::max(pointsFromTime, minimumBufferFloor);
 }
 
+int BufferEstimator::targetBufferPoints(
+    std::uint32_t pointRate,
+    int bufferCapacity,
+    std::chrono::milliseconds targetLatency,
+    int minimumBufferFloor,
+    int safetyHeadroomPoints) {
+    if (bufferCapacity <= 0) {
+        return 0;
+    }
+
+    const int minimumTarget = std::clamp(minimumBufferFloor, 0, bufferCapacity);
+    if (pointRate == 0) {
+        return minimumTarget;
+    }
+
+    const auto latencyMs = std::max<std::int64_t>(0, targetLatency.count());
+    const double requestedFromTime =
+        (static_cast<double>(pointRate) * static_cast<double>(latencyMs)) / 1000.0;
+    const int requested = static_cast<int>(std::llround(requestedFromTime));
+
+    const int maxSafetyHeadroom = std::max(0, bufferCapacity - minimumTarget);
+    const int safetyHeadroom = std::clamp(safetyHeadroomPoints, 0, maxSafetyHeadroom);
+    const int maximumTarget = std::max(minimumTarget, bufferCapacity - safetyHeadroom);
+
+    return std::clamp(requested, minimumTarget, maximumTarget);
+}
+
 int BufferEstimator::clampSleepMillis(
     int millis,
     int minimumSleepMillis,

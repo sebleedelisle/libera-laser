@@ -42,15 +42,15 @@ Frame makeFrame(float start, std::size_t count) {
     return frame;
 }
 
-void testDefaultTargetRenderLatencyMatchesOfxLaser() {
-    ASSERT_EQ(LaserController::targetRenderLatency().count(),
+void testDefaultTargetLatencyMatchesOfxLaser() {
+    ASSERT_EQ(LaserController::targetLatency().count(),
               100LL,
-              "libera default frame latency should match ofxLaser");
+              "libera default target latency should match ofxLaser");
 }
 
 void testDoesNotDropFrameMidPlayback() {
     FrameSchedulerTestController controller;
-    LaserController::setTargetRenderLatency(std::chrono::milliseconds(0));
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
     controller.setArmed(true);
     controller.startFrameMode();
 
@@ -80,7 +80,7 @@ void testDoesNotDropFrameMidPlayback() {
 void testHighLatencyAllowsMultipleFramesQueued() {
     FrameSchedulerTestController controller;
     controller.setPointRate(30000);
-    LaserController::setTargetRenderLatency(std::chrono::milliseconds(100));
+    LaserController::setTargetLatency(std::chrono::milliseconds(100));
     controller.setArmed(true);
     controller.startFrameMode();
 
@@ -98,7 +98,7 @@ void testHighLatencyAllowsMultipleFramesQueued() {
 
 void testReadinessReopensAsQueuedPointsDrain() {
     FrameSchedulerTestController controller;
-    LaserController::setTargetRenderLatency(std::chrono::milliseconds(0));
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
     controller.setArmed(true);
     controller.startFrameMode();
 
@@ -120,7 +120,7 @@ void testReadinessReopensAsQueuedPointsDrain() {
 void testPromotesFrameWhenItBecomesDueMidBatch() {
     FrameSchedulerTestController controller;
     controller.setPointRate(1000);
-    LaserController::setTargetRenderLatency(std::chrono::milliseconds(20));
+    LaserController::setTargetLatency(std::chrono::milliseconds(20));
     controller.setArmed(true);
     controller.startFrameMode();
 
@@ -149,7 +149,7 @@ void testPromotesFrameWhenItBecomesDueMidBatch() {
 } // namespace
 
 int main() {
-    testDefaultTargetRenderLatencyMatchesOfxLaser();
+    testDefaultTargetLatencyMatchesOfxLaser();
     testDoesNotDropFrameMidPlayback();
     testHighLatencyAllowsMultipleFramesQueued();
     testReadinessReopensAsQueuedPointsDrain();

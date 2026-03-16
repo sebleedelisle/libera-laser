@@ -216,7 +216,10 @@ bool LaserControllerStreaming::getArmed() const noexcept {
 }
 
 void LaserControllerStreaming::setArmed(bool state) { 
-    armed.store(state, std::memory_order_relaxed);
+    const bool wasArmed = armed.exchange(state, std::memory_order_relaxed);
+    if (state && !wasArmed) {
+        resetStartupBlank();
+    }
 } 
 
 void LaserControllerStreaming::setPointRate(std::uint32_t pointRateValue) {

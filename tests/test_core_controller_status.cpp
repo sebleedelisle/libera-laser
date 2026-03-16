@@ -37,6 +37,10 @@ public:
     void addConnectionFailure(const char* type) {
         recordConnectionError(type);
     }
+
+    const std::vector<LaserPoint>& lastBatch() const {
+        return pointsToSend;
+    }
 };
 
 std::unordered_map<std::string, std::uint64_t>
@@ -100,6 +104,42 @@ void testClearErrorsResetsCounts() {
                 "status should be good after clear when connected");
 }
 
+void testArmRisingEdgeResetsStartupBlank() {
+    ControllerStatusHarness controller;
+    controller.setPointRate(1000);
+    controller.setRequestPointsCallback(
+        [](const PointFillRequest& req, std::vector<LaserPoint>& out) {
+            for (std::size_t i = 0; i < req.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                out.push_back(point);
+            }
+        });
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 2;
+    request.maximumPointsRequired = 2;
+
+    controller.setArmed(true);
+    ASSERT_TRUE(controller.requestPoints(request), "requestPoints should succeed after arming");
+    ASSERT_EQ(controller.lastBatch()[0].r, 0.0f, "first point should be blanked after arm");
+    ASSERT_EQ(controller.lastBatch()[1].r, 1.0f, "blanking should only consume the startup window");
+
+    ASSERT_TRUE(controller.requestPoints(request), "second requestPoints should succeed");
+    ASSERT_EQ(controller.lastBatch()[0].r, 1.0f, "startup blank should not repeat while still armed");
+
+    controller.setArmed(true);
+    ASSERT_TRUE(controller.requestPoints(request), "repeated setArmed(true) should not reblank");
+    ASSERT_EQ(controller.lastBatch()[0].r, 1.0f, "setArmed(true) while already armed should not reset blanking");
+
+    controller.setArmed(false);
+    controller.setArmed(true);
+    ASSERT_TRUE(controller.requestPoints(request), "re-arm requestPoints should succeed");
+    ASSERT_EQ(controller.lastBatch()[0].r, 0.0f, "re-arming should reset startup blank");
+}
+
 } // namespace
 
 int main() {
@@ -107,6 +147,7 @@ int main() {
     testGreenOrangeTransitions();
     testConnectionFailureIsRedAndCounted();
     testClearErrorsResetsCounts();
+    testArmRisingEdgeResetsStartupBlank();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");
