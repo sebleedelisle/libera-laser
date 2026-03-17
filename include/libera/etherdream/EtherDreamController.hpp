@@ -69,7 +69,7 @@ protected:
 
 
 private:
-    std::optional<std::uint16_t> nextPendingRateChange();
+    std::optional<std::uint32_t> nextPendingRateChange();
 
     /// Wait for the response frame to a specific command.
     expected<Ack>
@@ -81,7 +81,7 @@ private:
 
     /// Issue the point-rate command ('q') and return the associated ACK.
     expected<Ack>
-    sendPointRate(std::uint16_t rate);
+    sendPointRate(std::uint32_t rate);
 
     std::size_t calculateMinimumPoints();
     void sleepUntilNextPoints();
@@ -123,7 +123,7 @@ private:
     std::optional<std::error_code> lastError;
 
     std::mutex pendingRatesMutex;
-    std::deque<std::uint16_t> pendingRateChanges;
+    std::deque<std::uint32_t> pendingRateChanges;
     size_t pendingRateChangeCount = 0; 
 
     mutable std::atomic<int> lastEstimatedBufferFullness{0};

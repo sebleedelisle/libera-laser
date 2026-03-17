@@ -44,20 +44,20 @@ public:
     bool sendFrame(Frame&& frame);
     void startFrameMode();
     void stopFrameMode();
-    bool frameModeEnabled() const;
+    bool isFrameModeEnabled() const;
     bool isReadyForNewFrame() const;
     std::size_t queuedFrameCount() const;
 
 protected:
-    void frameFillCallback(const PointFillRequest& request,
+    void fillFromFrameQueue(const PointFillRequest& request,
                            std::vector<LaserPoint>& outputBuffer);
     void drainPendingFrames();
 
 private:
 
-    std::deque<std::shared_ptr<Frame>> pendingFrames;
+    std::deque<std::unique_ptr<Frame>> pendingFrames;
     mutable std::mutex pendingFramesMutex;
-    std::deque<std::shared_ptr<Frame>> frameQueue;
+    std::deque<std::unique_ptr<Frame>> frameQueue;
     bool frameModeActive = false;
     std::atomic<std::size_t> pendingFrameCount{0};
     std::atomic<std::size_t> pendingPointCount{0};

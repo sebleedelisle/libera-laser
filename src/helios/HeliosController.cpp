@@ -171,6 +171,9 @@ void HeliosController::run() {
             continue;
         }
         setConnectionState(true);
+        if (!wasConnected) {
+            resetStartupBlank();
+        }
         wasConnected = true;
 
         const int status = sdk->GetStatus(index);

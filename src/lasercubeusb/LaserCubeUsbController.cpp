@@ -22,9 +22,9 @@ namespace libera::lasercubeusb {
 
 namespace error_types = libera::core::error_types;
 
-class UsbControllerHandle {
+class LaserCubeUsbHandle {
 public:
-    explicit UsbControllerHandle(libusb_device* controller) {
+    explicit LaserCubeUsbHandle(libusb_device* controller) {
         int rc = libusb_open(controller, &handle);
         if (rc != 0 || !handle) {
             throw std::runtime_error(std::string("Failed to open USB controller: ") + libusb_error_name(rc));
@@ -39,7 +39,7 @@ public:
         }
     }
 
-    ~UsbControllerHandle() {
+    ~LaserCubeUsbHandle() {
         releaseInterface(0);
         releaseInterface(1);
         if (handle) {
@@ -87,12 +87,12 @@ bool send_uint8(libusb_device_handle* handle, std::uint8_t command, std::uint8_t
     packet[0] = command;
     packet[1] = value;
 
-    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, 2, &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, 2, &transferred, 1000);
     if (rc != 0 || transferred != 2) {
         return false;
     }
 
-    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 1000);
     if (rc != 0 || transferred != 64 || packet[1] != 0) {
         return false;
     }
@@ -105,12 +105,12 @@ bool read_uint32(libusb_device_handle* handle, std::uint8_t command, std::uint32
     std::uint8_t packet[64] = {};
     packet[0] = command;
 
-    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, 1, &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, 1, &transferred, 1000);
     if (rc != 0 || transferred != 1) {
         return false;
     }
 
-    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 1000);
     if (rc != 0 || transferred != 64 || packet[1] != 0) {
         return false;
     }
@@ -126,12 +126,12 @@ bool send_uint32(libusb_device_handle* handle, std::uint8_t command, std::uint32
     std::memcpy(packet + 1, &value, sizeof(std::uint32_t));
     const int length = 1 + static_cast<int>(sizeof(std::uint32_t));
 
-    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, length, &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet, length, &transferred, 1000);
     if (rc != 0 || transferred != length) {
         return false;
     }
 
-    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, packet, 64, &transferred, 1000);
     if (rc != 0 || transferred != 64 || packet[1] != 0) {
         return false;
     }
@@ -149,13 +149,13 @@ bool send_raw(libusb_device_handle* handle, const std::uint8_t* request, std::ui
     const std::uint32_t length = std::min<std::uint32_t>(requestLength, packet.size());
     std::memcpy(packet.data(), request, length);
 
-    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet.data(), static_cast<int>(length), &transferred, 0);
+    int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet.data(), static_cast<int>(length), &transferred, 1000);
     if (rc != 0 || transferred != static_cast<int>(length)) {
         return false;
     }
 
     std::array<std::uint8_t, 64> response{};
-    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, response.data(), static_cast<int>(response.size()), &transferred, 0);
+    rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_IN, response.data(), static_cast<int>(response.size()), &transferred, 1000);
     if (rc != 0 || transferred != static_cast<int>(response.size()) || response[1] != 0) {
         return false;
     }
@@ -186,7 +186,7 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
         return libera::unexpected(std::make_error_code(std::errc::io_error));
     }
 
-    std::unique_ptr<UsbControllerHandle> matchedHandle;
+    std::unique_ptr<LaserCubeUsbHandle> matchedHandle;
     bool foundSerial = false;
     for (ssize_t i = 0; i < count; ++i) {
         libusb_device* controller = deviceList[i];
@@ -215,7 +215,7 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
         if (serial == info.serial()) {
             foundSerial = true;
             try {
-                matchedHandle = std::make_unique<UsbControllerHandle>(controller);
+                matchedHandle = std::make_unique<LaserCubeUsbHandle>(controller);
             } catch (const std::exception& ex) {
                 logError("[LaserCubeUsbController] USB open failed", ex.what());
             }
@@ -254,19 +254,24 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
         maxSamplesPerTransfer.store(LaserCubeUsbConfig::BUFFER_CAPACITY, std::memory_order_relaxed);
     }
 
-    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x01, 0x01}.data(), 3);
-    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x01, 0x00}.data(), 3);
-    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x09, 0x01}.data(), 3);
-    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x09, 0x00}.data(), 3);
+    // Runner mode initialization sequence (from LaserDock protocol):
+    // Enable runner mode, then immediately disable it to reset firmware state.
+    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x01, 0x01}.data(), 3); // runner_mode_enable(true)
+    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x01, 0x00}.data(), 3); // runner_mode_enable(false)
+    // Start runner, then stop it.
+    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x09, 0x01}.data(), 3); // runner_mode_run(true)
+    send_raw(usbHandle->get(), std::array<std::uint8_t, 3>{0xC0, 0x09, 0x00}.data(), 3); // runner_mode_run(false)
 
+    // Load 7 all-white (0xFF) samples at position 0 into the runner buffer.
+    // This leaves the firmware in a known state before streaming begins.
     std::array<std::uint8_t, 64> runnerPacket{};
-    runnerPacket[0] = 0xC0;
-    runnerPacket[1] = 0x08;
+    runnerPacket[0] = 0xC0;             // command
+    runnerPacket[1] = 0x08;             // sub-command: runner_mode_load
     const std::uint16_t position = 0;
     const std::uint16_t countSamples = 7;
     std::memcpy(runnerPacket.data() + 2, &position, sizeof(position));
     std::memcpy(runnerPacket.data() + 4, &countSamples, sizeof(countSamples));
-    std::memset(runnerPacket.data() + 6, 0xFF, countSamples * 8);
+    std::memset(runnerPacket.data() + 6, 0xFF, countSamples * 8); // 7 samples × 8 bytes each
     send_raw(usbHandle->get(), runnerPacket.data(), runnerPacket.size());
 
     usbConnected.store(true, std::memory_order_relaxed);
@@ -276,8 +281,8 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
                                  ? std::min(getPointRate(), maxPointRate.load(std::memory_order_relaxed))
                                  : getPointRate();
     LaserControllerStreaming::setPointRate(initialRate);
-    targetPps.store(initialRate, std::memory_order_relaxed);
-    currentPps.store(0, std::memory_order_relaxed);
+    pendingPointRate.store(initialRate, std::memory_order_relaxed);
+    currentPointRate.store(0, std::memory_order_relaxed);
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
     setEstimatedBufferCapacity(getTotalBufferCapacity());
@@ -300,7 +305,7 @@ void LaserCubeUsbController::setPointRate(std::uint32_t pointRateValue) {
     }
 
     LaserControllerStreaming::setPointRate(pointRateValue);
-    targetPps.store(pointRateValue, std::memory_order_relaxed);
+    pendingPointRate.store(pointRateValue, std::memory_order_relaxed);
 }
 
 void LaserCubeUsbController::run() {
@@ -316,11 +321,11 @@ void LaserCubeUsbController::run() {
         }
         setConnectionState(true);
 
-        const auto desired = targetPps.load(std::memory_order_relaxed);
-        const auto active = currentPps.load(std::memory_order_relaxed);
+        const auto desired = pendingPointRate.load(std::memory_order_relaxed);
+        const auto active = currentPointRate.load(std::memory_order_relaxed);
         if (desired != active) {
             if (sendPointRate(desired)) {
-                currentPps.store(desired, std::memory_order_relaxed);
+                currentPointRate.store(desired, std::memory_order_relaxed);
             }
         }
         waitUntilReadyToSend();
@@ -343,7 +348,7 @@ bool LaserCubeUsbController::sendPointRate(std::uint32_t rate) {
 }
 
 void LaserCubeUsbController::waitUntilReadyToSend() {
-    const auto rate = static_cast<int>(currentPps.load(std::memory_order_relaxed));
+    const auto rate = static_cast<int>(currentPointRate.load(std::memory_order_relaxed));
     if (rate == 0) {
         return;
     }
@@ -367,7 +372,7 @@ void LaserCubeUsbController::waitUntilReadyToSend() {
 }
 
 int LaserCubeUsbController::estimateBufferFullness() const {
-    const auto rate = currentPps.load(std::memory_order_relaxed);
+    const auto rate = currentPointRate.load(std::memory_order_relaxed);
     return calculateBufferFullnessFromAnchor(
         lastDataSentBufferSize,
         lastDataSentTime,
@@ -385,14 +390,14 @@ bool LaserCubeUsbController::sendPoints() {
         return false;
     }
 
-    if (currentPps.load(std::memory_order_relaxed) == 0) {
+    if (currentPointRate.load(std::memory_order_relaxed) == 0) {
         return true;
     }
 
     const int capacity = getTotalBufferCapacity();
     const int bufferFullness = estimateBufferFullness();
     const int targetBufferPoints = core::BufferEstimator::targetBufferPoints(
-        currentPps.load(std::memory_order_relaxed),
+        currentPointRate.load(std::memory_order_relaxed),
         capacity,
         targetLatency(),
         MIN_PACKET_DATA_SIZE,
@@ -408,7 +413,7 @@ bool LaserCubeUsbController::sendPoints() {
     }
 
     core::PointFillRequest request{};
-    request.minimumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
+    request.minimumPointsRequired = 1;
     request.maximumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
 
     if (!requestPoints(request)) {
@@ -450,7 +455,7 @@ bool LaserCubeUsbController::sendPoints() {
             reinterpret_cast<unsigned char*>(packetBuffer.data()),
             static_cast<int>(packetBuffer.size()),
             &transferred,
-            0);
+            100);
         if (rc == LIBUSB_ERROR_TIMEOUT) {
             --retries;
         }
@@ -476,7 +481,7 @@ bool LaserCubeUsbController::sendPoints() {
     updateEstimatedBufferAnchor(
         estimatedAfterSend,
         now,
-        currentPps.load(std::memory_order_relaxed));
+        currentPointRate.load(std::memory_order_relaxed));
     recordLatencySample(now - sendStartTime);
 
     return true;

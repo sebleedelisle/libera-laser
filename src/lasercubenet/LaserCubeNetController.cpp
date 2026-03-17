@@ -35,8 +35,8 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
     const auto initialRate =
         LaserCubeNetConfig::clampPointRate(getPointRate(), info.status().pointRateMax);
     LaserControllerStreaming::setPointRate(initialRate);
-    pps.store(initialRate, std::memory_order_relaxed);
-    newPps.store(initialRate, std::memory_order_relaxed);
+    currentPointRate.store(initialRate, std::memory_order_relaxed);
+    pendingPointRate.store(initialRate, std::memory_order_relaxed);
 
     lastAckTime = std::chrono::steady_clock::now();
     lastAckWarningTime = std::chrono::steady_clock::time_point{};
@@ -100,15 +100,17 @@ void LaserCubeNetController::close() {
 void LaserCubeNetController::run() {
     using namespace std::chrono_literals;
 
+    resetStartupBlank();
+
     while (running.load()) {
         if (networkConnected.load(std::memory_order_relaxed)) {
             setConnectionState(true);
             // Push point-rate changes down to the controller when requested.
-            const auto targetPps = newPps.load(std::memory_order_relaxed);
-            const auto currentPps = pps.load(std::memory_order_relaxed);
-            if (targetPps != currentPps) {
-                if (sendPointRate(targetPps)) {
-                    pps.store(targetPps, std::memory_order_relaxed);
+            const auto targetPointRate = pendingPointRate.load(std::memory_order_relaxed);
+            const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
+            if (targetPointRate != activePointRate) {
+                if (sendPointRate(targetPointRate)) {
+                    currentPointRate.store(targetPointRate, std::memory_order_relaxed);
                 }
             }
 
@@ -119,8 +121,22 @@ void LaserCubeNetController::run() {
             setConnectionState(false);
         }
 
-        // Avoid a busy loop when the controller cannot accept more data yet.
-        std::this_thread::sleep_for(1ms);
+        // Adaptive sleep: wait roughly as long as the buffer excess takes to drain.
+        // This avoids a busy loop when the controller doesn't need more data yet.
+        {
+            const int bufferFullness = lastEstimatedBufferFullness.load(std::memory_order_relaxed);
+            const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
+            const int targetFull = LaserCubeNetConfig::targetBufferPoints(
+                activePointRate, getTotalBufferCapacity(), targetLatency());
+            const int excess = bufferFullness - targetFull;
+            int msToWait = 1;
+            if (excess > 0 && activePointRate > 0) {
+                msToWait = static_cast<int>(std::llround(
+                    pointsToMillis(static_cast<std::size_t>(excess), activePointRate)));
+                msToWait = std::clamp(msToWait, 1, 10);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(msToWait));
+        }
     }
 }
 
@@ -130,10 +146,10 @@ void LaserCubeNetController::setPointRate(std::uint32_t pointRateValue) {
         pointRateValue,
         maxPointRate.load(std::memory_order_relaxed));
     if (!running.load()) {
-        pps.store(pointRateValue, std::memory_order_relaxed);
-        newPps.store(pointRateValue, std::memory_order_relaxed);
+        currentPointRate.store(pointRateValue, std::memory_order_relaxed);
+        pendingPointRate.store(pointRateValue, std::memory_order_relaxed);
     } else {
-        newPps.store(pointRateValue, std::memory_order_relaxed);
+        pendingPointRate.store(pointRateValue, std::memory_order_relaxed);
     }
 }
 
@@ -141,7 +157,7 @@ bool LaserCubeNetController::sendPoints() {
     // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
-    const auto activePps = pps.load(std::memory_order_relaxed);
+    const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
 
     // Estimate how full the controller buffer is right now.
     const int minEstimatedBufferFullness =
@@ -149,19 +165,19 @@ bool LaserCubeNetController::sendPoints() {
             calculateBufferFullnessFromAnchor(
                 lastDataSentBufferSize,
                 lastDataSentTime,
-                activePps,
+                activePointRate,
                 0),
             calculateBufferFullnessFromAnchor(
                 lastReportedBufferFullness.load(std::memory_order_relaxed),
                 lastAckTime,
-                activePps,
+                activePointRate,
                 0));
     lastEstimatedBufferFullness.store(minEstimatedBufferFullness, std::memory_order_relaxed);
     // Keep a latency-derived point cushion, but leave fixed packet headroom so
     // estimated fullness + delayed acks do not push the controller into overrun.
     const int targetBufferPoints =
         LaserCubeNetConfig::targetBufferPoints(
-            activePps,
+            activePointRate,
             getTotalBufferCapacity(),
             targetLatency());
     int maxPointsToAdd = std::max(
@@ -185,7 +201,7 @@ bool LaserCubeNetController::sendPoints() {
     request.maximumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
     const auto renderLead = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double, std::milli>(
-            pointsToMillis(static_cast<std::size_t>(minEstimatedBufferFullness), activePps)));
+            pointsToMillis(static_cast<std::size_t>(minEstimatedBufferFullness), activePointRate)));
     request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now() + renderLead;
 
     if (!requestPoints(request)) {
@@ -230,6 +246,9 @@ bool LaserCubeNetController::sendPoints() {
     const bool success = sendData(packet.data(), packet.size());
     if (success) {
         const auto now = std::chrono::steady_clock::now();
+        if (messageTimes[messageNumber] == std::chrono::steady_clock::time_point{}) {
+            ++pendingAckCount;
+        }
         messageTimes[messageNumber] = now;
         lastDataSentTime = now;
         lastDataSentBufferSize = minEstimatedBufferFullness + static_cast<int>(pointsToSend.size());
@@ -292,8 +311,9 @@ void LaserCubeNetController::checkAcks() {
 
     constexpr std::size_t maxAckPollsPerCall = 64;
     std::size_t polls = 0;
+    const auto now = std::chrono::steady_clock::now();
+
     while (polls < maxAckPollsPerCall) {
-        // Each ack is a 4-byte response carrying the free-space count.
         std::array<std::uint8_t, 4> buffer{};
         libera::net::asio::ip::udp::endpoint sender;
         std::size_t received = 0;
@@ -312,7 +332,6 @@ void LaserCubeNetController::checkAcks() {
         ++polls;
 
         if (sender.address() != dataEndpoint.address() || sender.port() != dataEndpoint.port()) {
-            const auto now = std::chrono::steady_clock::now();
             if (lastUnexpectedAckSenderLogTime == std::chrono::steady_clock::time_point{} ||
                 (now - lastUnexpectedAckSenderLogTime) > std::chrono::seconds(1)) {
                 logInfo("[LaserCubeNetController] ignoring ack from unexpected sender",
@@ -338,32 +357,24 @@ void LaserCubeNetController::checkAcks() {
             continue;
         }
 
-        // Ack layout (byte offsets):
-        //  0: CMD_GET_RINGBUFFER_FREE (0x8A)
-        //  1: messageNumber echoed back
-        //  2: free-space LSB
-        //  3: free-space MSB
         const std::uint8_t receivedMessageNumber = buffer[1];
-        const auto it = messageTimes.find(receivedMessageNumber);
-        if (it == messageTimes.end()) {
+        const auto& sentTime = messageTimes[receivedMessageNumber];
+        if (sentTime == std::chrono::steady_clock::time_point{}) {
             recordIntermittentError(error_types::network::packetLoss);
             continue;
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        recordLatencySample(now - it->second);
+        recordLatencySample(now - sentTime);
         lastAckTime = now;
         lastAckWarningTime = std::chrono::steady_clock::time_point{};
 
         const std::uint16_t bufferSpace = core::bytes::readLe16(&buffer[2]);
-        // Convert free-space to fullness (capacity - free).
         const int bufferFullness = getTotalBufferCapacity() - static_cast<int>(bufferSpace);
         lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
         lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
 
-        // If this ack corresponds to the most recent send, anchor the time-sent estimate.
-        if (it->second >= lastDataSentTime) {
-            lastDataSentTime = it->second;
+        if (sentTime >= lastDataSentTime) {
+            lastDataSentTime = sentTime;
             lastDataSentBufferSize = bufferFullness;
         }
 
@@ -372,32 +383,38 @@ void LaserCubeNetController::checkAcks() {
             recordIntermittentError(error_types::network::bufferOverrun);
         }
 
-        messageTimes.erase(it);
+        messageTimes[receivedMessageNumber] = std::chrono::steady_clock::time_point{};
+        if (pendingAckCount > 0) --pendingAckCount;
     }
 
-    if (!messageTimes.empty()) {
-        const auto now = std::chrono::steady_clock::now();
-        for (auto it = messageTimes.begin(); it != messageTimes.end(); ) {
-            const auto delay = now - it->second;
-            if (delay > std::chrono::seconds(10)) {
-                it = messageTimes.erase(it);
-            } else {
-                ++it;
+    if (pendingAckCount > 0) {
+        // Clean up entries that have been pending for more than 1 second.
+        for (auto& slot : messageTimes) {
+            if (slot == std::chrono::steady_clock::time_point{}) continue;
+            if ((now - slot) > std::chrono::seconds(1)) {
+                slot = std::chrono::steady_clock::time_point{};
+                if (pendingAckCount > 0) --pendingAckCount;
             }
         }
 
-        if (!messageTimes.empty()) {
+        if (pendingAckCount > 0) {
             const bool staleAcks = (now - lastAckTime) > std::chrono::seconds(1);
             const bool shouldLogWait =
                 staleAcks &&
                 (lastAckWarningTime == std::chrono::steady_clock::time_point{} ||
                  (now - lastAckWarningTime) > std::chrono::seconds(1));
             if (shouldLogWait) {
-                const auto oldestPending = now - messageTimes.begin()->second;
+                // Find the oldest pending entry for diagnostics.
+                auto oldestTime = now;
+                for (const auto& slot : messageTimes) {
+                    if (slot != std::chrono::steady_clock::time_point{} && slot < oldestTime) {
+                        oldestTime = slot;
+                    }
+                }
                 const auto oldestMs =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(oldestPending).count();
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now - oldestTime).count();
                 logInfo("[LaserCubeNetController] waiting for ack",
-                        "pending", static_cast<int>(messageTimes.size()),
+                        "pending", pendingAckCount,
                         "oldest_ms", oldestMs);
                 recordIntermittentError(error_types::network::packetLoss);
                 lastAckWarningTime = now;

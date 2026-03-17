@@ -66,19 +66,20 @@ expected<void> EtherDreamController::connect() {
 
     libera::net::tcp::endpoint endpoint(ip, controllerInfo->port());
 
+    // Set timeouts before connecting so they apply to this and all future attempts.
+    tcpClient.setDefaultTimeout(200ms);
+    tcpClient.setConnectTimeout(1s);
+
     if (auto connectError = tcpClient.connect(endpoint); connectError) {
         logError("[EtherDreamController] connect failed", connectError.message(),
                  "target", controllerInfo->ip(), controllerInfo->port(),
-                 "timeout_ms", tcpClient.defaultTimeout().count());
+                 "timeout_ms", tcpClient.connectTimeout().count());
         lastError = connectError;
         recordConnectionError(error_types::network::connectFailed);
         return unexpected(connectError);
     }
     // Ask the socket to send small packets right away and keep the connection alive.
     tcpClient.setLowLatency();
-
-    tcpClient.setDefaultTimeout(200ms);
-    tcpClient.setConnectTimeout(1s);
 
 
     logInfoVerbose("[EtherDreamController] connected to", controllerInfo->ip(), controllerInfo->port());
@@ -246,7 +247,7 @@ void EtherDreamController::setPointRate(std::uint32_t pointRateValue) {
     }
 }
 
-std::optional<std::uint16_t> EtherDreamController::nextPendingRateChange() {
+std::optional<std::uint32_t> EtherDreamController::nextPendingRateChange() {
     std::lock_guard<std::mutex> lock(pendingRatesMutex);
     if (pendingRateChanges.empty()) {
         return std::nullopt;
@@ -285,11 +286,11 @@ expected<Ack> EtherDreamController::sendCommand() {
     return ack;
 }
 
-expected<Ack> EtherDreamController::sendPointRate(std::uint16_t rate) {
+expected<Ack> EtherDreamController::sendPointRate(std::uint32_t rate) {
 
-    commandBuffer.setPointRateCommand(static_cast<std::uint32_t>(rate));
+    commandBuffer.setPointRateCommand(rate);
 
-    logError("[EtherDream] TX 'q'", "rate", rate,
+    logInfoVerbose("[EtherDream] TX 'q'", "rate", rate,
              "timeout_ms", tcpClient.defaultTimeout().count());
 
     auto ack = sendCommand();
@@ -435,7 +436,7 @@ void EtherDreamController::sendClear() {
 }
 
 void EtherDreamController::sendPrepare() {
-    logError("[EtherDream] prepare required -> send 'p'");
+    logInfoVerbose("[EtherDream] prepare required -> send 'p'");
     commandBuffer.setSingleByteCommand('p');
     if (auto ack = sendCommand(); !ack) {
         if (ack.error() != std::errc::operation_canceled) {
@@ -445,7 +446,7 @@ void EtherDreamController::sendPrepare() {
 }
 
 void EtherDreamController::sendBegin() {
-    logError("[EtherDream] begin required -> send 'b'");
+    logInfoVerbose("[EtherDream] begin required -> send 'b'");
     const auto targetRate = getPointRate();
     commandBuffer.setBeginCommand(targetRate);
         if (auto ack = sendCommand(); !ack) {

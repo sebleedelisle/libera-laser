@@ -14,7 +14,7 @@ struct libusb_context;
 
 namespace libera::lasercubeusb {
 
-class UsbControllerHandle;
+class LaserCubeUsbHandle;
 
 class LaserCubeUsbController : public core::LaserController {
 public:
@@ -38,11 +38,11 @@ private:
     int getTotalBufferCapacity() const;
 
     std::shared_ptr<libusb_context> usbContext;
-    std::unique_ptr<UsbControllerHandle> usbHandle;
+    std::unique_ptr<LaserCubeUsbHandle> usbHandle;
 
     std::atomic<bool> usbConnected{false};
-    std::atomic<std::uint32_t> currentPps{0};
-    std::atomic<std::uint32_t> targetPps{30000};
+    std::atomic<std::uint32_t> currentPointRate{0};
+    std::atomic<std::uint32_t> pendingPointRate{30000};
     std::atomic<std::uint32_t> maxPointRate{0};
     std::atomic<int> maxSamplesPerTransfer{0};
 

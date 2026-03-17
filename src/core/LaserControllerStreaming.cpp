@@ -211,7 +211,7 @@ int LaserControllerStreaming::millisToPoints(double millis) const {
     return static_cast<int>(std::min<long long>(rounded, std::numeric_limits<int>::max()));
 }
 
-bool LaserControllerStreaming::getArmed() const noexcept { 
+bool LaserControllerStreaming::isArmed() const noexcept {
     return armed.load(std::memory_order_relaxed);
 }
 
@@ -263,15 +263,17 @@ std::optional<BufferState> LaserControllerStreaming::getBufferState() const {
 }
 
 std::optional<LatencyStats> LaserControllerStreaming::getLatencyStats() const {
-    std::vector<double> sortedSamples;
-    {
-        std::lock_guard<std::mutex> lock(latencySamplesMutex);
-        if (latencySamplesMs.empty()) {
-            return std::nullopt;
-        }
-        sortedSamples.assign(latencySamplesMs.begin(), latencySamplesMs.end());
+    std::lock_guard<std::mutex> lock(latencySamplesMutex);
+    if (latencySamplesMs.empty()) {
+        return std::nullopt;
     }
 
+    // Return cached result if the sample set hasn't changed since last computation.
+    if (latencyMutationCount == cachedLatencyMutationCount) {
+        return cachedLatencyStats;
+    }
+
+    std::vector<double> sortedSamples(latencySamplesMs.begin(), latencySamplesMs.end());
     std::sort(sortedSamples.begin(), sortedSamples.end());
 
     LatencyStats stats;
@@ -280,6 +282,9 @@ std::optional<LatencyStats> LaserControllerStreaming::getLatencyStats() const {
     stats.p95Ms = percentileFromSortedSamples(sortedSamples, 0.95);
     stats.p99Ms = percentileFromSortedSamples(sortedSamples, 0.99);
     stats.maxMs = sortedSamples.back();
+
+    cachedLatencyStats = stats;
+    cachedLatencyMutationCount = latencyMutationCount;
     return stats;
 }
 
@@ -331,6 +336,7 @@ void LaserControllerStreaming::recordLatencySample(std::chrono::steady_clock::du
 
     std::lock_guard<std::mutex> lock(latencySamplesMutex);
     latencySamplesMs.push_back(sampleMs);
+    ++latencyMutationCount;
     while (latencySamplesMs.size() > latencySampleWindow) {
         latencySamplesMs.pop_front();
     }

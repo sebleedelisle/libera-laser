@@ -160,7 +160,7 @@ public:
     void clearErrors();
 
     // arm status - needs to be set or no output! 
-    bool getArmed() const noexcept; 
+    bool isArmed() const noexcept;
     void setArmed(bool state = true); 
 
     // Offset expressed in 1/10,000th of a second (0.1 ms) units.
@@ -271,6 +271,9 @@ private:
     static constexpr std::size_t latencySampleWindow = 512;
     mutable std::mutex latencySamplesMutex;
     std::deque<double> latencySamplesMs;
+    mutable std::uint64_t latencyMutationCount{0};
+    mutable std::uint64_t cachedLatencyMutationCount{std::numeric_limits<std::uint64_t>::max()};
+    mutable LatencyStats cachedLatencyStats{};
 
     void incrementErrorCount(std::string_view errorType);
 

@@ -8,8 +8,8 @@
 #include "libera/net/UdpSocket.hpp"
 
 #include <atomic>
+#include <array>
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <string>
 #include <chrono>
@@ -49,16 +49,18 @@ private:
     std::string ipAddress;
 
     std::atomic<int> pointBufferCapacity{1000};
-    std::atomic<std::uint32_t> pps{30000};
-    std::atomic<std::uint32_t> newPps{30000};
+    std::atomic<std::uint32_t> currentPointRate{30000};
+    std::atomic<std::uint32_t> pendingPointRate{30000};
     std::atomic<std::uint32_t> maxPointRate{60000};
     std::atomic<bool> networkConnected{false};
 
     std::uint8_t messageNumber{0};
     std::uint8_t frameNumber{0};
 
-    // Track when each packet was sent so we can map acks to send times.
-    std::map<std::uint8_t, std::chrono::steady_clock::time_point> messageTimes;
+    // Fixed-size array indexed by messageNumber (uint8_t wraps at 256).
+    // A default-constructed time_point (epoch) means "slot empty".
+    std::array<std::chrono::steady_clock::time_point, 256> messageTimes{};
+    int pendingAckCount{0};
 
     // Timing helpers for buffer estimation and health tracking.
     std::chrono::steady_clock::time_point lastAckTime{};
