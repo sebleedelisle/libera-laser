@@ -190,14 +190,16 @@ bool LaserCubeNetController::sendPoints() {
         return true;
     }
 
+    // as we are only going to process one packet's worth of points every time, if we need more 
+    // we'll just take what we can send right now, but then should ask again once it's sent.
     if (maxPointsToAdd > maxPointsInPacket) {
         maxPointsToAdd = maxPointsInPacket;
     }
 
     core::PointFillRequest request{};
-    // Ask for up to the available room, but keep the hard minimum small so a
-    // frame can finish naturally instead of being padded to packet size.
-    request.minimumPointsRequired = 1;
+    // LaserCubeNet sends one packet per loop, so require enough points to make
+    // this packet worth transmitting when we've decided a refill is needed.
+    request.minimumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
     request.maximumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
     const auto renderLead = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double, std::milli>(
