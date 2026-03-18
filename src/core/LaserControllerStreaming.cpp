@@ -17,6 +17,9 @@
 #endif
 
 #if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX // Keep Windows headers from defining min/max macros that break std::min/std::max.
+#endif
 #include <windows.h>
 #endif
 
