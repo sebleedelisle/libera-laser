@@ -113,6 +113,17 @@ if (WIN32)
     target_link_libraries(libera-core PUBLIC ws2_32)
 endif()
 
+if (APPLE)
+    find_library(CORE_AUDIO_FRAMEWORK CoreAudio REQUIRED)
+    find_library(CORE_FOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(AUDIO_TOOLBOX_FRAMEWORK AudioToolbox REQUIRED)
+    target_link_libraries(libera-core
+        PUBLIC
+            ${CORE_AUDIO_FRAMEWORK}
+            ${CORE_FOUNDATION_FRAMEWORK}
+            ${AUDIO_TOOLBOX_FRAMEWORK})
+endif()
+
 # --------------------------------
 # Tests
 # --------------------------------

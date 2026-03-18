@@ -8,6 +8,7 @@
 // and only the specific `*Manager.hpp` headers you want.
 
 #include "libera/System.hpp"
+#include "libera/avb/AvbManager.hpp"
 #include "libera/core/LaserController.hpp"
 #include "libera/core/LaserPoint.hpp"
 #include "libera/log/Log.hpp"
