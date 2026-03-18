@@ -23,10 +23,10 @@ namespace libera::core {
  * @brief Information provided when the controller asks for new points.
  */
 struct PointFillRequest {
-    /// Minimum number of points that must be produced by the callback.
+    /// Minimum number of points the controller needs this cycle.
     std::size_t minimumPointsRequired = 0;
 
-    /// Maximum number of points that should be produced by the callback.
+    /// Maximum number of points the controller can accept this cycle.
     std::size_t maximumPointsRequired = 0;
 
     /// Host-side estimate of when the first point in this batch will reach the mirrors.

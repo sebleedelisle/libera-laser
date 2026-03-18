@@ -416,7 +416,10 @@ bool LaserCubeUsbController::sendPoints() {
     }
 
     core::PointFillRequest request{};
-    request.minimumPointsRequired = 1;
+    // USB runner mode can accept larger bursts, but the worker loop only needs
+    // one healthy packet's worth to make progress without stalling.
+    request.minimumPointsRequired =
+        static_cast<std::size_t>(std::min(maxPointsToAdd, MIN_PACKET_DATA_SIZE));
     request.maximumPointsRequired = static_cast<std::size_t>(maxPointsToAdd);
 
     if (!requestPoints(request)) {

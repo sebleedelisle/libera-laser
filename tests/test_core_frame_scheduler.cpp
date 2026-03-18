@@ -48,6 +48,26 @@ void testDefaultTargetLatencyMatchesOfxLaser() {
               "libera default target latency should match ofxLaser");
 }
 
+void testEmptyQueuePadsOnlyToMinimum() {
+    FrameSchedulerTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    controller.setArmed(true);
+    controller.startFrameMode();
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 4;
+    request.maximumPointsRequired = 16;
+    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+
+    ASSERT_TRUE(controller.requestPoints(request), "empty-queue requestPoints succeeds");
+    const auto batch = controller.lastBatch();
+    ASSERT_EQ(batch.size(), static_cast<std::size_t>(4), "idle blank batch should honor the minimum contract");
+    ASSERT_EQ(batch.front().x, 0.0f, "idle blank batch should keep x at origin");
+    ASSERT_EQ(batch.front().r, 0.0f, "idle blank batch should remain dark");
+    ASSERT_EQ(batch.back().y, 0.0f, "idle blank batch should keep y at origin");
+    ASSERT_EQ(batch.back().b, 0.0f, "idle blank batch should remain dark at the tail");
+}
+
 void testDoesNotDropFrameMidPlayback() {
     FrameSchedulerTestController controller;
     LaserController::setTargetLatency(std::chrono::milliseconds(0));
@@ -146,14 +166,39 @@ void testPromotesFrameWhenItBecomesDueMidBatch() {
     ASSERT_EQ(batch[10].x, 100.0f, "second frame starts as soon as it becomes due");
 }
 
+void testFutureFrameOnlyRequestsMinimumBlankLead() {
+    FrameSchedulerTestController controller;
+    controller.setPointRate(1000);
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    controller.setArmed(true);
+    controller.startFrameMode();
+
+    Frame futureFrame = makeFrame(10.0f, 10);
+    futureFrame.time = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+    ASSERT_TRUE(controller.sendFrame(std::move(futureFrame)), "future frame queued");
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 2;
+    request.maximumPointsRequired = 10;
+    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+
+    ASSERT_TRUE(controller.requestPoints(request), "future-frame requestPoints succeeds");
+    const auto batch = controller.lastBatch();
+    ASSERT_EQ(batch.size(), static_cast<std::size_t>(2), "future frame should only be padded to the minimum blank lead");
+    ASSERT_EQ(batch[0].x, 0.0f, "future-frame lead should stay blank");
+    ASSERT_EQ(batch[1].r, 0.0f, "future-frame lead should stay dark");
+}
+
 } // namespace
 
 int main() {
     testDefaultTargetLatencyMatchesOfxLaser();
+    testEmptyQueuePadsOnlyToMinimum();
     testDoesNotDropFrameMidPlayback();
     testHighLatencyAllowsMultipleFramesQueued();
     testReadinessReopensAsQueuedPointsDrain();
     testPromotesFrameWhenItBecomesDueMidBatch();
+    testFutureFrameOnlyRequestsMinimumBlankLead();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");
