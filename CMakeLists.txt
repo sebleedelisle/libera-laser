@@ -113,6 +113,31 @@ if (WIN32)
     target_link_libraries(libera-core PUBLIC ws2_32)
 endif()
 
+if (WIN32)
+    set(LIBERA_OFX_RTAUDIO_ROOT
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/rtAudio")
+    find_path(LIBERA_RTAUDIO_INCLUDE_DIR
+        NAMES RtAudio.h
+        HINTS
+            "${LIBERA_OFX_RTAUDIO_ROOT}/include")
+    find_library(LIBERA_RTAUDIO_LIBRARY
+        NAMES rtaudio RtAudio
+        HINTS
+            "${LIBERA_OFX_RTAUDIO_ROOT}/lib"
+        PATH_SUFFIXES
+            vs/x64
+            vs/Win32
+            win64
+            win
+            x64
+            x86)
+
+    if (LIBERA_RTAUDIO_INCLUDE_DIR AND LIBERA_RTAUDIO_LIBRARY)
+        target_include_directories(libera-core PRIVATE "${LIBERA_RTAUDIO_INCLUDE_DIR}")
+        target_link_libraries(libera-core PRIVATE "${LIBERA_RTAUDIO_LIBRARY}")
+    endif()
+endif()
+
 if (APPLE)
     find_library(CORE_AUDIO_FRAMEWORK CoreAudio REQUIRED)
     find_library(CORE_FOUNDATION_FRAMEWORK CoreFoundation REQUIRED)

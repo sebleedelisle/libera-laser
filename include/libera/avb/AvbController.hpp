@@ -30,6 +30,8 @@ public:
     void close();
 
     void setPointRate(std::uint32_t pointRateValue) override;
+    void setHalfXYOutputEnabled(bool enabled);
+    bool isHalfXYOutputEnabled() const;
 
 protected:
     void run() override;
@@ -49,6 +51,7 @@ private:
     std::uint32_t channelOffsetValue = 0;
     std::uint32_t channelCountValue = 8;
     std::atomic<std::uint64_t> currentPointIndex{0};
+    std::atomic<bool> halfXYOutputEnabled{false};
 };
 
 } // namespace libera::avb

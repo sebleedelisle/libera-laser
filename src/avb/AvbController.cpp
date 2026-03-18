@@ -48,6 +48,14 @@ void AvbController::setPointRate(std::uint32_t pointRateValue) {
     // laser cannot silently reopen the audio device out from under siblings.
 }
 
+void AvbController::setHalfXYOutputEnabled(bool enabled) {
+    halfXYOutputEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool AvbController::isHalfXYOutputEnabled() const {
+    return halfXYOutputEnabled.load(std::memory_order_relaxed);
+}
+
 void AvbController::run() {
     using namespace std::chrono_literals;
 
@@ -94,11 +102,15 @@ void AvbController::renderInterleavedBlock(
     }
 
     const std::size_t pointCount = std::min<std::size_t>(pointsToSend.size(), frameCount);
+    const float xyScale = isHalfXYOutputEnabled() ? 0.5f : 1.0f;
     for (std::size_t frameIndex = 0; frameIndex < pointCount; ++frameIndex) {
         const auto& point = pointsToSend[frameIndex];
         float* frameOut = output + (frameIndex * totalChannelCount) + channelOffsetValue;
-        frameOut[0] = clampSignedSample(point.x);
-        frameOut[1] = clampSignedSample(point.y);
+        // Half X/Y Output compensates for AVB-to-ILDA chains where both ends
+        // fake a differential pair by grounding one side. In those setups the
+        // effective scan size doubles unless we halve the outgoing X/Y signal.
+        frameOut[0] = clampSignedSample(point.x * xyScale);
+        frameOut[1] = clampSignedSample(point.y * xyScale);
         frameOut[2] = clampUnitSample(point.r);
         frameOut[3] = clampUnitSample(point.g);
         frameOut[4] = clampUnitSample(point.b);

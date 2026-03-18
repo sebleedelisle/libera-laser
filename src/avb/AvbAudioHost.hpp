@@ -10,6 +10,10 @@
 namespace libera::avb::detail {
 
 struct AudioOutputDeviceInfo {
+    // Keep the backend-specific device handle around so discovery can expose a
+    // stable logical ID while the runtime still reopens the concrete device
+    // without repeating another backend-specific lookup step.
+    std::uint32_t backendDeviceId = 0;
     std::string uid;
     std::string label;
     std::uint32_t outputChannels = 0;

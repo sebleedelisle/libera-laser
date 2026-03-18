@@ -5,12 +5,21 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <chrono>
+#include <cctype>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 #if defined(__APPLE__)
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
+#endif
+
+#if defined(_WIN32) && __has_include(<RtAudio.h>)
+#include <RtAudio.h>
+#define LIBERA_HAS_RTAUDIO_AUDIO_HOST 1
 #endif
 
 namespace libera::avb::detail {
@@ -376,6 +385,7 @@ public:
                 readSupportedPointRates(deviceId, defaultPointRate);
 
             AudioOutputDeviceInfo deviceInfo;
+            deviceInfo.backendDeviceId = static_cast<std::uint32_t>(deviceId);
             deviceInfo.uid = uid;
             deviceInfo.label = label;
             deviceInfo.outputChannels = outputChannels;
@@ -407,9 +417,296 @@ public:
 } // namespace
 #endif
 
+#if defined(_WIN32) && defined(LIBERA_HAS_RTAUDIO_AUDIO_HOST)
+namespace {
+
+constexpr std::uint32_t rtAudioFramesPerBuffer = 512;
+constexpr std::uint32_t rtAudioBufferCount = 4;
+
+std::vector<std::uint32_t> normalizeRtAudioPointRates(
+    const std::vector<unsigned int>& sampleRates,
+    std::uint32_t fallbackRate) {
+    std::vector<std::uint32_t> pointRates;
+    pointRates.reserve(sampleRates.size() + (fallbackRate > 0 ? 1u : 0u));
+    for (const auto sampleRate : sampleRates) {
+        if (sampleRate > 0) {
+            pointRates.push_back(sampleRate);
+        }
+    }
+    if (fallbackRate > 0) {
+        pointRates.push_back(fallbackRate);
+    }
+
+    std::sort(pointRates.begin(), pointRates.end());
+    pointRates.erase(std::unique(pointRates.begin(), pointRates.end()), pointRates.end());
+    return pointRates;
+}
+
+std::string makeRtAudioDeviceUid(const std::string& baseName, std::uint32_t duplicateIndex) {
+    if (duplicateIndex <= 1) {
+        return "asio::" + baseName;
+    }
+    return "asio::" + baseName + "#" + std::to_string(duplicateIndex);
+}
+
+std::string makeRtAudioDeviceLabel(const std::string& baseName, std::uint32_t duplicateIndex) {
+    if (duplicateIndex <= 1) {
+        return baseName;
+    }
+    return baseName + " (" + std::to_string(duplicateIndex) + ")";
+}
+
+bool hasCompiledAsioApi() {
+    std::vector<RtAudio::Api> apis;
+    RtAudio::getCompiledApi(apis);
+    return std::find(apis.begin(), apis.end(), RtAudio::WINDOWS_ASIO) != apis.end();
+}
+
+class RtAudioStream final : public AudioOutputStream {
+public:
+    RtAudioStream(std::uint32_t deviceId,
+                  std::uint32_t pointRateValue,
+                  std::uint32_t channelCountValue,
+                  AudioOutputCallback callback)
+    : deviceIdValue(deviceId)
+    , requestedPointRateValue(pointRateValue)
+    , channelCountValue(channelCountValue)
+    , callbackValue(std::move(callback)) {}
+
+    ~RtAudioStream() override {
+        stop();
+    }
+
+    bool start() override {
+        if (running.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        if (requestedPointRateValue == 0 || channelCountValue == 0 || !hasCompiledAsioApi()) {
+            return false;
+        }
+
+        {
+            std::lock_guard lock(globalAsioStreamMutex());
+            // ASIO only allows one driver instance per process. Mirror that
+            // limitation here so AVB startup fails predictably instead of
+            // fighting the driver with multiple independent opens.
+            if (activeAsioStreamCount() > 0) {
+                return false;
+            }
+            activeAsioStreamCount() += 1;
+            countedAsioStream = true;
+        }
+
+        try {
+            audio = std::make_unique<RtAudio>(RtAudio::WINDOWS_ASIO);
+            audio->showWarnings(false);
+
+            RtAudio::StreamParameters outputParameters;
+            outputParameters.deviceId = deviceIdValue;
+            outputParameters.nChannels = channelCountValue;
+            outputParameters.firstChannel = 0;
+
+            RtAudio::StreamOptions options;
+            options.flags = RTAUDIO_MINIMIZE_LATENCY;
+            options.numberOfBuffers = rtAudioBufferCount;
+
+            unsigned int bufferFrames = rtAudioFramesPerBuffer;
+            audio->openStream(&outputParameters,
+                              nullptr,
+                              RTAUDIO_FLOAT32,
+                              requestedPointRateValue,
+                              &bufferFrames,
+                              &RtAudioStream::audioCallback,
+                              this,
+                              &options,
+                              nullptr);
+            audio->startStream();
+            bufferFramesValue = bufferFrames;
+            actualPointRateValue = audio->getStreamSampleRate();
+            if (actualPointRateValue == 0) {
+                actualPointRateValue = requestedPointRateValue;
+            }
+
+            running.store(true, std::memory_order_relaxed);
+            return true;
+        } catch (const RtAudioError&) {
+            stop();
+            return false;
+        }
+    }
+
+    void stop() override {
+        running.store(false, std::memory_order_relaxed);
+
+        if (audio) {
+            try {
+                if (audio->isStreamRunning()) {
+                    audio->abortStream();
+                }
+            } catch (const RtAudioError&) {
+            }
+
+            try {
+                if (audio->isStreamOpen()) {
+                    audio->closeStream();
+                }
+            } catch (const RtAudioError&) {
+            }
+
+            audio.reset();
+        }
+
+        if (countedAsioStream) {
+            std::lock_guard lock(globalAsioStreamMutex());
+            activeAsioStreamCount() = std::max(0, activeAsioStreamCount() - 1);
+            countedAsioStream = false;
+        }
+
+        actualPointRateValue = 0;
+        bufferFramesValue = rtAudioFramesPerBuffer;
+    }
+
+    std::uint32_t pointRate() const override {
+        return actualPointRateValue;
+    }
+
+    std::uint32_t channelCount() const override {
+        return channelCountValue;
+    }
+
+private:
+    static std::mutex& globalAsioStreamMutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static int& activeAsioStreamCount() {
+        static int count = 0;
+        return count;
+    }
+
+    static int audioCallback(void* outputBuffer,
+                             void* inputBuffer,
+                             unsigned int frameCount,
+                             double streamTime,
+                             RtAudioStreamStatus status,
+                             void* userData) {
+        (void)inputBuffer;
+        (void)streamTime;
+        (void)status;
+
+        auto* self = static_cast<RtAudioStream*>(userData);
+        auto* output = static_cast<float*>(outputBuffer);
+        if (self == nullptr || output == nullptr) {
+            return 0;
+        }
+
+        const auto sampleCount = static_cast<std::size_t>(frameCount) * self->channelCountValue;
+        std::fill_n(output, sampleCount, 0.0f);
+
+        if (!self->callbackValue) {
+            return 0;
+        }
+
+        const auto effectivePointRate = self->actualPointRateValue > 0
+            ? self->actualPointRateValue
+            : self->requestedPointRateValue;
+        const auto leadTime = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double>(
+                static_cast<double>(self->bufferFramesValue > 0 ? self->bufferFramesValue : frameCount) /
+                static_cast<double>(effectivePointRate)));
+        self->callbackValue(output, frameCount, self->channelCountValue, leadTime);
+        return 0;
+    }
+
+    std::uint32_t deviceIdValue = 0;
+    std::uint32_t requestedPointRateValue = 0;
+    std::uint32_t actualPointRateValue = 0;
+    std::uint32_t channelCountValue = 0;
+    std::uint32_t bufferFramesValue = rtAudioFramesPerBuffer;
+    AudioOutputCallback callbackValue;
+    std::unique_ptr<RtAudio> audio;
+    std::atomic<bool> running{false};
+    bool countedAsioStream = false;
+};
+
+class RtAudioHost final : public AudioHost {
+public:
+    std::vector<AudioOutputDeviceInfo> listOutputDevices() override {
+        std::vector<AudioOutputDeviceInfo> devices;
+        if (!hasCompiledAsioApi()) {
+            return devices;
+        }
+
+        try {
+            RtAudio audio(RtAudio::WINDOWS_ASIO);
+            audio.showWarnings(false);
+
+            std::unordered_map<std::string, std::uint32_t> duplicateCountByName;
+            const auto deviceCount = audio.getDeviceCount();
+            devices.reserve(deviceCount);
+
+            for (unsigned int deviceId = 0; deviceId < deviceCount; ++deviceId) {
+                RtAudio::DeviceInfo info;
+                try {
+                    info = audio.getDeviceInfo(deviceId);
+                } catch (const RtAudioError&) {
+                    continue;
+                }
+
+                if (!info.probed || info.outputChannels == 0) {
+                    continue;
+                }
+
+                const std::string baseName =
+                    info.name.empty() ? "ASIO Device " + std::to_string(deviceId) : info.name;
+                const auto duplicateIndex = ++duplicateCountByName[baseName];
+
+                AudioOutputDeviceInfo device;
+                device.backendDeviceId = deviceId;
+                device.uid = makeRtAudioDeviceUid(baseName, duplicateIndex);
+                device.label = makeRtAudioDeviceLabel(baseName, duplicateIndex);
+                device.outputChannels = info.outputChannels;
+                device.defaultPointRate = info.preferredSampleRate;
+                device.supportedPointRates =
+                    normalizeRtAudioPointRates(info.sampleRates, device.defaultPointRate);
+                if (device.defaultPointRate == 0 && !device.supportedPointRates.empty()) {
+                    device.defaultPointRate = device.supportedPointRates.front();
+                }
+                device.pointRateMutable = device.supportedPointRates.size() > 1;
+                devices.push_back(std::move(device));
+            }
+        } catch (const RtAudioError&) {
+            return {};
+        }
+
+        return devices;
+    }
+
+    std::unique_ptr<AudioOutputStream> openOutputStream(
+        const AudioOutputDeviceInfo& device,
+        std::uint32_t pointRateValue,
+        AudioOutputCallback callback) override {
+        if (device.outputChannels == 0 || pointRateValue == 0) {
+            return nullptr;
+        }
+
+        return std::make_unique<RtAudioStream>(
+            device.backendDeviceId,
+            pointRateValue,
+            device.outputChannels,
+            std::move(callback));
+    }
+};
+
+} // namespace
+#endif
+
 std::shared_ptr<AudioHost> createAudioHost() {
 #if defined(__APPLE__)
     return std::make_shared<CoreAudioHost>();
+#elif defined(_WIN32) && defined(LIBERA_HAS_RTAUDIO_AUDIO_HOST)
+    return std::make_shared<RtAudioHost>();
 #else
     class NullAudioHost final : public AudioHost {
     public:

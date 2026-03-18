@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace libera::avb {
 namespace {
@@ -20,6 +21,7 @@ struct SharedState {
     std::shared_ptr<detail::AudioHost> audioHost = detail::createAudioHost();
     std::mutex mutex;
     std::unordered_map<std::string, AvbDeviceConfiguration> configuredDevicesByUid;
+    std::unordered_map<std::string, bool> halfXYOutputByControllerId;
     std::unordered_map<std::string, std::weak_ptr<AvbController>> activeControllers;
     std::unordered_map<std::string, std::shared_ptr<detail::AvbDeviceRuntime>> runtimesByDeviceUid;
 };
@@ -150,6 +152,54 @@ AvbControllerInfo::PointRateCapabilities buildPointRateCapabilities(
     return capabilities;
 }
 
+std::vector<AvbControllerInfo> buildConfiguredControllers(
+    const std::vector<AvbAudioDeviceInfo>& devices,
+    const std::vector<AvbDeviceConfiguration>& configs) {
+    std::vector<AvbControllerInfo> controllers;
+
+    std::unordered_map<std::string, AvbDeviceConfiguration> configsByUid;
+    for (const auto& config : configs) {
+        configsByUid.insert_or_assign(config.deviceUid, config);
+    }
+
+    for (const auto& device : devices) {
+        if (configsByUid.find(device.uid) == configsByUid.end()) {
+            continue;
+        }
+
+        const auto pointRates = buildPointRateCapabilities(device);
+        const auto bankCount = device.outputChannels / controllerChannelCount;
+        for (std::uint32_t bankIndex = 0; bankIndex < bankCount; ++bankIndex) {
+            const auto channelOffset = bankIndex * controllerChannelCount;
+            controllers.emplace_back(
+                makeControllerId(device.uid, channelOffset),
+                makeControllerLabel(device.label, channelOffset, controllerChannelCount),
+                device.uid,
+                device.label,
+                channelOffset,
+                controllerChannelCount,
+                pointRates);
+        }
+    }
+
+    return controllers;
+}
+
+void applyHalfXYOutputSettingsLocked(SharedState& state) {
+    for (auto it = state.activeControllers.begin(); it != state.activeControllers.end();) {
+        auto controller = it->second.lock();
+        if (!controller) {
+            it = state.activeControllers.erase(it);
+            continue;
+        }
+
+        const bool halfXYOutput =
+            state.halfXYOutputByControllerId.find(it->first) != state.halfXYOutputByControllerId.end();
+        controller->setHalfXYOutputEnabled(halfXYOutput);
+        ++it;
+    }
+}
+
 } // namespace
 
 AvbManager::AvbManager() = default;
@@ -161,32 +211,8 @@ AvbManager::~AvbManager() {
 std::vector<std::unique_ptr<core::ControllerInfo>> AvbManager::discover() {
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
 
-    const auto devices = availableDevices();
-    const auto configs = configuredDevices();
-    std::unordered_map<std::string, AvbDeviceConfiguration> configsByUid;
-    for (const auto& config : configs) {
-        configsByUid.insert_or_assign(config.deviceUid, config);
-    }
-
-    for (const auto& device : devices) {
-        const auto configIt = configsByUid.find(device.uid);
-        if (configIt == configsByUid.end()) {
-            continue;
-        }
-
-        const auto pointRates = buildPointRateCapabilities(device);
-        const auto bankCount = device.outputChannels / controllerChannelCount;
-        for (std::uint32_t bankIndex = 0; bankIndex < bankCount; ++bankIndex) {
-            const auto channelOffset = bankIndex * controllerChannelCount;
-            results.emplace_back(std::make_unique<AvbControllerInfo>(
-                makeControllerId(device.uid, channelOffset),
-                makeControllerLabel(device.label, channelOffset, controllerChannelCount),
-                device.uid,
-                device.label,
-                channelOffset,
-                controllerChannelCount,
-                pointRates));
-        }
+    for (const auto& controllerInfo : configuredControllers()) {
+        results.emplace_back(std::make_unique<AvbControllerInfo>(controllerInfo));
     }
 
     return results;
@@ -256,6 +282,8 @@ AvbManager::connectController(const core::ControllerInfo& info) {
     if (!runtime || !controller) {
         return nullptr;
     }
+
+    controller->setHalfXYOutputEnabled(halfXYOutputEnabled(avbInfo->idValue()));
 
     if (!runtime->open(pointRateValue)) {
         return nullptr;
@@ -341,6 +369,10 @@ std::vector<AvbDeviceConfiguration> AvbManager::configuredDevices() {
                   return a.deviceUid < b.deviceUid;
               });
     return configs;
+}
+
+std::vector<AvbControllerInfo> AvbManager::configuredControllers() {
+    return buildConfiguredControllers(availableDevices(), configuredDevices());
 }
 
 void AvbManager::setConfiguredDevices(const std::vector<AvbDeviceConfiguration>& configs) {
@@ -449,6 +481,70 @@ bool AvbManager::setPreferredPointRate(const std::string& deviceUid, std::uint32
 
     it->preferredPointRate = pointRateValue;
     setConfiguredDevices(configs);
+    return true;
+}
+
+bool AvbManager::halfXYOutputEnabled(const std::string& controllerId) {
+    if (controllerId.empty()) {
+        return false;
+    }
+
+    auto& state = sharedState();
+    std::lock_guard lock(state.mutex);
+    const auto it = state.halfXYOutputByControllerId.find(controllerId);
+    return it != state.halfXYOutputByControllerId.end() && it->second;
+}
+
+std::vector<std::string> AvbManager::halfXYOutputControllers() {
+    std::vector<std::string> controllerIds;
+
+    auto& state = sharedState();
+    std::lock_guard lock(state.mutex);
+    controllerIds.reserve(state.halfXYOutputByControllerId.size());
+    for (const auto& [controllerId, enabled] : state.halfXYOutputByControllerId) {
+        if (!enabled) {
+            continue;
+        }
+        controllerIds.push_back(controllerId);
+    }
+
+    std::sort(controllerIds.begin(), controllerIds.end());
+    return controllerIds;
+}
+
+void AvbManager::setHalfXYOutputControllers(const std::vector<std::string>& controllerIds) {
+    std::unordered_set<std::string> uniqueControllerIds;
+    uniqueControllerIds.reserve(controllerIds.size());
+    for (const auto& controllerId : controllerIds) {
+        if (!controllerId.empty()) {
+            uniqueControllerIds.insert(controllerId);
+        }
+    }
+
+    auto& state = sharedState();
+    std::lock_guard lock(state.mutex);
+    state.halfXYOutputByControllerId.clear();
+    for (const auto& controllerId : uniqueControllerIds) {
+        state.halfXYOutputByControllerId.insert_or_assign(controllerId, true);
+    }
+    applyHalfXYOutputSettingsLocked(state);
+}
+
+bool AvbManager::setHalfXYOutput(const std::string& controllerId, bool enabled) {
+    if (controllerId.empty()) {
+        return false;
+    }
+
+    auto& state = sharedState();
+    std::lock_guard lock(state.mutex);
+
+    if (enabled) {
+        state.halfXYOutputByControllerId.insert_or_assign(controllerId, true);
+    } else {
+        state.halfXYOutputByControllerId.erase(controllerId);
+    }
+    applyHalfXYOutputSettingsLocked(state);
+
     return true;
 }
 

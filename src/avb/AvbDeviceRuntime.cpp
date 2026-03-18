@@ -43,8 +43,11 @@ bool AvbDeviceRuntime::open(std::uint32_t pointRateValue) {
         return false;
     }
 
-    currentPointRateValue.store(pointRateValue, std::memory_order_relaxed);
-    notifyControllersAttached(pointRateValue);
+    const auto actualPointRateValue = stream->pointRate() > 0
+        ? stream->pointRate()
+        : pointRateValue;
+    currentPointRateValue.store(actualPointRateValue, std::memory_order_relaxed);
+    notifyControllersAttached(actualPointRateValue);
     return true;
 }
 

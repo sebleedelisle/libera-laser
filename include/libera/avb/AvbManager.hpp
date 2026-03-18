@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libera/avb/AvbControllerInfo.hpp"
 #include "libera/System.hpp"
 
 #include <cstdint>
@@ -36,10 +37,21 @@ public:
 
     static std::vector<AvbAudioDeviceInfo> availableDevices();
     static std::vector<AvbDeviceConfiguration> configuredDevices();
+    // One logical AVB controller maps to one 8-channel bank on an enabled
+    // audio interface. The returned IDs are the stable per-bank IDs used for
+    // assignment, reconnect, and AVB-specific bank settings.
+    static std::vector<AvbControllerInfo> configuredControllers();
     static void setConfiguredDevices(const std::vector<AvbDeviceConfiguration>& configs);
     static bool isDeviceEnabled(const std::string& deviceUid);
     static bool setDeviceEnabled(const std::string& deviceUid, bool enabled);
     static bool setPreferredPointRate(const std::string& deviceUid, std::uint32_t pointRateValue);
+    // Half X/Y Output is an AVB-specific workaround for AVB-to-ILDA chains
+    // where both ends fake a differential pair by grounding one side, which
+    // otherwise doubles the effective scan size.
+    static std::vector<std::string> halfXYOutputControllers();
+    static void setHalfXYOutputControllers(const std::vector<std::string>& controllerIds);
+    static bool halfXYOutputEnabled(const std::string& controllerId);
+    static bool setHalfXYOutput(const std::string& controllerId, bool enabled);
 
     static inline core::ControllerManagerRegistry registrar{
         [] { return std::make_unique<AvbManager>(); }
