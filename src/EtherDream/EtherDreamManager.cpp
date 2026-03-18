@@ -25,6 +25,13 @@ std::string format_mac_id(std::uint64_t mac) {
     return std::string(buffer.data());
 }
 
+std::string format_display_id(std::uint64_t mac) {
+    std::array<char, 16> buffer{};
+    std::snprintf(buffer.data(), buffer.size(), "%06x",
+                  static_cast<unsigned>(mac & 0xFFFFFFu));
+    return std::string(buffer.data());
+}
+
 } // namespace
 
 EtherDreamManager::EtherDreamManager() {
@@ -185,7 +192,12 @@ void EtherDreamManager::threadedFunction() {
         (void)cursor;
 
         std::string id = mac ? format_mac_id(mac) : ("etherdream-" + ip);
-        std::string label = "EtherDream @ " + ip;
+        // Keep the full stable id for reconnect/persistence, but use the short
+        // hardware id for the friendly label so the UI shows "Ether Dream
+        // 123abc" instead of the current IP address.
+        std::string label = mac
+            ? ("Ether Dream " + format_display_id(mac))
+            : ("Ether Dream " + ip);
         std::string hardwareVersion =
             "hw" + std::to_string(hardwareRevision) + "-sw" + std::to_string(softwareRevision);
 

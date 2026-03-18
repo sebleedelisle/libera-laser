@@ -13,6 +13,8 @@ namespace libera::lasercubenet {
 
 namespace error_types = libera::core::error_types;
 
+constexpr auto ackDisconnectThreshold = std::chrono::milliseconds(500);
+
 LaserCubeNetController::LaserCubeNetController() {
     // Reuse the shared IO context so sockets share the same network thread.
     io = net::shared_io_context();
@@ -37,6 +39,8 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
     LaserControllerStreaming::setPointRate(initialRate);
     currentPointRate.store(initialRate, std::memory_order_relaxed);
     pendingPointRate.store(initialRate, std::memory_order_relaxed);
+    messageTimes.fill(std::chrono::steady_clock::time_point{});
+    pendingAckCount = 0;
 
     lastAckTime = std::chrono::steady_clock::now();
     lastAckWarningTime = std::chrono::steady_clock::time_point{};
@@ -89,6 +93,8 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
 void LaserCubeNetController::close() {
     networkConnected.store(false, std::memory_order_relaxed);
     setConnectionState(false);
+    messageTimes.fill(std::chrono::steady_clock::time_point{});
+    pendingAckCount = 0;
     if (dataSocket) {
         dataSocket->close();
     }
@@ -420,6 +426,30 @@ void LaserCubeNetController::checkAcks() {
                         "oldest_ms", oldestMs);
                 recordIntermittentError(error_types::network::packetLoss);
                 lastAckWarningTime = now;
+            }
+
+            // When the ack ring is saturated and the oldest pending packet has
+            // been stuck for long enough, the controller is no longer making
+            // forward progress. Treat this as a real connection loss so the UI
+            // goes red instead of staying on a soft warning indefinitely.
+            auto oldestTime = now;
+            for (const auto& slot : messageTimes) {
+                if (slot != std::chrono::steady_clock::time_point{} && slot < oldestTime) {
+                    oldestTime = slot;
+                }
+            }
+            const bool ackQueueSaturated =
+                pendingAckCount >= static_cast<int>(messageTimes.size());
+            const auto ackStallDuration = now - oldestTime;
+            if (ackQueueSaturated && ackStallDuration >= ackDisconnectThreshold) {
+                logError("[LaserCubeNetController] ack stream stalled, marking connection lost",
+                         "pending", pendingAckCount,
+                         "oldest_ms",
+                         std::chrono::duration_cast<std::chrono::milliseconds>(ackStallDuration).count());
+                recordConnectionError(error_types::network::connectionLost);
+                networkConnected.store(false, std::memory_order_relaxed);
+                setConnectionState(false);
+                return;
             }
         }
     }
