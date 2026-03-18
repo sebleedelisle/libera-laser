@@ -8,6 +8,9 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+
+struct libusb_context;
 
 namespace libera::helios {
 
@@ -28,22 +31,37 @@ public:
 private:
     static constexpr std::string_view typeName{"Helios"};
 
-    void openIfNeeded();
-    std::size_t refreshControllerCount(bool allowRescan);
+    struct ActiveControllerSnapshot {
+        bool hasActive = false;
+        // Track which physical USB DACs this process already owns.
+        //
+        // Why this exists:
+        // discovery probes intentionally interpret claim/open failures as
+        // "busy elsewhere". Without this set, a Helios DAC that we ourselves
+        // already connected would look externally busy during the next scan.
+        std::unordered_set<std::string> connectedPortPaths;
+    };
 
-    std::shared_ptr<HeliosDac> sdk;
-    bool opened = false;
-    std::size_t controllerCount = 0;
+    ActiveControllerSnapshot snapshotActiveControllers();
+    std::vector<HeliosControllerInfo> collectDiscoveredControllers(
+        const ActiveControllerSnapshot& activeSnapshot);
+
+    // Shared process-lifetime libusb context for Helios USB.
+    //
+    // We avoid explicit libusb_exit() during manager teardown because the Helios
+    // USB path has historically been crash-prone around shutdown. Matching the
+    // existing LaserCube USB strategy, we keep the context alive for the life of
+    // the process and let the OS reclaim it on exit.
+    std::shared_ptr<libusb_context> usbContext;
 
     std::mutex activeMutex;
-    // Active controller wrappers are keyed by the persisted Helios device name,
-    // not the transient SDK index.
+    // Active controller wrappers are keyed by the USB port path so one process
+    // only ever claims the selected DAC.
     std::unordered_map<std::string, std::weak_ptr<HeliosController>> activeControllers;
 
-    // Keep IDs/labels stable across transient SDK name-read failures so a
-    // briefly unhealthy USB control channel doesn't churn device identity.
-    std::unordered_map<unsigned int, std::string> stableIdByIndex;
-    std::unordered_map<unsigned int, std::string> stableLabelByIndex;
+    // Keep labels stable across transient direct USB name-read failures so a
+    // briefly unhealthy control channel doesn't churn device identity.
+    std::unordered_map<std::string, std::string> stableLabelByPortPath;
 };
 
 } // namespace libera::helios

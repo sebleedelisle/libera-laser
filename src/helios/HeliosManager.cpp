@@ -80,28 +80,6 @@ std::string makeUniqueRenameLabel(unsigned int index,
     }
 }
 
-bool trySetHeliosName(HeliosDac& sdk,
-                      unsigned int index,
-                      const std::string& newLabel) {
-    std::array<char, 31> name = {};
-    const std::string safeName = truncateHeliosName(newLabel);
-    std::strncpy(name.data(), safeName.c_str(), name.size() - 1);
-    return sdk.SetName(index, name.data()) == HELIOS_SUCCESS;
-}
-
-bool isSdkFallbackUnknownLabel(const char* label) {
-    if (label == nullptr || label[0] == '\0') {
-        return false;
-    }
-
-    // The bundled Helios SDK synthesizes "Unknown Helios NN" and still returns
-    // HELIOS_SUCCESS when GetName() control traffic fails. Treat that label as
-    // non-authoritative so we do not churn stable IDs during transient USB errors.
-    constexpr const char unknownPrefix[] = "Unknown Helios ";
-    constexpr std::size_t prefixLen = sizeof(unknownPrefix) - 1;
-    return std::strncmp(label, unknownPrefix, prefixLen) == 0;
-}
-
 std::string sanitizeIdComponent(const std::string& text) {
     std::string out;
     out.reserve(text.size());
@@ -159,241 +137,543 @@ std::string makeHeliosControllerId(const std::string& label,
     return candidate;
 }
 
+std::string makeHeliosUsbPortPath(libusb_device* device) {
+    if (!device) {
+        return "unknown";
+    }
+
+    std::array<std::uint8_t, 8> ports{};
+    const int depth = libusb_get_port_numbers(device, ports.data(), static_cast<int>(ports.size()));
+    if (depth > 0) {
+        std::string path;
+        for (int i = 0; i < depth; ++i) {
+            if (!path.empty()) {
+                path += "-";
+            }
+            path += std::to_string(static_cast<unsigned>(ports[i]));
+        }
+        if (!path.empty()) {
+            return path;
+        }
+    }
+
+    return "bus" + std::to_string(static_cast<unsigned>(libusb_get_bus_number(device))) +
+           "-dev" + std::to_string(static_cast<unsigned>(libusb_get_device_address(device)));
+}
+
+std::string makeBusyHeliosControllerId(const std::string& portPath) {
+    return "helios-usb-busy-" + portPath;
+}
+
+std::string makeBusyHeliosLabel(const std::string& portPath) {
+    return "Helios USB " + portPath;
+}
+
+class ScopedHeliosUsbHandle {
+public:
+    explicit ScopedHeliosUsbHandle(libusb_device* device) {
+        if (!device) {
+            return;
+        }
+
+        const int openRc = libusb_open(device, &handle);
+        // Discovery policy:
+        // if we cannot even open the device, treat that as "somebody else owns
+        // this Helios" rather than silently dropping it from the list.
+        //
+        // In practice macOS/libusb may surface either BUSY or ACCESS when
+        // another process is already holding the interface.
+        if (openRc == LIBUSB_ERROR_BUSY || openRc == LIBUSB_ERROR_ACCESS) {
+            busyExclusiveValue = true;
+            return;
+        }
+        if (openRc != LIBUSB_SUCCESS || handle == nullptr) {
+            return;
+        }
+
+        const int claimRc = libusb_claim_interface(handle, 0);
+        // Important: unlike LaserCube USB, the legacy Helios SDK claims every
+        // matching DAC it sees. Here we only probe one specific device at a
+        // time, and any failure to claim that interface is treated as evidence
+        // that this DAC is already in use.
+        if (claimRc != LIBUSB_SUCCESS) {
+            busyExclusiveValue = true;
+            libusb_close(handle);
+            handle = nullptr;
+            return;
+        }
+        interfaceClaimed = true;
+
+        const int altRc = libusb_set_interface_alt_setting(handle, 0, 1);
+        // The Helios USB firmware expects alt setting 1. If another process has
+        // already configured or monopolized the interface and we cannot switch
+        // into that mode, keep surfacing the DAC as externally busy.
+        if (altRc != LIBUSB_SUCCESS) {
+            busyExclusiveValue = true;
+            libusb_release_interface(handle, 0);
+            interfaceClaimed = false;
+            libusb_close(handle);
+            handle = nullptr;
+            return;
+        }
+
+        std::array<std::uint8_t, 32> flushBuffer{};
+        int actualLength = 0;
+        while (libusb_interrupt_transfer(
+                   handle,
+                   EP_INT_IN,
+                   flushBuffer.data(),
+                   static_cast<int>(flushBuffer.size()),
+                   &actualLength,
+                   5) == LIBUSB_SUCCESS) {
+        }
+    }
+
+    ~ScopedHeliosUsbHandle() {
+        if (handle != nullptr && interfaceClaimed) {
+            libusb_release_interface(handle, 0);
+        }
+        if (handle != nullptr) {
+            libusb_close(handle);
+        }
+    }
+
+    bool valid() const {
+        return handle != nullptr && interfaceClaimed;
+    }
+
+    bool busyExclusive() const {
+        return busyExclusiveValue;
+    }
+
+    libusb_device_handle* get() const {
+        return handle;
+    }
+
+private:
+    libusb_device_handle* handle = nullptr;
+    bool interfaceClaimed = false;
+    bool busyExclusiveValue = false;
+};
+
+bool heliosInterruptOut(libusb_device_handle* handle,
+                        const std::uint8_t* buffer,
+                        int length,
+                        unsigned int timeoutMs = 32) {
+    if (handle == nullptr || buffer == nullptr || length <= 0) {
+        return false;
+    }
+
+    int actualLength = 0;
+    const int rc = libusb_interrupt_transfer(handle,
+                                             EP_INT_OUT,
+                                             const_cast<unsigned char*>(buffer),
+                                             length,
+                                             &actualLength,
+                                             timeoutMs);
+    return rc == LIBUSB_SUCCESS && actualLength == length;
+}
+
+int queryHeliosUsbFirmwareVersion(libusb_device_handle* handle) {
+    if (handle == nullptr) {
+        return 0;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        const std::uint8_t request[2] = {0x04, 0};
+        if (!heliosInterruptOut(handle, request, 2)) {
+            continue;
+        }
+
+        for (int j = 0; j < 3; ++j) {
+            std::array<std::uint8_t, 32> response{};
+            int actualLength = 0;
+            const int rc = libusb_interrupt_transfer(handle,
+                                                     EP_INT_IN,
+                                                     response.data(),
+                                                     static_cast<int>(response.size()),
+                                                     &actualLength,
+                                                     32);
+            if (rc != LIBUSB_SUCCESS || actualLength < 5 || response[0] != 0x84) {
+                continue;
+            }
+
+            return (response[1] << 0) |
+                   (response[2] << 8) |
+                   (response[3] << 16) |
+                   (response[4] << 24);
+        }
+    }
+
+    return 0;
+}
+
+void announceHeliosSdkVersion(libusb_device_handle* handle) {
+    if (handle == nullptr) {
+        return;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        const std::uint8_t request[2] = {0x07, HELIOS_SDK_VERSION};
+        if (heliosInterruptOut(handle, request, 2)) {
+            return;
+        }
+    }
+}
+
+struct HeliosUsbNameQueryResult {
+    bool succeeded = false;
+    bool empty = false;
+    std::string label;
+};
+
+HeliosUsbNameQueryResult queryHeliosUsbName(libusb_device_handle* handle) {
+    HeliosUsbNameQueryResult result;
+    if (handle == nullptr) {
+        return result;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        const std::uint8_t request[2] = {0x05, 0};
+        if (!heliosInterruptOut(handle, request, 2)) {
+            continue;
+        }
+
+        std::array<std::uint8_t, 32> response{};
+        int actualLength = 0;
+        const int rc = libusb_interrupt_transfer(handle,
+                                                 EP_INT_IN,
+                                                 response.data(),
+                                                 static_cast<int>(response.size()),
+                                                 &actualLength,
+                                                 32);
+        if (rc != LIBUSB_SUCCESS || actualLength < 2 || response[0] != 0x85) {
+            continue;
+        }
+
+        response.back() = 0;
+        const char* nameData = reinterpret_cast<const char*>(response.data() + 1);
+        std::size_t length = 0;
+        while (length < 30 && nameData[length] != '\0') {
+            ++length;
+        }
+
+        result.succeeded = true;
+        result.label.assign(nameData, length);
+        result.empty = result.label.empty();
+        return result;
+    }
+
+    return result;
+}
+
+bool setHeliosUsbName(libusb_device_handle* handle, const std::string& newLabel) {
+    if (handle == nullptr) {
+        return false;
+    }
+
+    std::array<std::uint8_t, 32> request{};
+    request[0] = 0x06;
+    const std::string safeName = truncateHeliosName(newLabel);
+    std::memcpy(request.data() + 1, safeName.c_str(), std::min<std::size_t>(safeName.size(), 30));
+    return heliosInterruptOut(handle, request.data(), static_cast<int>(request.size()));
+}
+
+struct DirectHeliosUsbProbe {
+    libusb_device* device = nullptr;
+    std::string portPath;
+    std::string reportedLabel;
+    int firmwareVersion = 0;
+    bool nameQuerySucceeded = false;
+    bool nameWasEmpty = false;
+};
+
+std::shared_ptr<libusb_context> createUsbContext() {
+    libusb_context* raw = nullptr;
+    const int rc = libusb_init(&raw);
+    if (rc != LIBUSB_SUCCESS || raw == nullptr) {
+        logError("[HeliosManager] libusb_init failed", libusb_error_name(rc));
+        return {};
+    }
+
+    // Shutdown strategy:
+    // keep the Helios USB libusb context process-lifetime. Explicit libusb_exit
+    // during app teardown has already shown up as crash-prone with USB worker
+    // threads still unwinding elsewhere in the stack.
+    //
+    // The goal here is to avoid a clean-looking teardown path that is actually
+    // less safe than leaking a tiny amount of process-lifetime state.
+    return std::shared_ptr<libusb_context>(raw, [](libusb_context*) {});
+}
+
 } // namespace
 
 HeliosManager::HeliosManager() {
-    sdk = std::make_shared<HeliosDac>();
+    usbContext = createUsbContext();
 }
 
 HeliosManager::~HeliosManager() {
     closeAll();
 }
 
-void HeliosManager::openIfNeeded() {
-    if (!sdk) {
-        sdk = std::make_shared<HeliosDac>();
+HeliosManager::ActiveControllerSnapshot HeliosManager::snapshotActiveControllers() {
+    ActiveControllerSnapshot snapshot;
+    std::lock_guard lock(activeMutex);
+    snapshot.hasActive = core::pruneExpiredActiveControllers(activeControllers);
+    if (!snapshot.hasActive) {
+        return snapshot;
     }
 
-    if (opened) {
-        return;
-    }
-
-    const int count = sdk->OpenDevicesOnlyUsb();
-    opened = true;
-    controllerCount = count > 0 ? static_cast<std::size_t>(count) : 0;
-}
-
-std::size_t HeliosManager::refreshControllerCount(bool allowRescan) {
-    openIfNeeded();
-    if (!sdk) {
-        controllerCount = 0;
-        return controllerCount;
-    }
-
-    if (!allowRescan) {
-        return controllerCount;
-    }
-
-    const int count = sdk->ReScanDevicesOnlyUsb();
-    if (count > 0) {
-        controllerCount = static_cast<std::size_t>(count);
-    }
-    return controllerCount;
-}
-
-std::vector<std::unique_ptr<core::ControllerInfo>> HeliosManager::discover() {
-    std::vector<std::unique_ptr<core::ControllerInfo>> results;
-
-    bool hasActive = false;
-    bool hasConnectedActive = false;
-    {
-        std::lock_guard lock(activeMutex);
-        hasActive = core::pruneExpiredActiveControllers(activeControllers);
-        if (hasActive) {
-            for (const auto& [controllerName, weakController] : activeControllers) {
-                (void)controllerName;
-                const auto controller = weakController.lock();
-                if (!controller) {
-                    continue;
-                }
-                if (controller->isConnected()) {
-                    hasConnectedActive = true;
-                    break;
-                }
-            }
+    for (const auto& [portPath, weakController] : activeControllers) {
+        const auto controller = weakController.lock();
+        if (!controller) {
+            continue;
+        }
+        if (controller->isConnected()) {
+            // Record the exact DAC this process owns so discovery does not mark
+            // our own connected device as "(in use)" by mistake.
+            snapshot.connectedPortPaths.insert(portPath);
         }
     }
 
-    // Re-scan when there are no currently connected live controllers.
-    // This preserves stable USB indices while streaming but still allows
-    // unplug/replug recovery for active wrappers.
-    const auto count = refreshControllerCount(!hasConnectedActive);
-    if (!sdk || count == 0) {
+    return snapshot;
+}
+
+std::vector<HeliosControllerInfo> HeliosManager::collectDiscoveredControllers(
+    const ActiveControllerSnapshot& activeSnapshot) {
+    std::vector<HeliosControllerInfo> results;
+
+    if (!usbContext) {
         return results;
     }
 
-    results.reserve(count);
-    std::unordered_set<std::string> usedIds;
-    std::unordered_set<std::string> usedLabels;
-    std::unordered_set<unsigned int> seenIndices;
-    for (unsigned int index = 0; index < count; ++index) {
-        const int closed = sdk->GetIsClosed(index);
-        if (closed > 0) {
+    // Architectural choice:
+    // enumerate Helios USB devices directly through libusb instead of using the
+    // bundled Helios SDK for discovery.
+    //
+    // Why we do this:
+    // - the vendor SDK opens and claims every Helios USB DAC it discovers
+    // - once one process does that, a second process sees every Helios as busy
+    // - we want one connected DAC to make only that DAC unavailable, not the
+    //   whole Helios fleet
+    //
+    // So discovery is now a lightweight direct probe, and only connect() takes
+    // exclusive ownership of a single chosen DAC.
+    libusb_device** deviceList = nullptr;
+    const ssize_t deviceCount = libusb_get_device_list(usbContext.get(), &deviceList);
+    if (deviceCount < 0 || deviceList == nullptr) {
+        return results;
+    }
+
+    std::vector<DirectHeliosUsbProbe> freeProbes;
+    std::vector<DirectHeliosUsbProbe> busyProbes;
+    std::unordered_set<std::string> seenPortPaths;
+
+    for (ssize_t i = 0; i < deviceCount; ++i) {
+        libusb_device* device = deviceList[i];
+        libusb_device_descriptor descriptor{};
+        if (libusb_get_device_descriptor(device, &descriptor) != 0) {
             continue;
         }
-        seenIndices.insert(index);
-
-        char name[32] = {};
-        std::string label;
-        // Strategy:
-        // while an active controller is streaming, avoid repeated GetName()
-        // control transfers every discovery tick. We only probe name eagerly
-        // when no active stream exists or we have no cached label yet.
-        bool attemptedFreshNameRead = false;
-        bool sdkReportedEmptyName = false;
-        const bool needsNameRead =
-            (!hasActive) || (stableLabelByIndex.find(index) == stableLabelByIndex.end());
-        if (needsNameRead) {
-            attemptedFreshNameRead = true;
-            if (sdk->GetName(index, name) == HELIOS_SUCCESS) {
-                if (name[0] == '\0') {
-                    sdkReportedEmptyName = true;
-                } else if (!isSdkFallbackUnknownLabel(name)) {
-                    label = name;
-                    stableLabelByIndex[index] = label;
-                }
-            }
+        if (descriptor.idVendor != HELIOS_VID || descriptor.idProduct != HELIOS_PID) {
+            continue;
         }
 
+        DirectHeliosUsbProbe probe;
+        probe.device = device;
+        probe.portPath = makeHeliosUsbPortPath(device);
+        seenPortPaths.insert(probe.portPath);
+        const bool ownedByThisProcess =
+            activeSnapshot.connectedPortPaths.find(probe.portPath) != activeSnapshot.connectedPortPaths.end();
+
+        ScopedHeliosUsbHandle handle(device);
+        if (handle.busyExclusive()) {
+            // Distinguish "busy because we own it" from "busy because somebody
+            // else owns it". Without this branch, a DAC already connected in the
+            // current process would bounce in and out of the assigner as busy.
+            if (ownedByThisProcess) {
+                freeProbes.push_back(std::move(probe));
+            } else {
+                busyProbes.push_back(std::move(probe));
+            }
+            continue;
+        }
+        if (!handle.valid()) {
+            continue;
+        }
+
+        probe.firmwareVersion = queryHeliosUsbFirmwareVersion(handle.get());
+        announceHeliosSdkVersion(handle.get());
+        const HeliosUsbNameQueryResult nameResult = queryHeliosUsbName(handle.get());
+        probe.nameQuerySucceeded = nameResult.succeeded;
+        probe.nameWasEmpty = nameResult.empty;
+        probe.reportedLabel = nameResult.label;
+        freeProbes.push_back(std::move(probe));
+    }
+
+    auto freeProbeOrder = [](const DirectHeliosUsbProbe& a, const DirectHeliosUsbProbe& b) {
+        if (a.reportedLabel != b.reportedLabel) {
+            return a.reportedLabel < b.reportedLabel;
+        }
+        return a.portPath < b.portPath;
+    };
+    std::sort(freeProbes.begin(), freeProbes.end(), freeProbeOrder);
+    std::sort(busyProbes.begin(),
+              busyProbes.end(),
+              [](const DirectHeliosUsbProbe& a, const DirectHeliosUsbProbe& b) {
+                  return a.portPath < b.portPath;
+              });
+
+    std::unordered_set<std::string> usedIds;
+    std::unordered_set<std::string> usedLabels;
+    results.reserve(freeProbes.size() + busyProbes.size());
+
+    for (std::size_t i = 0; i < freeProbes.size(); ++i) {
+        DirectHeliosUsbProbe& probe = freeProbes[i];
+        std::string label = probe.reportedLabel;
+        const bool hadCachedLabel = stableLabelByPortPath.find(probe.portPath) != stableLabelByPortPath.end();
+
         if (label.empty()) {
-            auto cachedLabel = stableLabelByIndex.find(index);
-            if (cachedLabel != stableLabelByIndex.end()) {
+            auto cachedLabel = stableLabelByPortPath.find(probe.portPath);
+            if (cachedLabel != stableLabelByPortPath.end()) {
                 label = cachedLabel->second;
             }
         }
 
         if (label.empty()) {
-            label = makeFallbackLabel(index);
-            if (attemptedFreshNameRead) {
-                logInfo("[HeliosManager] falling back to synthetic label",
-                        "index", index,
-                        "label", label,
-                        "sdk_name", name[0] == '\0' ? "<empty>" : std::string(name));
-            }
-        } else {
-            stableLabelByIndex[index] = label;
+            label = makeFallbackLabel(static_cast<unsigned int>(i));
         }
 
-        // Device names should be unique for stable UX/routing. If duplicates are
-        // found, or the device reports an empty name, auto-repair by persisting
-        // a synthesized unique label while no active stream is running.
         const bool duplicateLabel = usedLabels.find(label) != usedLabels.end();
-        const bool shouldPersistUniqueLabel = !hasActive && (duplicateLabel || sdkReportedEmptyName);
+        const bool shouldPersistUniqueLabel = duplicateLabel || probe.nameWasEmpty;
         if (shouldPersistUniqueLabel) {
-            const std::string originalDeviceLabel = sdkReportedEmptyName ? std::string() : label;
+            // Preserve the existing "auto-fix duplicate or empty Helios names"
+            // behavior, but do it through the same direct USB probe path rather
+            // than reopening the full vendor SDK device list.
+            const std::string originalDeviceLabel = probe.nameWasEmpty ? std::string() : label;
             const std::string renamedLabel =
-                makeUniqueRenameLabel(index, label, originalDeviceLabel, usedLabels);
-            if (trySetHeliosName(*sdk, index, renamedLabel)) {
+                makeUniqueRenameLabel(static_cast<unsigned int>(i), label, originalDeviceLabel, usedLabels);
+            ScopedHeliosUsbHandle renameHandle(probe.device);
+            if (renameHandle.valid() && setHeliosUsbName(renameHandle.get(), renamedLabel)) {
                 logInfo("[HeliosManager] Helios name auto-renamed",
-                        "index", index,
-                        "reason", sdkReportedEmptyName ? "empty" : "duplicate",
-                        "old_label", sdkReportedEmptyName ? std::string("<empty>") : label,
+                        "path", probe.portPath,
+                        "reason", probe.nameWasEmpty ? "empty" : "duplicate",
+                        "old_label", probe.nameWasEmpty ? std::string("<empty>") : label,
                         "new_label", renamedLabel);
                 label = renamedLabel;
-                stableLabelByIndex[index] = label;
-                usedLabels.insert(label);
             } else {
                 logError("[HeliosManager] failed to auto-rename Helios name",
-                         "index", index,
-                         "reason", sdkReportedEmptyName ? "empty" : "duplicate",
+                         "path", probe.portPath,
+                         "reason", probe.nameWasEmpty ? "empty" : "duplicate",
                          "label", label,
                          "requested_label", renamedLabel);
-                usedLabels.insert(label);
             }
-        } else {
-            usedLabels.insert(label);
         }
 
-        const int isUsb = sdk->GetIsUsb(index);
-        const bool usbController = isUsb == 1;
-        const std::uint32_t maxRate = usbController ? HELIOS_MAX_PPS : HELIOS_MAX_PPS_IDN;
-        const int firmware = sdk->GetFirmwareVersion(index);
-        std::string id;
-        auto cachedId = stableIdByIndex.find(index);
-        if (cachedId != stableIdByIndex.end()) {
-            id = cachedId->second;
-            if (usedIds.find(id) == usedIds.end()) {
-                usedIds.insert(id);
-            } else {
-                // Very defensive: if a duplicate sneaks in, regenerate once.
-                id = makeHeliosControllerId(label, index, usedIds);
-                stableIdByIndex[index] = id;
-            }
-        } else {
-            id = makeHeliosControllerId(label, index, usedIds);
-            stableIdByIndex[index] = id;
+        if (probe.nameQuerySucceeded || shouldPersistUniqueLabel || hadCachedLabel) {
+            // Cache by physical port path, not by transient discovery order.
+            // This keeps the label stable across rescans and across the busy/free
+            // transition of the same physical DAC.
+            stableLabelByPortPath[probe.portPath] = label;
         }
+        usedLabels.insert(label);
 
-        results.emplace_back(std::make_unique<HeliosControllerInfo>(
-            std::move(id),
-            std::move(label),
-            maxRate,
-            index,
-            usbController,
-            firmware));
+        HeliosControllerInfo info(makeHeliosControllerId(label, static_cast<unsigned int>(i), usedIds),
+                                  label,
+                                  HELIOS_MAX_PPS,
+                                  probe.portPath,
+                                  true,
+                                  probe.firmwareVersion);
+        info.setUsageState(core::ControllerUsageState::Idle);
+        results.push_back(std::move(info));
     }
 
-    // Drop stale cache entries for devices no longer present in current scan.
-    for (auto it = stableIdByIndex.begin(); it != stableIdByIndex.end();) {
-        if (seenIndices.find(it->first) == seenIndices.end()) {
-            it = stableIdByIndex.erase(it);
+    for (std::size_t i = 0; i < busyProbes.size(); ++i) {
+        const DirectHeliosUsbProbe& probe = busyProbes[i];
+        std::string label = makeBusyHeliosLabel(probe.portPath);
+        std::string id = makeBusyHeliosControllerId(probe.portPath);
+
+        auto cachedLabel = stableLabelByPortPath.find(probe.portPath);
+        if (cachedLabel != stableLabelByPortPath.end() && !cachedLabel->second.empty()) {
+            // If we have previously read the real device name while it was free,
+            // keep showing that name when it later becomes busy elsewhere.
+            label = cachedLabel->second;
+            id = makeHeliosControllerId(label,
+                                        static_cast<unsigned int>(freeProbes.size() + i),
+                                        usedIds);
+        }
+
+        HeliosControllerInfo busyInfo(std::move(id),
+                                      std::move(label),
+                                      HELIOS_MAX_PPS,
+                                      probe.portPath,
+                                      true,
+                                      0);
+        busyInfo.setUsageState(core::ControllerUsageState::BusyExclusive);
+        results.push_back(std::move(busyInfo));
+    }
+
+    for (auto it = stableLabelByPortPath.begin(); it != stableLabelByPortPath.end();) {
+        if (seenPortPaths.find(it->first) == seenPortPaths.end()) {
+            it = stableLabelByPortPath.erase(it);
         } else {
             ++it;
         }
     }
-    for (auto it = stableLabelByIndex.begin(); it != stableLabelByIndex.end();) {
-        if (seenIndices.find(it->first) == seenIndices.end()) {
-            it = stableLabelByIndex.erase(it);
-        } else {
-            ++it;
-        }
-    }
 
+    libusb_free_device_list(deviceList, 1);
+    return results;
+}
+
+std::vector<std::unique_ptr<core::ControllerInfo>> HeliosManager::discover() {
+    std::vector<std::unique_ptr<core::ControllerInfo>> results;
+    const ActiveControllerSnapshot activeSnapshot = snapshotActiveControllers();
+    std::vector<HeliosControllerInfo> discoveredInfos = collectDiscoveredControllers(activeSnapshot);
+
+    results.reserve(discoveredInfos.size());
+    for (auto& info : discoveredInfos) {
+        results.emplace_back(std::make_unique<HeliosControllerInfo>(std::move(info)));
+    }
     return results;
 }
 
 std::shared_ptr<core::LaserController>
 HeliosManager::connectController(const core::ControllerInfo& info) {
     const auto* heliosInfo = dynamic_cast<const HeliosControllerInfo*>(&info);
-    if (!heliosInfo) {
+    if (!heliosInfo || !heliosInfo->isUsbController() || heliosInfo->portPath().empty() || !usbContext) {
         return nullptr;
     }
 
-    const std::string& controllerName = heliosInfo->labelValue();
+    // Connection policy:
+    // connect exactly one physical Helios DAC, identified by port path.
+    //
+    // This is the main behavioral fix. The old SDK-backed path opened every
+    // Helios USB DAC up front, which made all of them look "in use" to any
+    // second process even if we had only assigned one.
+    const std::string& controllerPortPath = heliosInfo->portPath();
     std::shared_ptr<HeliosController> controller;
-    std::shared_ptr<HeliosController> staleController;
     {
         std::lock_guard lock(activeMutex);
-        auto it = activeControllers.find(controllerName);
+        auto it = activeControllers.find(controllerPortPath);
         if (it != activeControllers.end()) {
             controller = it->second.lock();
             if (!controller) {
                 activeControllers.erase(it);
-            } else if (controller->controllerIndex() != heliosInfo->index()) {
-                staleController = std::move(controller);
+            } else if (!controller->isConnected()) {
                 activeControllers.erase(it);
+                controller.reset();
             }
         }
 
         if (!controller) {
-            controller = std::make_shared<HeliosController>(sdk, heliosInfo->index());
-            activeControllers.insert_or_assign(controllerName, controller);
+            // Direct USB connect claims only the selected DAC, leaving other
+            // Helios DACs visible and connectable from other processes.
+            controller = HeliosController::connectUsb(usbContext, controllerPortPath);
+            if (!controller) {
+                return nullptr;
+            }
+            activeControllers.insert_or_assign(controllerPortPath, controller);
         }
-    }
-
-    if (staleController) {
-        staleController->stop();
-        staleController->close();
     }
 
     if (controller) {
@@ -418,14 +698,10 @@ void HeliosManager::closeAll() {
         dev->close();
     }
 
-    if (sdk) {
-        sdk->CloseDevices();
-    }
-
-    opened = false;
-    controllerCount = 0;
-    stableIdByIndex.clear();
-    stableLabelByIndex.clear();
+    // Intentionally do not destroy or explicitly tear down the shared libusb
+    // context here. Process-lifetime ownership is the safer tradeoff for the
+    // shutdown crashes we were seeing.
+    stableLabelByPortPath.clear();
 }
 
 } // namespace libera::helios

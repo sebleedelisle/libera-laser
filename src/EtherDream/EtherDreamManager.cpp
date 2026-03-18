@@ -3,6 +3,7 @@
 #include "libera/core/ActiveControllerMap.hpp"
 #include "libera/core/ByteRead.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
+#include "libera/etherdream/EtherDreamResponse.hpp"
 #include "libera/log/Log.hpp"
 #if defined(_WIN32)
 #  include <winsock2.h>
@@ -189,7 +190,20 @@ void EtherDreamManager::threadedFunction() {
         const auto softwareRevision = core::bytes::readLe16(cursor); cursor += 2;
         const auto bufferCapacity = core::bytes::readLe16(cursor); cursor += 2;
         const auto maxPointRate = core::bytes::readLe32(cursor); cursor += 4;
-        (void)cursor;
+        core::ControllerUsageState usageState = core::ControllerUsageState::Unknown;
+        switch (static_cast<PlaybackState>(cursor[2])) {
+            case PlaybackState::Idle:
+                usageState = core::ControllerUsageState::Idle;
+                break;
+            case PlaybackState::Prepared:
+            case PlaybackState::Playing:
+            case PlaybackState::Paused:
+                usageState = core::ControllerUsageState::Active;
+                break;
+            default:
+                usageState = core::ControllerUsageState::Unknown;
+                break;
+        }
 
         std::string id = mac ? format_mac_id(mac) : ("etherdream-" + ip);
         // Keep the full stable id for reconnect/persistence, but use the short
@@ -209,6 +223,7 @@ void EtherDreamManager::threadedFunction() {
             static_cast<int>(bufferCapacity),
             std::move(hardwareVersion),
             maxPointRate};
+        info.setUsageState(usageState);
 
         {
             std::lock_guard lock(controllersMutex);

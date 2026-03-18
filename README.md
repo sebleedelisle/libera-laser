@@ -7,7 +7,7 @@ Libera aims to be a de facto standard for laser control, with support for a grow
 - IDN (ILDA Digital Network)
 - Laser Cube USB (LaserDock)
 - Laser Cube Network (for Wifi laser cubes - wired network strongly recommended!)
-- AVB (LA Sollinger lasers) (coming soon)
+- AVB/Audio (LA Sollinger lasers or any multichannel audio devices) 
 
 The project uses a permissive license and is intended for broad adoption in laser control software.
 

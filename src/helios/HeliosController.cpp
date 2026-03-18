@@ -4,10 +4,22 @@
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
-#include <cmath>
+#include <array>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX // Keep Windows headers from defining min/max macros that break std::min/std::max.
+#endif
+#define _WINSOCKAPI_
+#endif
+#include "libusb.h"
 
 namespace libera::helios {
 namespace {
@@ -34,9 +46,9 @@ std::string describeHeliosError(int code) {
     case HELIOS_ERROR_DEVICE_RESULT:
         return "device_result_unexpected";
     case HELIOS_ERROR_DEVICE_NULL_BUFFER:
-        return "device_null_buffer";
+        return "null_points";
     case HELIOS_ERROR_DEVICE_SIGNAL_TOO_LONG:
-        return "device_signal_too_long";
+        return "signal_too_long";
     case HELIOS_ERROR_NOT_INITIALIZED:
         return "not_initialized";
     case HELIOS_ERROR_INVALID_DEVNUM:
@@ -59,9 +71,302 @@ bool shouldLogErrorBurst(std::size_t consecutiveCount) {
     return consecutiveCount == 1 || (consecutiveCount % 25 == 0);
 }
 
+std::string makeHeliosUsbPortPath(libusb_device* device) {
+    if (!device) {
+        return "unknown";
+    }
+
+    std::array<std::uint8_t, 8> ports{};
+    const int depth = libusb_get_port_numbers(device, ports.data(), static_cast<int>(ports.size()));
+    if (depth > 0) {
+        std::string path;
+        for (int i = 0; i < depth; ++i) {
+            if (!path.empty()) {
+                path += "-";
+            }
+            path += std::to_string(static_cast<unsigned>(ports[i]));
+        }
+        if (!path.empty()) {
+            return path;
+        }
+    }
+
+    return "bus" + std::to_string(static_cast<unsigned>(libusb_get_bus_number(device))) +
+           "-dev" + std::to_string(static_cast<unsigned>(libusb_get_device_address(device)));
+}
+
+bool announceHeliosSdkVersion(libusb_device_handle* handle) {
+    if (handle == nullptr) {
+        return false;
+    }
+
+    int actualLength = 0;
+    const std::uint8_t request[2] = {0x07, HELIOS_SDK_VERSION};
+    for (int i = 0; i < 2; ++i) {
+        const int rc = libusb_interrupt_transfer(handle,
+                                                 EP_INT_OUT,
+                                                 const_cast<unsigned char*>(request),
+                                                 2,
+                                                 &actualLength,
+                                                 32);
+        if (rc == LIBUSB_SUCCESS && actualLength == 2) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 } // namespace
 
 namespace error_types = libera::core::error_types;
+
+struct HeliosController::DirectUsbConnection {
+    explicit DirectUsbConnection(libusb_device_handle* deviceHandle)
+        : handle(deviceHandle) {
+        // Keep one reusable transfer buffer per DAC instance. The Helios USB
+        // path is hot and allocation churn here is unnecessary.
+        bulkTransferBuffer.reserve((HELIOS_MAX_POINTS * 7) + 5);
+    }
+
+    ~DirectUsbConnection() {
+        close();
+    }
+
+    bool isClosed() const {
+        return closed.load(std::memory_order_relaxed);
+    }
+
+    void close() {
+        if (closed.exchange(true, std::memory_order_relaxed)) {
+            return;
+        }
+
+        // Close is serialized with I/O so we do not race a write/status poll
+        // against releasing the USB interface underneath it.
+        std::lock_guard<std::mutex> lock(ioMutex);
+        if (!handle) {
+            return;
+        }
+
+        // Best-effort stop before releasing the USB interface.
+        std::uint8_t stopRequest[2] = {0x01, 0};
+        (void)sendControlLocked(stopRequest, 2, 16);
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+
+        libusb_release_interface(handle, 0);
+        libusb_close(handle);
+        handle = nullptr;
+        shutterOpen = false;
+    }
+
+    int getStatus() {
+        std::lock_guard<std::mutex> lock(ioMutex);
+        if (!handle || isClosed()) {
+            return HELIOS_ERROR_DEVICE_CLOSED;
+        }
+
+        // This mirrors the vendor SDK's simple USB-ready poll:
+        // send status request 0x03, then read one interrupt response packet.
+        std::uint8_t request[2] = {0x03, 0};
+        if (sendControlLocked(request, 2, 16) != HELIOS_SUCCESS) {
+            return HELIOS_ERROR_DEVICE_SEND_CONTROL;
+        }
+
+        std::array<std::uint8_t, 32> response{};
+        int actualLength = 0;
+        const int rc = libusb_interrupt_transfer(handle,
+                                                 EP_INT_IN,
+                                                 response.data(),
+                                                 static_cast<int>(response.size()),
+                                                 &actualLength,
+                                                 16);
+        if (rc != LIBUSB_SUCCESS) {
+            markClosedOnDisconnectLocked(rc);
+            return HELIOS_ERROR_LIBUSB_BASE + rc;
+        }
+        if (actualLength < 2 || response[0] != 0x83) {
+            return HELIOS_ERROR_DEVICE_RESULT;
+        }
+
+        return response[1] == 0 ? 0 : 1;
+    }
+
+    int writeFrameExtended(unsigned int pps,
+                           unsigned int flags,
+                           const HeliosPointExt* points,
+                           unsigned int numOfPoints) {
+        std::lock_guard<std::mutex> lock(ioMutex);
+        if (!handle || isClosed()) {
+            return HELIOS_ERROR_DEVICE_CLOSED;
+        }
+        if (points == nullptr || numOfPoints == 0) {
+            return HELIOS_ERROR_NULL_POINTS;
+        }
+
+        // Keep behavior intentionally aligned with the vendor SDK rather than
+        // inventing a new Helios transport policy here. The aim of this path is
+        // ownership granularity, not changing frame semantics.
+        std::vector<HeliosPointExt> duplicatedPoints;
+        const HeliosPointExt* pointsToSend = points;
+        bool freePoints = false;
+
+        if (pps < HELIOS_MIN_PPS) {
+            if (pps == 0) {
+                return HELIOS_ERROR_PPS_TOO_LOW;
+            }
+
+            unsigned int lowRateFactor = HELIOS_MIN_PPS / pps + 1;
+            if (numOfPoints * lowRateFactor > HELIOS_MAX_POINTS) {
+                return HELIOS_ERROR_PPS_TOO_LOW;
+            }
+
+            duplicatedPoints.resize(static_cast<std::size_t>(numOfPoints) * lowRateFactor);
+            unsigned int writeIndex = 0;
+            for (unsigned int i = 0; i < numOfPoints; ++i) {
+                for (unsigned int j = 0; j < lowRateFactor; ++j) {
+                    duplicatedPoints[writeIndex++] = points[i];
+                }
+            }
+
+            pointsToSend = duplicatedPoints.data();
+            numOfPoints *= lowRateFactor;
+            pps *= lowRateFactor;
+            freePoints = true;
+        }
+
+        unsigned int samplingFactor = 1;
+        if (pps > HELIOS_MAX_PPS || numOfPoints > HELIOS_MAX_POINTS) {
+            samplingFactor = pps / HELIOS_MAX_PPS + 1;
+            samplingFactor =
+                std::max<unsigned int>(samplingFactor, numOfPoints / HELIOS_MAX_POINTS + 1);
+
+            pps = pps / samplingFactor;
+            numOfPoints = numOfPoints / samplingFactor;
+
+            if (pps < HELIOS_MIN_PPS) {
+                (void)freePoints;
+                return HELIOS_ERROR_TOO_MANY_POINTS;
+            }
+        }
+
+        unsigned int ppsActual = pps;
+        unsigned int numOfPointsActual = numOfPoints;
+        if ((((int)numOfPoints - 45) % 64) == 0) {
+            // Preserve the Helios SDK workaround for the MCU transfer-size edge
+            // case. Matching that quirk avoids introducing subtle USB-only
+            // regressions while replacing the ownership model.
+            numOfPointsActual--;
+            ppsActual = static_cast<unsigned int>(
+                (pps * static_cast<double>(numOfPointsActual) / static_cast<double>(numOfPoints)) + 0.5);
+        }
+
+        bulkTransferBuffer.clear();
+        bulkTransferBuffer.resize(static_cast<std::size_t>(numOfPointsActual) * 7 + 5);
+        unsigned int bufPos = 0;
+        const unsigned int loopLength = numOfPointsActual * samplingFactor;
+        for (unsigned int i = 0; i < loopLength; i += samplingFactor) {
+            const auto& point = pointsToSend[i];
+            const std::uint16_t x = point.x >> 4;
+            const std::uint16_t y = point.y >> 4;
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(x >> 4);
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(((x & 0x0F) << 4) | (y >> 8));
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(y & 0xFF);
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(point.r >> 8);
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(point.g >> 8);
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(point.b >> 8);
+            bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(point.i >> 8);
+        }
+        bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(ppsActual & 0xFF);
+        bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(ppsActual >> 8);
+        bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(numOfPointsActual & 0xFF);
+        bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(numOfPointsActual >> 8);
+        bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(flags);
+
+        if (!shutterOpen) {
+            // Match the SDK behavior of auto-opening the shutter on first write.
+            const int shutterRc = setShutterLocked(true);
+            if (shutterRc != HELIOS_SUCCESS) {
+                return shutterRc;
+            }
+        }
+
+        int actualLength = 0;
+        const int timeoutMs = 8 + static_cast<int>(bufPos >> 5);
+        const int rc = libusb_bulk_transfer(handle,
+                                            EP_BULK_OUT,
+                                            bulkTransferBuffer.data(),
+                                            static_cast<int>(bufPos),
+                                            &actualLength,
+                                            timeoutMs);
+        if (rc != LIBUSB_SUCCESS) {
+            markClosedOnDisconnectLocked(rc);
+            return HELIOS_ERROR_LIBUSB_BASE + rc;
+        }
+        if (actualLength != static_cast<int>(bufPos)) {
+            return HELIOS_ERROR_DEVICE_RESULT;
+        }
+
+        return HELIOS_SUCCESS;
+    }
+
+private:
+    int sendControlLocked(std::uint8_t* buffer, unsigned int length, unsigned int timeoutMs) {
+        if (buffer == nullptr) {
+            return HELIOS_ERROR_DEVICE_NULL_BUFFER;
+        }
+        if (length > 32) {
+            return HELIOS_ERROR_DEVICE_SIGNAL_TOO_LONG;
+        }
+        if (!handle || isClosed()) {
+            return HELIOS_ERROR_DEVICE_CLOSED;
+        }
+
+        // All low-level USB control messages funnel through one helper so close,
+        // status, shutter, and startup signaling share the same locking and
+        // disconnect handling behavior.
+        int actualLength = 0;
+        const int rc = libusb_interrupt_transfer(handle,
+                                                 EP_INT_OUT,
+                                                 buffer,
+                                                 static_cast<int>(length),
+                                                 &actualLength,
+                                                 timeoutMs);
+        if (rc != LIBUSB_SUCCESS) {
+            markClosedOnDisconnectLocked(rc);
+            return HELIOS_ERROR_LIBUSB_BASE + rc;
+        }
+        if (actualLength != static_cast<int>(length)) {
+            return HELIOS_ERROR_DEVICE_RESULT;
+        }
+
+        return HELIOS_SUCCESS;
+    }
+
+    int setShutterLocked(bool level) {
+        std::uint8_t request[2] = {0x02, static_cast<std::uint8_t>(level ? 1 : 0)};
+        const int rc = sendControlLocked(request, 2, 16);
+        if (rc == HELIOS_SUCCESS) {
+            shutterOpen = level;
+        }
+        return rc;
+    }
+
+    void markClosedOnDisconnectLocked(int libusbRc) {
+        // Once macOS/libusb reports the device disappearing or a fatal I/O
+        // breakage, stop pretending this handle is healthy. The run loop will
+        // surface that as a connection loss and stop trying to stream.
+        if (libusbRc == LIBUSB_ERROR_NO_DEVICE || libusbRc == LIBUSB_ERROR_IO) {
+            closed.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    libusb_device_handle* handle = nullptr;
+    std::atomic<bool> closed{false};
+    bool shutterOpen = false;
+    std::mutex ioMutex;
+    std::vector<std::uint8_t> bulkTransferBuffer;
+};
 
 std::size_t detail::defaultFramePointCount(std::uint32_t pointRate) {
     if (pointRate == 0) {
@@ -90,9 +395,106 @@ std::int64_t detail::smoothWriteLeadMicros(std::int64_t previousMicros, std::int
     return ((clampedPrevious * 3) + clampedCurrent) / 4;
 }
 
+std::shared_ptr<HeliosController> HeliosController::connectUsb(
+    std::shared_ptr<libusb_context> usbContext,
+    std::string controllerPortPath) {
+    if (!usbContext || controllerPortPath.empty()) {
+        return {};
+    }
+
+    // Direct USB connect intentionally enumerates raw libusb devices and claims
+    // only the one matching the persisted port path.
+    //
+    // This is the key fix for multi-Helios setups: connecting one DAC must not
+    // implicitly claim every Helios USB DAC visible to the process.
+    libusb_device** deviceList = nullptr;
+    const ssize_t count = libusb_get_device_list(usbContext.get(), &deviceList);
+    if (count < 0 || !deviceList) {
+        return {};
+    }
+
+    std::unique_ptr<DirectUsbConnection> directConnection;
+    for (ssize_t i = 0; i < count; ++i) {
+        libusb_device* device = deviceList[i];
+        libusb_device_descriptor descriptor{};
+        if (libusb_get_device_descriptor(device, &descriptor) != 0) {
+            continue;
+        }
+        if (descriptor.idVendor != HELIOS_VID || descriptor.idProduct != HELIOS_PID) {
+            continue;
+        }
+        if (makeHeliosUsbPortPath(device) != controllerPortPath) {
+            continue;
+        }
+
+        libusb_device_handle* handle = nullptr;
+        const int openRc = libusb_open(device, &handle);
+        if (openRc != LIBUSB_SUCCESS || handle == nullptr) {
+            continue;
+        }
+
+        const int claimRc = libusb_claim_interface(handle, 0);
+        if (claimRc != LIBUSB_SUCCESS) {
+            libusb_close(handle);
+            continue;
+        }
+
+        const int altRc = libusb_set_interface_alt_setting(handle, 0, 1);
+        if (altRc != LIBUSB_SUCCESS) {
+            libusb_release_interface(handle, 0);
+            libusb_close(handle);
+            continue;
+        }
+
+        // Mirror the startup sequence the SDK uses before it starts talking to
+        // the DAC. The short delay and interrupt flush help avoid stale packets
+        // from a previous owner/session contaminating the first control reads.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        std::array<std::uint8_t, 32> flushBuffer{};
+        int actualLength = 0;
+        while (libusb_interrupt_transfer(handle,
+                                         EP_INT_IN,
+                                         flushBuffer.data(),
+                                         static_cast<int>(flushBuffer.size()),
+                                         &actualLength,
+                                         5) == LIBUSB_SUCCESS) {
+        }
+
+        (void)announceHeliosSdkVersion(handle);
+        directConnection = std::make_unique<DirectUsbConnection>(handle);
+        break;
+    }
+
+    libusb_free_device_list(deviceList, 1);
+    if (!directConnection) {
+        return {};
+    }
+
+    return std::shared_ptr<HeliosController>(
+        new HeliosController(std::move(usbContext),
+                             std::move(controllerPortPath),
+                             std::move(directConnection)));
+}
+
 HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsigned int controllerIndex)
-: sdk(std::move(sdkInstance))
-, index(controllerIndex) {
+    : sdk(std::move(sdkInstance))
+    , index(controllerIndex) {
+    const auto defaultFramePoints = detail::defaultFramePointCount(getPointRate());
+    targetFramePoints.store(defaultFramePoints, std::memory_order_relaxed);
+    frameBuffer.reserve(defaultFramePoints);
+    setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
+    updateEstimatedBufferAnchorNow(0, getPointRate());
+}
+
+HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextValue,
+                                   std::string controllerPortPath,
+                                   std::unique_ptr<DirectUsbConnection> directConnection)
+    : usbContext(std::move(usbContextValue))
+    , usbPortPath(std::move(controllerPortPath))
+    , usbConnection(std::move(directConnection)) {
+    // USB path shares the same scheduling/buffering behavior as the legacy SDK
+    // path so the higher-level controller contract stays unchanged.
     const auto defaultFramePoints = detail::defaultFramePointCount(getPointRate());
     targetFramePoints.store(defaultFramePoints, std::memory_order_relaxed);
     frameBuffer.reserve(defaultFramePoints);
@@ -109,17 +511,23 @@ void HeliosController::close() {
     setConnectionState(false);
     clearEstimatedBufferState();
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
-    if (!sdk) {
-        return;
+    if (sdk) {
+        sdk->Stop(index);
     }
-    sdk->Stop(index);
+    if (usbConnection) {
+        // For direct USB, closing means releasing exactly one DAC's interface.
+        usbConnection->close();
+    }
 }
 
 bool HeliosController::isConnected() const {
-    if (!sdk) {
-        return false;
+    if (sdk) {
+        return sdk->GetIsClosed(index) == 0;
     }
-    return sdk->GetIsClosed(index) == 0;
+    if (usbConnection) {
+        return !usbConnection->isClosed();
+    }
+    return false;
 }
 
 void HeliosController::setPointRate(std::uint32_t pointRateValue) {
@@ -151,7 +559,12 @@ void HeliosController::run() {
     bool wasConnected = false;
 
     while (running) {
-        if (!sdk) {
+        // Support both backends behind one controller implementation:
+        // - SDK/index path for legacy or non-USB cases
+        // - direct libusb path for Helios USB
+        const bool backendConnected = sdk ? (sdk->GetIsClosed(index) == 0)
+                                          : (usbConnection && !usbConnection->isClosed());
+        if (!backendConnected) {
             if (wasConnected) {
                 recordConnectionError(error_types::usb::connectionLost);
             }
@@ -161,24 +574,14 @@ void HeliosController::run() {
             continue;
         }
 
-        if (sdk->GetIsClosed(index) != 0) {
-            if (wasConnected) {
-                recordConnectionError(error_types::usb::connectionLost);
-            }
-            setConnectionState(false);
-            wasConnected = false;
-            std::this_thread::sleep_for(100ms);
-            continue;
-        }
         setConnectionState(true);
         if (!wasConnected) {
             resetStartupBlank();
         }
         wasConnected = true;
 
-        const int status = sdk->GetStatus(index);
+        const int status = sdk ? sdk->GetStatus(index) : usbConnection->getStatus();
         if (status < 0) {
-            // -5007 is a libusb timeout from status polling. Treat as transient.
             if (status == -5007) {
                 recordIntermittentError(error_types::usb::timeout);
                 std::this_thread::sleep_for(2ms);
@@ -188,11 +591,11 @@ void HeliosController::run() {
             ++consecutiveStatusErrors;
             if (shouldLogErrorBurst(consecutiveStatusErrors)) {
                 logError("[HeliosController] status error",
-                         "index", index,
+                         sdk ? "index" : "path",
+                         sdk ? std::to_string(index) : usbPortPath,
                          "code", status,
                          "reason", describeHeliosError(status),
-                         "consecutive", consecutiveStatusErrors,
-                         "is_closed", sdk->GetIsClosed(index));
+                         "consecutive", consecutiveStatusErrors);
             }
             std::this_thread::sleep_for(5ms);
             continue;
@@ -207,17 +610,12 @@ void HeliosController::run() {
         const std::size_t framePoints = targetFramePoints.load(std::memory_order_relaxed);
         const unsigned int pps = getPointRate();
 
-        // SDK status says the DAC is ready, so treat current queued fullness as empty.
         setEstimatedBufferCapacity(static_cast<int>(framePoints));
         updateEstimatedBufferAnchorNow(0, pps);
 
         core::PointFillRequest req;
         req.minimumPointsRequired = detail::minimumRequestPoints(framePoints);
         req.maximumPointsRequired = framePoints;
-        // Helios only exposes ready/not-ready, not continuous buffer depth.
-        // Once GetStatus() says "ready", the best lead we have is the USB/SDK
-        // write duration we observed on recent successful transfers, not one
-        // whole frame of extra delay.
         const auto writeLead = detail::requestRenderLead(
             std::chrono::microseconds(
                 estimatedWriteLeadMicros.load(std::memory_order_relaxed)));
@@ -243,7 +641,6 @@ void HeliosController::run() {
             out.r = encodeUnsigned16FromUnit(p.r);
             out.g = encodeUnsigned16FromUnit(p.g);
             out.b = encodeUnsigned16FromUnit(p.b);
-            // Some legacy controllers still use the dedicated intensity word.
             out.i = encodeUnsigned16FromUnit(p.i);
             out.user1 = encodeUnsigned16FromUnit(p.u1);
             out.user2 = encodeUnsigned16FromUnit(p.u2);
@@ -252,12 +649,16 @@ void HeliosController::run() {
         }
 
         const auto sendStart = std::chrono::steady_clock::now();
-        const int result = sdk->WriteFrameExtended(
-            index,
-            pps,
-            HELIOS_FLAGS,
-            frameBuffer.data(),
-            static_cast<unsigned int>(frameBuffer.size()));
+        const int result = sdk
+            ? sdk->WriteFrameExtended(index,
+                                      pps,
+                                      HELIOS_FLAGS,
+                                      frameBuffer.data(),
+                                      static_cast<unsigned int>(frameBuffer.size()))
+            : usbConnection->writeFrameExtended(pps,
+                                                HELIOS_FLAGS,
+                                                frameBuffer.data(),
+                                                static_cast<unsigned int>(frameBuffer.size()));
         const auto sendDone = std::chrono::steady_clock::now();
 
         if (result < 0) {
@@ -269,7 +670,8 @@ void HeliosController::run() {
             ++consecutiveWriteErrors;
             if (shouldLogErrorBurst(consecutiveWriteErrors)) {
                 logError("[HeliosController] WriteFrameExtended failed",
-                         "index", index,
+                         sdk ? "index" : "path",
+                         sdk ? std::to_string(index) : usbPortPath,
                          "code", result,
                          "reason", describeHeliosError(result),
                          "consecutive", consecutiveWriteErrors,

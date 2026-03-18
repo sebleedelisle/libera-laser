@@ -14,6 +14,13 @@
 
 namespace libera::core {
 
+enum class ControllerUsageState {
+    Unknown,
+    Idle,
+    Active,
+    BusyExclusive
+};
+
 class ControllerInfo {
 public:
     struct NetworkInfo {
@@ -37,6 +44,8 @@ public:
     std::uint32_t maxPointRate() const { return maxPointRateValue; }
     void setMaxPointRate(std::uint32_t value) { maxPointRateValue = value; }
     const std::optional<NetworkInfo>& networkInfo() const { return networkInfoValue; }
+    ControllerUsageState usageState() const { return usageStateValue; }
+    void setUsageState(ControllerUsageState value) { usageStateValue = value; }
     virtual const std::string& type() const = 0;
 
 protected:
@@ -44,6 +53,7 @@ protected:
     std::string label;
     std::uint32_t maxPointRateValue = 0;
     std::optional<NetworkInfo> networkInfoValue;
+    ControllerUsageState usageStateValue = ControllerUsageState::Unknown;
 };
 
 class ControllerManagerBase {
