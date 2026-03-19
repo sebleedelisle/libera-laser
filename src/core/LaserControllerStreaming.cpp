@@ -383,13 +383,13 @@ void LaserControllerStreaming::updateEstimatedBufferAnchorNow(
 int LaserControllerStreaming::calculateBufferFullnessFromAnchor(
     int anchorBufferFullness,
     std::chrono::steady_clock::time_point anchorTime,
-    std::uint32_t pointRate,
+    std::uint32_t rate,
     int fallbackBufferFullness,
     bool* projected) const {
     const auto estimate = BufferEstimator::estimateFromAnchor(
         anchorBufferFullness,
         anchorTime,
-        pointRate);
+        rate);
 
     if (projected) {
         *projected = estimate.projected;

@@ -28,7 +28,7 @@ option(LIBERA_BUILD_EXAMPLES "Build example applications" OFF)
 # Optional: a few sensible warnings. Comment out if you prefer quiet builds.
 function(libera_apply_warnings target)
   if (MSVC)
-    target_compile_options(${target} PRIVATE /W4 /permissive-)
+    target_compile_options(${target} PRIVATE /W4 /permissive- /FS)
   else()
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
   endif()
@@ -109,8 +109,11 @@ target_sources(libera-core PRIVATE $<TARGET_OBJECTS:helios-sdk>)
 target_link_libraries(libera-core PUBLIC libusb::libusb)
 
 # Windows needs Winsock2 for TCP and UDP symbols. Linux and macOS do not.
+# _WIN32_WINNT=0x0A00 targets Windows 10+, suppressing ASIO's version warnings
+# and enabling modern socket APIs.
 if (WIN32)
     target_link_libraries(libera-core PUBLIC ws2_32)
+    target_compile_definitions(libera-core PUBLIC _WIN32_WINNT=0x0A00)
 endif()
 
 if (WIN32)

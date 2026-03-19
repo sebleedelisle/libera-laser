@@ -273,7 +273,7 @@ struct HeliosController::DirectUsbConnection {
         // inventing a new Helios transport policy here. The aim of this path is
         // ownership granularity, not changing frame semantics.
         std::vector<HeliosPointExt> duplicatedPoints;
-        const HeliosPointExt* pointsToSend = points;
+        const HeliosPointExt* pointsPtr = points;
         bool freePoints = false;
 
         if (pps < HELIOS_MIN_PPS) {
@@ -294,7 +294,7 @@ struct HeliosController::DirectUsbConnection {
                 }
             }
 
-            pointsToSend = duplicatedPoints.data();
+            pointsPtr = duplicatedPoints.data();
             numOfPoints *= lowRateFactor;
             pps *= lowRateFactor;
             freePoints = true;
@@ -331,7 +331,7 @@ struct HeliosController::DirectUsbConnection {
         unsigned int bufPos = 0;
         const unsigned int loopLength = numOfPointsActual * samplingFactor;
         for (unsigned int i = 0; i < loopLength; i += samplingFactor) {
-            const auto& point = pointsToSend[i];
+            const auto& point = pointsPtr[i];
             const std::uint16_t x = point.x >> 4;
             const std::uint16_t y = point.y >> 4;
             bulkTransferBuffer[bufPos++] = static_cast<std::uint8_t>(x >> 4);

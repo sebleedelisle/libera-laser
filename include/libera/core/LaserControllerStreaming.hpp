@@ -222,7 +222,7 @@ protected:
     int calculateBufferFullnessFromAnchor(
         int anchorBufferFullness,
         std::chrono::steady_clock::time_point anchorTime,
-        std::uint32_t pointRate,
+        std::uint32_t rate,
         int fallbackBufferFullness,
         bool* projected = nullptr) const;
 

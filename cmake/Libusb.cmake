@@ -38,7 +38,9 @@ function(libera_configure_libusb)
     elseif (UNIX)
       set(LIBUSB_BUNDLED_LIB "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Linux x64/libusb-1.0.so")
     elseif (WIN32)
-      set(LIBUSB_BUNDLED_LIB "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Windows/libusb-1.0.lib")
+      set(LIBUSB_BUNDLED_LIB_DEBUG   "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Windows/x64/Debug/dll/libusb-1.0.lib")
+      set(LIBUSB_BUNDLED_LIB_RELEASE "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Windows/x64/Release/dll/libusb-1.0.lib")
+      set(LIBUSB_BUNDLED_LIB "${LIBUSB_BUNDLED_LIB_RELEASE}")
     endif()
 
     if (NOT EXISTS "${LIBUSB_BUNDLED_LIB}")
@@ -46,10 +48,19 @@ function(libera_configure_libusb)
     endif()
 
     add_library(libusb::libusb UNKNOWN IMPORTED)
-    set_target_properties(libusb::libusb PROPERTIES
-      IMPORTED_LOCATION "${LIBUSB_BUNDLED_LIB}"
-      INTERFACE_INCLUDE_DIRECTORIES "${LIBERA_BUNDLED_LIBUSB_DIR}"
-    )
+    if (WIN32)
+      set_target_properties(libusb::libusb PROPERTIES
+        IMPORTED_LOCATION         "${LIBUSB_BUNDLED_LIB_RELEASE}"
+        IMPORTED_LOCATION_DEBUG   "${LIBUSB_BUNDLED_LIB_DEBUG}"
+        IMPORTED_LOCATION_RELEASE "${LIBUSB_BUNDLED_LIB_RELEASE}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBERA_BUNDLED_LIBUSB_DIR}"
+      )
+    else()
+      set_target_properties(libusb::libusb PROPERTIES
+        IMPORTED_LOCATION "${LIBUSB_BUNDLED_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LIBERA_BUNDLED_LIBUSB_DIR}"
+      )
+    endif()
 
     if (APPLE)
       set(CMAKE_BUILD_RPATH "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/macOS")

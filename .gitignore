@@ -4,6 +4,7 @@
 
 build/
 build-debug/
+CMakeUserPresets.json
 build-asan/
 out/
 CMakeFiles/
@@ -122,3 +123,4 @@ build-asan/test_etherdream_reconnect
 build-asan/test_etherdream_status
 build-asan/libera-main
 helios_example
+.claude/settings.local.json

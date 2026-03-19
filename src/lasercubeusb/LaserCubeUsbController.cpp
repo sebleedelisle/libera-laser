@@ -149,7 +149,7 @@ bool send_raw(libusb_device_handle* handle, const std::uint8_t* request, std::ui
 
     int transferred = 0;
     std::array<std::uint8_t, 64> packet{};
-    const std::uint32_t length = std::min<std::uint32_t>(requestLength, packet.size());
+    const std::uint32_t length = std::min(requestLength, static_cast<std::uint32_t>(packet.size()));
     std::memcpy(packet.data(), request, length);
 
     int rc = libusb_bulk_transfer(handle, CONTROL_ENDPOINT_OUT, packet.data(), static_cast<int>(length), &transferred, 1000);
@@ -275,7 +275,7 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
     std::memcpy(runnerPacket.data() + 2, &position, sizeof(position));
     std::memcpy(runnerPacket.data() + 4, &countSamples, sizeof(countSamples));
     std::memset(runnerPacket.data() + 6, 0xFF, countSamples * 8); // 7 samples × 8 bytes each
-    send_raw(usbHandle->get(), runnerPacket.data(), runnerPacket.size());
+    send_raw(usbHandle->get(), runnerPacket.data(), static_cast<std::uint32_t>(runnerPacket.size()));
 
     usbConnected.store(true, std::memory_order_relaxed);
     setConnectionState(true);
