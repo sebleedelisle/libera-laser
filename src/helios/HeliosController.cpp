@@ -137,6 +137,10 @@ struct HeliosController::DirectUsbConnection {
         return closed.load(std::memory_order_relaxed);
     }
 
+    void prepareForShutdown() {
+        abandonHandleOnClose.store(true, std::memory_order_relaxed);
+    }
+
     void close() {
         if (closed.exchange(true, std::memory_order_relaxed)) {
             return;
@@ -146,6 +150,21 @@ struct HeliosController::DirectUsbConnection {
         // against releasing the USB interface underneath it.
         std::lock_guard<std::mutex> lock(ioMutex);
         if (!handle) {
+            return;
+        }
+
+        if (abandonHandleOnClose.load(std::memory_order_relaxed)) {
+            // Teardown policy:
+            // on macOS we have seen libusb_close() crash during app shutdown
+            // from the Helios direct USB path. At this point the streaming
+            // thread has already been stopped by the manager, and the process is
+            // on its way out, so abandoning the raw handle is safer than trying
+            // to make one last libusb call into an unstable teardown state.
+            //
+            // This is intentionally shutdown-only. Normal runtime close paths
+            // still release the interface and close the handle properly.
+            handle = nullptr;
+            shutterOpen = false;
             return;
         }
 
@@ -363,6 +382,7 @@ private:
 
     libusb_device_handle* handle = nullptr;
     std::atomic<bool> closed{false};
+    std::atomic<bool> abandonHandleOnClose{false};
     bool shutterOpen = false;
     std::mutex ioMutex;
     std::vector<std::uint8_t> bulkTransferBuffer;
@@ -505,6 +525,12 @@ HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextVal
 HeliosController::~HeliosController() {
     stop();
     close();
+}
+
+void HeliosController::prepareForShutdown() {
+    if (usbConnection) {
+        usbConnection->prepareForShutdown();
+    }
 }
 
 void HeliosController::close() {

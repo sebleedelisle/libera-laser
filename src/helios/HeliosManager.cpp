@@ -695,6 +695,12 @@ void HeliosManager::closeAll() {
         (void)name;
         if (!dev) continue;
         dev->stop();
+        // Shutdown-only escape hatch:
+        // the direct Helios USB path has shown libusb_close() crashes during
+        // app teardown on macOS. After the worker thread is joined there is no
+        // more live I/O in this process, so ask the controller to abandon its
+        // raw libusb handle instead of performing the final close call.
+        dev->prepareForShutdown();
         dev->close();
     }
 

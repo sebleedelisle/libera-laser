@@ -13,6 +13,7 @@
 #include "libusb.h"
 
 #include <optional>
+#include <unordered_set>
 
 namespace libera::lasercubeusb {
 namespace {
@@ -77,6 +78,61 @@ std::optional<std::string> readSerialNumber(libusb_device* controller) {
     return std::string(reinterpret_cast<char*>(buffer), static_cast<std::size_t>(length));
 }
 
+core::ControllerUsageState probeUsageState(libusb_device* controller, bool ownedByThisProcess) {
+    if (ownedByThisProcess) {
+        // Discovery should not mark a LaserCube USB DAC as externally busy when
+        // this same process already owns it.
+        return core::ControllerUsageState::Idle;
+    }
+
+    libusb_device_handle* handle = nullptr;
+    const int openRc = libusb_open(controller, &handle);
+    if (openRc == LIBUSB_ERROR_BUSY || openRc == LIBUSB_ERROR_ACCESS) {
+        return core::ControllerUsageState::BusyExclusive;
+    }
+    if (openRc != LIBUSB_SUCCESS || !handle) {
+        return core::ControllerUsageState::Unknown;
+    }
+
+    bool claimedInterface0 = false;
+    bool claimedInterface1 = false;
+    auto cleanup = [&] {
+        if (claimedInterface1) {
+            libusb_release_interface(handle, 1);
+        }
+        if (claimedInterface0) {
+            libusb_release_interface(handle, 0);
+        }
+        libusb_close(handle);
+    };
+
+    // Match the real LaserCube USB connect path closely enough to detect when
+    // another app has exclusive ownership, but release everything immediately so
+    // discovery itself remains non-owning.
+    const int claim0Rc = libusb_claim_interface(handle, 0);
+    if (claim0Rc != LIBUSB_SUCCESS) {
+        cleanup();
+        return core::ControllerUsageState::BusyExclusive;
+    }
+    claimedInterface0 = true;
+
+    const int claim1Rc = libusb_claim_interface(handle, 1);
+    if (claim1Rc != LIBUSB_SUCCESS) {
+        cleanup();
+        return core::ControllerUsageState::BusyExclusive;
+    }
+    claimedInterface1 = true;
+
+    const int altRc = libusb_set_interface_alt_setting(handle, 1, 1);
+    if (altRc != LIBUSB_SUCCESS) {
+        cleanup();
+        return core::ControllerUsageState::BusyExclusive;
+    }
+
+    cleanup();
+    return core::ControllerUsageState::Idle;
+}
+
 } // namespace
 
 LaserCubeUsbManager::LaserCubeUsbManager() {
@@ -94,6 +150,21 @@ std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeUsbManager::discover
         return results;
     }
 
+    std::unordered_set<std::string> connectedSerials;
+    {
+        std::lock_guard<std::mutex> lock(activeMutex);
+        core::pruneExpiredActiveControllers(activeControllers);
+        for (const auto& [serial, weakController] : activeControllers) {
+            const auto controller = weakController.lock();
+            if (!controller) {
+                continue;
+            }
+            if (controller->getStatus() != core::ControllerStatus::Error) {
+                connectedSerials.insert(serial);
+            }
+        }
+    }
+
     libusb_device** deviceList = nullptr;
     const ssize_t count = libusb_get_device_list(usbContext.get(), &deviceList);
     if (count < 0 || !deviceList) {
@@ -109,7 +180,10 @@ std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeUsbManager::discover
         }
         const std::string label = serial->empty() ? std::string("LaserCube USB")
                                                   : std::string("LaserCube USB ") + *serial;
-        results.emplace_back(std::make_unique<LaserCubeUsbControllerInfo>(*serial, label));
+        auto info = std::make_unique<LaserCubeUsbControllerInfo>(*serial, label);
+        info->setUsageState(
+            probeUsageState(controller, connectedSerials.find(*serial) != connectedSerials.end()));
+        results.emplace_back(std::move(info));
     }
 
     libusb_free_device_list(deviceList, 1);

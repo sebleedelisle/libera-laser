@@ -36,6 +36,10 @@ public:
                                                         std::string controllerPortPath);
     ~HeliosController() override;
 
+    // Prepare the direct USB path for app shutdown. This intentionally trades a
+    // tiny process-lifetime leak for avoiding libusb_close() crashes observed
+    // during teardown on macOS.
+    void prepareForShutdown();
     void close();
     bool isConnected() const;
     unsigned int controllerIndex() const { return index; }
