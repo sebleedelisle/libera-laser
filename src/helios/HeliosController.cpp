@@ -26,6 +26,7 @@ namespace {
 
 constexpr std::size_t MIN_FRAME_POINTS = 20;
 constexpr double TARGET_FRAME_DURATION_MS = 10.0;
+constexpr auto STATUS_ERROR_WARMUP_GRACE = std::chrono::milliseconds(250);
 
 constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
@@ -117,6 +118,46 @@ bool announceHeliosSdkVersion(libusb_device_handle* handle) {
     return false;
 }
 
+int queryHeliosUsbFirmwareVersion(libusb_device_handle* handle) {
+    if (handle == nullptr) {
+        return 0;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        const std::uint8_t request[2] = {0x04, 0};
+        int actualLength = 0;
+        const int sendRc = libusb_interrupt_transfer(handle,
+                                                     EP_INT_OUT,
+                                                     const_cast<unsigned char*>(request),
+                                                     2,
+                                                     &actualLength,
+                                                     32);
+        if (sendRc != LIBUSB_SUCCESS || actualLength != 2) {
+            continue;
+        }
+
+        for (int j = 0; j < 3; ++j) {
+            std::array<std::uint8_t, 32> response{};
+            const int receiveRc = libusb_interrupt_transfer(handle,
+                                                            EP_INT_IN,
+                                                            response.data(),
+                                                            static_cast<int>(response.size()),
+                                                            &actualLength,
+                                                            32);
+            if (receiveRc != LIBUSB_SUCCESS || actualLength < 5 || response[0] != 0x84) {
+                continue;
+            }
+
+            return (response[1] << 0) |
+                   (response[2] << 8) |
+                   (response[3] << 16) |
+                   (response[4] << 24);
+        }
+    }
+
+    return 0;
+}
+
 } // namespace
 
 namespace error_types = libera::core::error_types;
@@ -188,8 +229,13 @@ struct HeliosController::DirectUsbConnection {
         // This mirrors the vendor SDK's simple USB-ready poll:
         // send status request 0x03, then read one interrupt response packet.
         std::uint8_t request[2] = {0x03, 0};
-        if (sendControlLocked(request, 2, 16) != HELIOS_SUCCESS) {
-            return HELIOS_ERROR_DEVICE_SEND_CONTROL;
+        const int sendRc = sendControlLocked(request, 2, 16);
+        if (sendRc != HELIOS_SUCCESS) {
+            // Propagate the actual error (including HELIOS_ERROR_LIBUSB_BASE +
+            // LIBUSB_ERROR_TIMEOUT = -5007) so the run loop can correctly
+            // classify a send-phase timeout as usb::timeout rather than
+            // usb::statusError.
+            return sendRc;
         }
 
         std::array<std::uint8_t, 32> response{};
@@ -481,6 +527,11 @@ std::shared_ptr<HeliosController> HeliosController::connectUsb(
                                          5) == LIBUSB_SUCCESS) {
         }
 
+        // Match the vendor SDK constructor more closely here. The initial
+        // firmware query plus SDK version announce gives the device one full
+        // request/response roundtrip before the streaming thread starts polling
+        // status, which reduces spurious first-poll USB errors.
+        (void)queryHeliosUsbFirmwareVersion(handle);
         (void)announceHeliosSdkVersion(handle);
         directConnection = std::make_unique<DirectUsbConnection>(handle);
         break;
@@ -505,6 +556,7 @@ HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsig
     frameBuffer.reserve(defaultFramePoints);
     setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
     updateEstimatedBufferAnchorNow(0, getPointRate());
+    statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
 }
 
 HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextValue,
@@ -520,6 +572,7 @@ HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextVal
     frameBuffer.reserve(defaultFramePoints);
     setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
     updateEstimatedBufferAnchorNow(0, getPointRate());
+    statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
 }
 
 HeliosController::~HeliosController() {
@@ -603,11 +656,17 @@ void HeliosController::run() {
         setConnectionState(true);
         if (!wasConnected) {
             resetStartupBlank();
+            statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
         }
         wasConnected = true;
 
         const int status = sdk ? sdk->GetStatus(index) : usbConnection->getStatus();
         if (status < 0) {
+            if (std::chrono::steady_clock::now() < statusWarmupDeadline) {
+                consecutiveStatusErrors = 0;
+                std::this_thread::sleep_for(2ms);
+                continue;
+            }
             if (status == -5007) {
                 recordIntermittentError(error_types::usb::timeout);
                 std::this_thread::sleep_for(2ms);
@@ -626,6 +685,7 @@ void HeliosController::run() {
             std::this_thread::sleep_for(5ms);
             continue;
         }
+        statusWarmupDeadline = std::chrono::steady_clock::time_point{};
         consecutiveStatusErrors = 0;
 
         if (status == 0) {

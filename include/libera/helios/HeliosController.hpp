@@ -4,6 +4,7 @@
 #include "HeliosDac.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -75,6 +76,7 @@ private:
     // Simple counters used for log throttling and health diagnostics.
     std::size_t consecutiveStatusErrors = 0;
     std::size_t consecutiveWriteErrors = 0;
+    std::chrono::steady_clock::time_point statusWarmupDeadline{};
 };
 
 } // namespace libera::helios
