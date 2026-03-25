@@ -27,7 +27,11 @@ struct SharedState {
 };
 
 SharedState& sharedState() {
-    static SharedState state;
+    // Discovery can still be running very late in process shutdown if the
+    // owning app singleton is intentionally leaked. Keep AVB shared state
+    // alive until process exit instead of participating in static teardown
+    // order, which avoids use-after-destruction crashes on shutdown.
+    static SharedState& state = *new SharedState();
     return state;
 }
 
