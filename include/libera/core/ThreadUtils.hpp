@@ -26,9 +26,7 @@ inline bool timedJoin(std::thread& t,
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (!finished.load(std::memory_order_acquire)) {
         if (std::chrono::steady_clock::now() >= deadline) {
-            logWarning("[shutdown] thread did not exit within timeout",
-                       label.empty() ? std::string_view{"(unnamed)"} : label,
-                       "- detaching to prevent hang");
+            logInfo("[shutdown] thread did not exit within timeout ", (label.empty() ? std::string_view{"(unnamed)"} : label), " - detaching to prevent hang");
             t.detach();
             return false;
         }
