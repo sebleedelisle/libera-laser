@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include "LaserPoint.hpp"
+#include "libera/core/ThreadUtils.hpp"
 #include "libera/log/Log.hpp"
 
 namespace libera::core {
@@ -251,6 +252,7 @@ protected:
 
     std::thread worker;
     std::atomic<bool> running{false};
+    std::atomic<bool> workerFinished{false};
     
     std::atomic<std::uint32_t> pointRate{30000};
     std::atomic<bool> verbose{false};

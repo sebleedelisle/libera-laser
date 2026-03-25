@@ -7,6 +7,8 @@
 #include "libera/net/UdpSocket.hpp"
 #include "libera/net/NetService.hpp"
 
+#include "libera/core/ThreadUtils.hpp"
+
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -46,6 +48,7 @@ private:
     std::unique_ptr<net::UdpSocket> socket;
     std::thread listener;
     std::atomic<bool> running{false};
+    std::atomic<bool> listenerFinished{false};
 
     std::mutex controllersMutex;
     std::unordered_map<std::string, ControllerEntry> controllers;

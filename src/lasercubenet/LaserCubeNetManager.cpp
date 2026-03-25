@@ -17,8 +17,12 @@ LaserCubeNetManager::LaserCubeNetManager() {
         socket->bind_any(LaserCubeNetConfig::COMMAND_PORT);
     }
     running.store(true);
+    listenerFinished.store(false, std::memory_order_relaxed);
     // Dedicated discovery thread so controller scanning never blocks the caller.
-    listener = std::thread([this]{ discoveryThread(); });
+    listener = std::thread([this]{
+        discoveryThread();
+        listenerFinished.store(true, std::memory_order_release);
+    });
 }
 
 LaserCubeNetManager::~LaserCubeNetManager() {
@@ -30,9 +34,8 @@ void LaserCubeNetManager::closeAll() {
     if (socket) {
         socket->close();
     }
-    if (listener.joinable()) {
-        listener.join();
-    }
+    core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
+                    "LaserCubeNetManager::listener");
 
     std::unordered_map<std::string, std::shared_ptr<LaserCubeNetController>> snapshot;
     {

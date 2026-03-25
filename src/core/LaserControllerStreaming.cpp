@@ -167,19 +167,20 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
 
 void LaserControllerStreaming::start() {
     if (running) return; // Already running.
+    workerFinished.store(false, std::memory_order_relaxed);
     running = true;
     worker = std::thread([this] {
         elevateWorkerThreadPriority();
         this->run();
+        workerFinished.store(true, std::memory_order_release);
     });
 }
 
 void LaserControllerStreaming::stop() {
     logInfoVerbose("[LaserControllerStreaming] stop()");
     running = false;
-    if (worker.joinable()) {
-        worker.join();
-    }
+    timedJoin(worker, workerFinished, std::chrono::milliseconds(5000),
+              "LaserControllerStreaming::worker");
 }
 
 double LaserControllerStreaming::pointsToMillis(std::size_t pointCount) const {

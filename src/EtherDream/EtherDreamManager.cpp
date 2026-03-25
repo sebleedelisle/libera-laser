@@ -63,7 +63,11 @@ EtherDreamManager::EtherDreamManager() {
     }
 
     running.store(true);
-    listener = std::thread([this]{ threadedFunction(); });
+    listenerFinished.store(false, std::memory_order_relaxed);
+    listener = std::thread([this]{
+        threadedFunction();
+        listenerFinished.store(true, std::memory_order_release);
+    });
 }
 
 EtherDreamManager::~EtherDreamManager() {
@@ -120,9 +124,8 @@ void EtherDreamManager::closeAll() {
         socket->close();
         socket.reset();
     }
-    if (listener.joinable()) {
-        listener.join();
-    }
+    core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
+                    "EtherDreamManager::listener");
 
     std::unordered_map<std::string, std::shared_ptr<EtherDreamController>> snapshot;
     {
