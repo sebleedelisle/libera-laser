@@ -200,14 +200,32 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
 
     bool hasActive = false;
+    bool hasDisconnectedActive = false;
+    std::unordered_map<std::string, std::shared_ptr<IdnController>> activeSnapshot;
     {
         std::lock_guard lock(activeMutex);
-        hasActive = core::pruneExpiredActiveControllers(activeControllers);
+        for (auto it = activeControllers.begin(); it != activeControllers.end();) {
+            auto controller = it->second.lock();
+            if (!controller) {
+                it = activeControllers.erase(it);
+                continue;
+            }
+
+            hasActive = true;
+            if (!controller->isConnected()) {
+                hasDisconnectedActive = true;
+            }
+            activeSnapshot.emplace(it->first, std::move(controller));
+            ++it;
+        }
     }
 
-    // Re-scan only when there are no live controllers. This keeps stable SDK
-    // indices while an IDN controller object is in use.
-    const auto count = refreshControllerCount(!hasActive);
+    // Re-scan policy:
+    // keep SDK indices stable during steady-state playback, but allow a rescan
+    // once an active controller has already dropped. That gives the manager a
+    // chance to reopen IDN devices and remap the stable unit ID to whichever
+    // transient SDK index it came back on.
+    const auto count = refreshControllerCount(!hasActive || hasDisconnectedActive);
     if (!sdk || count == 0) {
         return results;
     }
@@ -281,6 +299,13 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
         }
         usedUnitIds.insert(unitId);
         stableUnitIdByIndex[index] = unitId;
+
+        const auto activeIt = activeSnapshot.find(unitId);
+        if (activeIt != activeSnapshot.end() && activeIt->second) {
+            if (activeIt->second->controllerIndex() != index) {
+                activeIt->second->updateControllerIndex(index);
+            }
+        }
 
         if (!networkInfo && label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
             networkInfo = core::ControllerInfo::NetworkInfo{

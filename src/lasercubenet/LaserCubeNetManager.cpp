@@ -82,11 +82,25 @@ void LaserCubeNetManager::discoveryThread() {
             if (auto status = LaserCubeNetStatus::parse(buffer.data(), received)) {
                 status->ipAddress = sender.address().to_string();
                 status->lastSeen = Clock::now();
+                std::shared_ptr<LaserCubeNetController> activeController;
                 bool isNew = false;
                 {
                     std::lock_guard lock(controllersMutex);
                     isNew = controllers.find(status->serialNumber) == controllers.end();
                     controllers[status->serialNumber] = ControllerEntry{*status, status->lastSeen};
+                }
+                {
+                    std::lock_guard lock(activeMutex);
+                    auto activeIt = active.find(status->serialNumber);
+                    if (activeIt != active.end()) {
+                        activeController = activeIt->second.lock();
+                        if (!activeController) {
+                            active.erase(activeIt);
+                        }
+                    }
+                }
+                if (activeController) {
+                    activeController->updateDiscoveredStatus(*status);
                 }
                 if (isNew) {
                     logInfo("[LaserCubeNetManager] discovery ok",
@@ -160,6 +174,10 @@ LaserCubeNetManager::connectController(const core::ControllerInfo& info) {
             lcInfo->idValue(),
             [lcInfo] { return std::make_shared<LaserCubeNetController>(*lcInfo); },
             &newlyCreated);
+    }
+
+    if (controller) {
+        controller->updateDiscoveredStatus(lcInfo->status());
     }
 
     if (controller && newlyCreated) {

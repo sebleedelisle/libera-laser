@@ -591,7 +591,7 @@ void HeliosController::close() {
     clearEstimatedBufferState();
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
     if (sdk) {
-        sdk->Stop(index);
+        sdk->Stop(index.load(std::memory_order_relaxed));
     }
     if (usbConnection) {
         // For direct USB, closing means releasing exactly one DAC's interface.
@@ -601,12 +601,35 @@ void HeliosController::close() {
 
 bool HeliosController::isConnected() const {
     if (sdk) {
-        return sdk->GetIsClosed(index) == 0;
+        return sdk->GetIsClosed(index.load(std::memory_order_relaxed)) == 0;
     }
     if (usbConnection) {
         return !usbConnection->isClosed();
     }
     return false;
+}
+
+void HeliosController::updateControllerIndex(unsigned int controllerIndex) {
+    if (!sdk) {
+        return;
+    }
+
+    const unsigned int previousIndex =
+        index.exchange(controllerIndex, std::memory_order_relaxed);
+    if (previousIndex == controllerIndex) {
+        return;
+    }
+
+    // IDN reconnect strategy:
+    // when the manager remaps a stable unit ID to a different transient SDK
+    // slot after a network rescan, flush short-term scheduling state so the
+    // stream ramps back in cleanly on the new slot.
+    consecutiveStatusErrors = 0;
+    consecutiveWriteErrors = 0;
+    estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
+    updateEstimatedBufferAnchorNow(0, getPointRate());
+    statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
+    resetStartupBlank();
 }
 
 void HeliosController::setPointRate(std::uint32_t pointRateValue) {
@@ -638,10 +661,12 @@ void HeliosController::run() {
     bool wasConnected = false;
 
     while (running) {
+        const unsigned int sdkIndex = index.load(std::memory_order_relaxed);
+
         // Support both backends behind one controller implementation:
         // - SDK/index path for legacy or non-USB cases
         // - direct libusb path for Helios USB
-        const bool backendConnected = sdk ? (sdk->GetIsClosed(index) == 0)
+        const bool backendConnected = sdk ? (sdk->GetIsClosed(sdkIndex) == 0)
                                           : (usbConnection && !usbConnection->isClosed());
         if (!backendConnected) {
             if (wasConnected) {
@@ -660,7 +685,7 @@ void HeliosController::run() {
         }
         wasConnected = true;
 
-        const int status = sdk ? sdk->GetStatus(index) : usbConnection->getStatus();
+        const int status = sdk ? sdk->GetStatus(sdkIndex) : usbConnection->getStatus();
         if (status < 0) {
             if (std::chrono::steady_clock::now() < statusWarmupDeadline) {
                 consecutiveStatusErrors = 0;
@@ -677,7 +702,7 @@ void HeliosController::run() {
             if (shouldLogErrorBurst(consecutiveStatusErrors)) {
                 logError("[HeliosController] status error",
                          sdk ? "index" : "path",
-                         sdk ? std::to_string(index) : usbPortPath,
+                         sdk ? std::to_string(sdkIndex) : usbPortPath,
                          "code", status,
                          "reason", describeHeliosError(status),
                          "consecutive", consecutiveStatusErrors);
@@ -736,7 +761,7 @@ void HeliosController::run() {
 
         const auto sendStart = std::chrono::steady_clock::now();
         const int result = sdk
-            ? sdk->WriteFrameExtended(index,
+            ? sdk->WriteFrameExtended(sdkIndex,
                                       pps,
                                       HELIOS_FLAGS,
                                       frameBuffer.data(),
@@ -757,7 +782,7 @@ void HeliosController::run() {
             if (shouldLogErrorBurst(consecutiveWriteErrors)) {
                 logError("[HeliosController] WriteFrameExtended failed",
                          sdk ? "index" : "path",
-                         sdk ? std::to_string(index) : usbPortPath,
+                         sdk ? std::to_string(sdkIndex) : usbPortPath,
                          "code", result,
                          "reason", describeHeliosError(result),
                          "consecutive", consecutiveWriteErrors,

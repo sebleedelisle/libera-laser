@@ -14,6 +14,7 @@ namespace libera::lasercubenet {
 namespace error_types = libera::core::error_types;
 
 constexpr auto ackDisconnectThreshold = std::chrono::milliseconds(500);
+constexpr auto reconnectRetryDelay = std::chrono::milliseconds(100);
 
 LaserCubeNetController::LaserCubeNetController() {
     // Reuse the shared IO context so sockets share the same network thread.
@@ -30,12 +31,39 @@ LaserCubeNetController::~LaserCubeNetController() {
     close();
 }
 
+void LaserCubeNetController::updateDiscoveredStatus(const LaserCubeNetStatus& status) {
+    {
+        std::lock_guard<std::mutex> lock(latestStatusMutex);
+        latestStatus = status;
+    }
+
+    maxPointRate.store(status.pointRateMax, std::memory_order_relaxed);
+    pointBufferCapacity.store(status.bufferMax, std::memory_order_relaxed);
+
+    const auto clampedRate =
+        LaserCubeNetConfig::clampPointRate(getPointRate(), status.pointRateMax);
+    LaserControllerStreaming::setPointRate(clampedRate);
+    pendingPointRate.store(clampedRate, std::memory_order_relaxed);
+    if (!running.load(std::memory_order_relaxed)) {
+        currentPointRate.store(clampedRate, std::memory_order_relaxed);
+    }
+
+    if (!networkConnected.load(std::memory_order_relaxed)) {
+        reconnectRequested.store(true, std::memory_order_relaxed);
+    }
+}
+
 libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControllerInfo& info) {
-    ipAddress = info.ipAddress();
-    maxPointRate.store(info.status().pointRateMax, std::memory_order_relaxed);
-    pointBufferCapacity.store(info.status().bufferMax, std::memory_order_relaxed);
+    updateDiscoveredStatus(info.status());
+    return connectToStatus(info.status());
+}
+
+libera::expected<void> LaserCubeNetController::connectToStatus(const LaserCubeNetStatus& status) {
+    ipAddress = status.ipAddress;
+    maxPointRate.store(status.pointRateMax, std::memory_order_relaxed);
+    pointBufferCapacity.store(status.bufferMax, std::memory_order_relaxed);
     const auto initialRate =
-        LaserCubeNetConfig::clampPointRate(getPointRate(), info.status().pointRateMax);
+        LaserCubeNetConfig::clampPointRate(getPointRate(), status.pointRateMax);
     LaserControllerStreaming::setPointRate(initialRate);
     currentPointRate.store(initialRate, std::memory_order_relaxed);
     pendingPointRate.store(initialRate, std::memory_order_relaxed);
@@ -52,6 +80,13 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
 
     if (!io) {
         io = net::shared_io_context();
+    }
+
+    if (dataSocket) {
+        dataSocket->close();
+    }
+    if (commandSocket) {
+        commandSocket->close();
     }
 
     // Data socket sends point packets; command socket handles control/status.
@@ -86,12 +121,35 @@ libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControl
     commandEndpoint = libera::net::asio::ip::udp::endpoint(address, LaserCubeNetConfig::COMMAND_PORT);
 
     networkConnected.store(true, std::memory_order_relaxed);
+    reconnectRequested.store(false, std::memory_order_relaxed);
     setConnectionState(true);
+    resetStartupBlank();
     return {};
+}
+
+bool LaserCubeNetController::reconnectToLatestStatus() {
+    std::optional<LaserCubeNetStatus> status;
+    {
+        std::lock_guard<std::mutex> lock(latestStatusMutex);
+        status = latestStatus;
+    }
+
+    if (!status) {
+        return false;
+    }
+
+    auto result = connectToStatus(*status);
+    if (!result) {
+        logError("[LaserCubeNetController] reconnect failed", result.error().message());
+        return false;
+    }
+
+    return true;
 }
 
 void LaserCubeNetController::close() {
     networkConnected.store(false, std::memory_order_relaxed);
+    reconnectRequested.store(false, std::memory_order_relaxed);
     setConnectionState(false);
     messageTimes.fill(std::chrono::steady_clock::time_point{});
     pendingAckCount = 0;
@@ -109,23 +167,28 @@ void LaserCubeNetController::run() {
     resetStartupBlank();
 
     while (running.load()) {
-        if (networkConnected.load(std::memory_order_relaxed)) {
-            setConnectionState(true);
-            // Push point-rate changes down to the controller when requested.
-            const auto targetPointRate = pendingPointRate.load(std::memory_order_relaxed);
-            const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
-            if (targetPointRate != activePointRate) {
-                if (sendPointRate(targetPointRate)) {
-                    currentPointRate.store(targetPointRate, std::memory_order_relaxed);
-                }
-            }
-
-            // Send at most one packet per loop; pacing is handled by buffer estimation.
-            (void)sendPoints();
-            checkAcks();
-        } else {
+        if (!networkConnected.load(std::memory_order_relaxed)) {
             setConnectionState(false);
+            if (reconnectRequested.exchange(false, std::memory_order_relaxed)) {
+                reconnectToLatestStatus();
+            }
+            std::this_thread::sleep_for(reconnectRetryDelay);
+            continue;
         }
+
+        setConnectionState(true);
+        // Push point-rate changes down to the controller when requested.
+        const auto targetPointRate = pendingPointRate.load(std::memory_order_relaxed);
+        const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
+        if (targetPointRate != activePointRate) {
+            if (sendPointRate(targetPointRate)) {
+                currentPointRate.store(targetPointRate, std::memory_order_relaxed);
+            }
+        }
+
+        // Send at most one packet per loop; pacing is handled by buffer estimation.
+        (void)sendPoints();
+        checkAcks();
 
         // Adaptive sleep: wait roughly as long as the buffer excess takes to drain.
         // This avoids a busy loop when the controller doesn't need more data yet.

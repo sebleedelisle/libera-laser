@@ -43,7 +43,8 @@ public:
     void prepareForShutdown();
     void close();
     bool isConnected() const;
-    unsigned int controllerIndex() const { return index; }
+    void updateControllerIndex(unsigned int controllerIndex);
+    unsigned int controllerIndex() const { return index.load(std::memory_order_relaxed); }
     const std::string& controllerPortPath() const { return usbPortPath; }
 
     void setPointRate(std::uint32_t pointRateValue) override;
@@ -66,7 +67,7 @@ private:
     std::shared_ptr<libusb_context> usbContext;
     std::string usbPortPath;
     std::unique_ptr<DirectUsbConnection> usbConnection;
-    unsigned int index = 0;
+    std::atomic<unsigned int> index{0};
     std::atomic<std::size_t> targetFramePoints{1000};
     std::atomic<bool> framePointCountExplicitlySet{false};
     std::atomic<std::uint64_t> currentPointIndex{0};

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <chrono>
@@ -26,12 +27,16 @@ public:
     libera::expected<void> connect(const LaserCubeNetControllerInfo& info);
     void close();
     std::optional<core::BufferState> getBufferState() const override;
+    void updateDiscoveredStatus(const LaserCubeNetStatus& status);
 
 protected:
     void run() override;
     void setPointRate(std::uint32_t pointRate) override;
 
 private:
+    libera::expected<void> connectToStatus(const LaserCubeNetStatus& status);
+    bool reconnectToLatestStatus();
+
     bool sendPoints();
     bool sendPointRate(std::uint32_t rate);
     bool sendData(const std::uint8_t* buffer, std::size_t size);
@@ -53,9 +58,13 @@ private:
     std::atomic<std::uint32_t> pendingPointRate{30000};
     std::atomic<std::uint32_t> maxPointRate{60000};
     std::atomic<bool> networkConnected{false};
+    std::atomic<bool> reconnectRequested{false};
 
     std::uint8_t messageNumber{0};
     std::uint8_t frameNumber{0};
+
+    mutable std::mutex latestStatusMutex;
+    std::optional<LaserCubeNetStatus> latestStatus;
 
     // Fixed-size array indexed by messageNumber (uint8_t wraps at 256).
     // A default-constructed time_point (epoch) means "slot empty".
