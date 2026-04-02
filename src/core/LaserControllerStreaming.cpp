@@ -103,7 +103,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         logError("[LaserControllerStreaming::requestPoints] - removing additional points"); 
         pointsToSend.resize(request.maximumPointsRequired); 
 
-    } else if(pointsToSend.size()<request.minimumPointsRequired) { 
+    } else if(pointsToSend.size()<request.minimumPointsRequired) {
         // fill up the buffer with blanks
         const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();
         const LaserPoint blankPoint{};

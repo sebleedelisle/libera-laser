@@ -724,8 +724,15 @@ void HeliosController::run() {
         setEstimatedBufferCapacity(static_cast<int>(framePoints));
         updateEstimatedBufferAnchorNow(0, pps);
 
+        // The Helios is single-buffered: it plays each frame once then idles
+        // while the host polls status and transfers the next batch over USB.
+        // If we allow short "runt" batches (e.g. 100 points instead of 300),
+        // the DAC dwells on the last point during that idle time, creating a
+        // visible bright spot.  Setting min == max ensures fillFromFrameQueue
+        // always wraps the frame to produce a full batch, keeping the
+        // inter-frame dead time consistent and as infrequent as possible.
         core::PointFillRequest req;
-        req.minimumPointsRequired = detail::minimumRequestPoints(framePoints);
+        req.minimumPointsRequired = framePoints;
         req.maximumPointsRequired = framePoints;
         const auto writeLead = detail::requestRenderLead(
             std::chrono::microseconds(

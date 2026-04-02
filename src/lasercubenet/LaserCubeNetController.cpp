@@ -124,6 +124,7 @@ libera::expected<void> LaserCubeNetController::connectToStatus(const LaserCubeNe
     reconnectRequested.store(false, std::memory_order_relaxed);
     setConnectionState(true);
     resetStartupBlank();
+    setVerbose(false);
     return {};
 }
 
@@ -204,6 +205,12 @@ void LaserCubeNetController::run() {
                     pointsToMillis(static_cast<std::size_t>(excess), activePointRate)));
                 msToWait = std::clamp(msToWait, 1, 10);
             }
+            if (msToWait > 2) {
+                logInfoVerbose("[LaserCubeNet] sleep", msToWait, "ms",
+                               "excess", excess,
+                               "buf", bufferFullness,
+                               "target", targetFull);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(msToWait));
         }
     }
@@ -274,6 +281,12 @@ bool LaserCubeNetController::sendPoints() {
         std::chrono::duration<double, std::milli>(
             pointsToMillis(static_cast<std::size_t>(minEstimatedBufferFullness), activePointRate)));
     request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now() + renderLead;
+
+    logInfoVerbose("[LaserCubeNet] sendPoints",
+                   "estBuf", minEstimatedBufferFullness,
+                   "target", targetBufferPoints,
+                   "toAdd", maxPointsToAdd,
+                   "renderLeadMs", std::chrono::duration<double, std::milli>(renderLead).count());
 
     if (!requestPoints(request)) {
         return false;
@@ -441,13 +454,21 @@ void LaserCubeNetController::checkAcks() {
 
         const std::uint16_t bufferSpace = core::bytes::readLe16(&buffer[2]);
         const int bufferFullness = getTotalBufferCapacity() - static_cast<int>(bufferSpace);
+        logInfoVerbose("[LaserCubeNet] ack",
+                       "buf", bufferFullness,
+                       "space", bufferSpace,
+                       "rttMs", std::chrono::duration<double, std::milli>(now - sentTime).count());
         lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
         lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
 
-        if (sentTime >= lastDataSentTime) {
-            lastDataSentTime = sentTime;
-            lastDataSentBufferSize = bufferFullness;
-        }
+        // Always reset the sent-data anchor to ack ground truth.
+        // The previous guard (sentTime >= lastDataSentTime) was never
+        // satisfied because sendPoints() updates lastDataSentTime to now
+        // on every packet, so the ack's sentTime was always older.  This
+        // caused the sent-based buffer estimate to self-reinforce and
+        // drift above the real hardware buffer level.
+        lastDataSentTime = now;
+        lastDataSentBufferSize = bufferFullness;
 
         if (bufferSpace == 0) {
             logInfo("[LaserCubeNetController] BUFFER OVERRUN ------------------");

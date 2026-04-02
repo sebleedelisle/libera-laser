@@ -1,6 +1,8 @@
 #include "libera/core/LaserController.hpp"
+#include "libera/log/Log.hpp"
 #include <cassert>
 #include <atomic>
+#include <cmath>
 
 namespace libera::core {
 namespace {
@@ -119,6 +121,13 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
     const std::size_t minPoints = request.minimumPointsRequired;
     const std::size_t maxPoints = request.maximumPointsRequired;
 
+    // Drain any leftover transition points from a previous fill call.
+    drainPendingTransition(outputBuffer, maxPoints);
+    if (outputBuffer.size() == maxPoints) {
+        publishQueueMetrics();
+        return;
+    }
+
     auto estimatedFirstRenderTime = request.estimatedFirstPointRenderTime;
     if (estimatedFirstRenderTime == std::chrono::steady_clock::time_point{}) {
         estimatedFirstRenderTime = std::chrono::steady_clock::now();
@@ -130,23 +139,41 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
     };
 
     if (frameQueue.empty()) {
+        logInfoVerbose("[LaserController] fillFromFrameQueue: queue empty, blanking", minPoints, "pts");
         publishQueueMetrics();
         appendBlankPoints(outputBuffer, minPoints);
         return;
     }
 
     // Skip stale frames: only skip if playback of the current frame hasn't started.
-    while (frameQueue.size() > 1) {
-        if (frameQueue.front()->nextPoint != 0) {
-            break;
+    {
+        std::size_t skipped = 0;
+        while (frameQueue.size() > 1) {
+            if (frameQueue.front()->nextPoint != 0) {
+                break;
+            }
+            if (!frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
+                break;
+            }
+            frameQueue.pop_front();
+            ++skipped;
         }
-        if (!frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
-            break;
+        if (skipped > 0) {
+            logInfoVerbose("[LaserController] fillFromFrameQueue: skipped", skipped, "stale frames");
         }
-        frameQueue.pop_front();
     }
 
     if (!frameIsDueAt(*frameQueue.front(), estimatedFirstRenderTime)) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto frameDueIn = std::chrono::duration<double, std::milli>(
+            frameQueue.front()->time - estimatedFirstRenderTime).count();
+        const auto renderLeadMs = std::chrono::duration<double, std::milli>(
+            estimatedFirstRenderTime - now).count();
+        logInfoVerbose("[LaserController] fillFromFrameQueue: frame not due, blanking",
+                       minPoints, "pts",
+                       "frameDueInMs", frameDueIn,
+                       "renderLeadMs", renderLeadMs,
+                       "queueSize", frameQueue.size());
         publishQueueMetrics();
         appendBlankPoints(outputBuffer, minPoints);
         return;
@@ -180,6 +207,8 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
 
         // Below minPoints and current frame is exhausted. Promote next frame if due,
         // otherwise repeat the current frame (hold-last-frame behaviour).
+        const LaserPoint& lastPoint = currentFrame->points.back();
+
         if (frameQueue.size() > 1 &&
             frameIsDueAt(*frameQueue[1], renderTimeForBufferedPoints(outputBuffer.size()))) {
             frameQueue.pop_front();
@@ -187,6 +216,23 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
         } else {
             currentFrame->nextPoint = 0;
             currentFrame->playCount++;
+        }
+
+        // Insert transition blanking if the jump between the end of the
+        // previous frame and the start of the next content is large enough.
+        Frame* nextFrame = frameQueue.front().get();
+        const LaserPoint& firstPoint = nextFrame->points[nextFrame->nextPoint];
+        const float dx = firstPoint.x - lastPoint.x;
+        const float dy = firstPoint.y - lastPoint.y;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+
+        if (distance > BLANK_TRANSITION_DISTANCE_THRESHOLD) {
+            generateTransitionPoints(lastPoint, firstPoint, pendingTransitionPoints);
+            drainPendingTransition(outputBuffer, maxPoints);
+            if (outputBuffer.size() == maxPoints) {
+                publishQueueMetrics();
+                return;
+            }
         }
     }
 }
@@ -238,5 +284,55 @@ std::size_t LaserController::queuedPointBudget() const {
 }
 
 
+
+void LaserController::generateTransitionPoints(const LaserPoint& from, const LaserPoint& to,
+                                                std::vector<LaserPoint>& out) {
+    const float dx = to.x - from.x;
+    const float dy = to.y - from.y;
+    const float distance = std::sqrt(dx * dx + dy * dy);
+    const auto count = std::max(MIN_BLANK_POINTS_PER_END,
+        static_cast<std::size_t>(distance * BLANK_POINTS_PER_UNIT_DISTANCE));
+
+    out.clear();
+    out.reserve(count * 2);
+
+    // Dwell at the old position with laser off.
+    LaserPoint blankFrom = from;
+    blankFrom.r = 0.0f;
+    blankFrom.g = 0.0f;
+    blankFrom.b = 0.0f;
+    blankFrom.i = 0.0f;
+    for (std::size_t i = 0; i < count; ++i) {
+        out.push_back(blankFrom);
+    }
+
+    // Dwell at the new position with laser off.
+    LaserPoint blankTo = to;
+    blankTo.r = 0.0f;
+    blankTo.g = 0.0f;
+    blankTo.b = 0.0f;
+    blankTo.i = 0.0f;
+    for (std::size_t i = 0; i < count; ++i) {
+        out.push_back(blankTo);
+    }
+}
+
+void LaserController::drainPendingTransition(std::vector<LaserPoint>& outputBuffer,
+                                              std::size_t maxPoints) {
+    if (pendingTransitionPoints.empty()) {
+        return;
+    }
+
+    const std::size_t spaceLeft = maxPoints - outputBuffer.size();
+    const std::size_t toDrain = std::min(spaceLeft, pendingTransitionPoints.size());
+
+    outputBuffer.insert(outputBuffer.end(),
+        pendingTransitionPoints.begin(),
+        pendingTransitionPoints.begin() + static_cast<std::ptrdiff_t>(toDrain));
+
+    pendingTransitionPoints.erase(
+        pendingTransitionPoints.begin(),
+        pendingTransitionPoints.begin() + static_cast<std::ptrdiff_t>(toDrain));
+}
 
 } // namespace libera::core
