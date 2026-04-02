@@ -113,6 +113,9 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
 
 
     // Apply startup blanking (first N points forced to black).
+    // X/Y pass through so galvos can travel to content position while dark.
+    // The delay line was cleared in resetStartupBlank() so it fills with
+    // blank-RGB points, providing additional natural blanking during transition.
     int blankPointsRemaining = startupBlankPointsRemaining.load(std::memory_order_relaxed);
     if (blankPointsRemaining > 0) {
         for (auto &point : pointsToSend) {
@@ -127,13 +130,30 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         startupBlankPointsRemaining.store(blankPointsRemaining, std::memory_order_relaxed);
     }
 
-    if(!armed.load(std::memory_order_relaxed) ) { 
+    if(!armed.load(std::memory_order_relaxed)) {
+        // Shutdown blanking: hold at last content position (dark) long enough
+        // to flush the scanner sync colour delay line, then move to centre.
+        int shutdownRemaining = shutdownBlankPointsRemaining.load(std::memory_order_relaxed);
         for (auto &point : pointsToSend) {
             point.r = 0.0f;
             point.g = 0.0f;
             point.b = 0.0f;
-            point.x = 0; 
-            point.y = 0; 
+            if (shutdownRemaining > 0) {
+                point.x = lastContentX;
+                point.y = lastContentY;
+                --shutdownRemaining;
+            } else {
+                point.x = 0.0f;
+                point.y = 0.0f;
+            }
+        }
+        shutdownBlankPointsRemaining.store(std::max(shutdownRemaining, 0), std::memory_order_relaxed);
+    } else {
+        // Track last content position for use during shutdown blanking.
+        if (!pointsToSend.empty()) {
+            const auto& lastPoint = pointsToSend.back();
+            lastContentX = lastPoint.x;
+            lastContentY = lastPoint.y;
         }
     } 
 
@@ -219,10 +239,13 @@ bool LaserControllerStreaming::isArmed() const noexcept {
     return armed.load(std::memory_order_relaxed);
 }
 
-void LaserControllerStreaming::setArmed(bool state) { 
+void LaserControllerStreaming::setArmed(bool state) {
     const bool wasArmed = armed.exchange(state, std::memory_order_relaxed);
     if (state && !wasArmed) {
         resetStartupBlank();
+    }
+    if (!state && wasArmed) {
+        resetShutdownBlank();
     }
 } 
 
@@ -476,6 +499,18 @@ void LaserControllerStreaming::incrementErrorCount(std::string_view errorType) {
 void LaserControllerStreaming::resetStartupBlank() {
     const int blankPoints = millisToPoints(1.0f);
     startupBlankPointsRemaining.store(blankPoints, std::memory_order_relaxed);
+    scannerSyncColourDelayLine.clear();
+}
+
+void LaserControllerStreaming::resetShutdownBlank() {
+    // Hold at last content position (dark) long enough to flush the scanner
+    // sync colour delay line plus 1 ms dwell, so no stale colours leak through
+    // as galvos travel back to centre.
+    const double syncTenThousandths =
+        std::max(scannerSyncTime.load(std::memory_order_relaxed), 0.0);
+    const int syncPoints = static_cast<int>(millisToPoints(syncTenThousandths * 0.1));
+    const int dwellPoints = millisToPoints(1.0);
+    shutdownBlankPointsRemaining.store(syncPoints + dwellPoints, std::memory_order_relaxed);
     scannerSyncColourDelayLine.clear();
 }
 

@@ -173,6 +173,9 @@ public:
     /// Reset the startup blanking window to 1 ms worth of points.
     void resetStartupBlank();
 
+    /// Reset the shutdown blanking window (blank-in-place before returning to centre).
+    void resetShutdownBlank();
+
 protected:
     /// Worker loop implemented by subclasses.
     virtual void run() = 0;
@@ -266,6 +269,9 @@ protected:
     std::atomic<double> scannerSyncTime{2.0}; // in 1/10,000 of a second
     std::deque<LaserPoint> scannerSyncColourDelayLine;
     std::atomic<int> startupBlankPointsRemaining{0};
+    std::atomic<int> shutdownBlankPointsRemaining{0};
+    float lastContentX{0.0f};
+    float lastContentY{0.0f};
 
 private:
     using SteadyRep = std::chrono::steady_clock::duration::rep;
