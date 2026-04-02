@@ -30,6 +30,13 @@ foreach(test_source IN LISTS LIBERA_UNIT_TESTS)
   libera_apply_sanitizers(${test_name})
   add_test(NAME ${test_name} COMMAND ${test_name})
   set_tests_properties(${test_name} PROPERTIES LABELS "unit")
+  if (WIN32 AND LIBERA_BUNDLED_LIBUSB_DLL_DIR_RELEASE)
+    add_custom_command(TARGET ${test_name} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<IF:$<CONFIG:Debug>,${LIBERA_BUNDLED_LIBUSB_DLL_DIR_DEBUG},${LIBERA_BUNDLED_LIBUSB_DLL_DIR_RELEASE}>/libusb-1.0.dll"
+        $<TARGET_FILE_DIR:${test_name}>
+    )
+  endif()
 endforeach()
 
 if (LIBERA_BUILD_INTEGRATION_TESTS)
