@@ -17,3 +17,5 @@ add_executable(simple-frame-avb-demo ${CMAKE_CURRENT_SOURCE_DIR}/simple_frame_av
 target_link_libraries(simple-frame-avb-demo PRIVATE libera-core)
 libera_apply_warnings(simple-frame-avb-demo)
 libera_apply_sanitizers(simple-frame-avb-demo)
+
+add_subdirectory(laser_tool)

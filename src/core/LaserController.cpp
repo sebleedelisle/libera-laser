@@ -207,7 +207,8 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
 
         // Below minPoints and current frame is exhausted. Promote next frame if due,
         // otherwise repeat the current frame (hold-last-frame behaviour).
-        const LaserPoint& lastPoint = currentFrame->points.back();
+        // Copy by value — pop_front() below may destroy the frame this came from.
+        const LaserPoint lastPoint = currentFrame->points.back();
 
         if (frameQueue.size() > 1 &&
             frameIsDueAt(*frameQueue[1], renderTimeForBufferedPoints(outputBuffer.size()))) {

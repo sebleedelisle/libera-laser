@@ -3,6 +3,7 @@
 .vscode/
 
 build/
+build-mac/
 build-debug/
 CMakeUserPresets.json
 build-asan/

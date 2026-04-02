@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <deque>
 #include <mutex>
 #include <vector>
@@ -68,6 +69,17 @@ private:
     void appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count);
     void updateFrameQueueMetricsUnsafe();
     std::size_t queuedPointBudget() const;
+
+    // Automatic blanking for frame transitions / wraps.
+    static constexpr float BLANK_TRANSITION_DISTANCE_THRESHOLD = 0.2f;
+    static constexpr float BLANK_POINTS_PER_UNIT_DISTANCE = 20.0f;
+    static constexpr std::size_t MIN_BLANK_POINTS_PER_END = 2;
+    std::vector<LaserPoint> pendingTransitionPoints;
+
+    void generateTransitionPoints(const LaserPoint& from, const LaserPoint& to,
+                                  std::vector<LaserPoint>& out);
+    void drainPendingTransition(std::vector<LaserPoint>& outputBuffer,
+                                std::size_t maxPoints);
 };
 
 } // namespace libera::core
