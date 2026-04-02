@@ -102,7 +102,7 @@ target_compile_definitions(helios-sdk PRIVATE HELIOS_ENABLE_IDN_DISCOVERY=1)
 if (MSVC)
   target_compile_options(helios-sdk PRIVATE /W0)
 else()
-  target_compile_options(helios-sdk PRIVATE -w -fpermissive)
+  target_compile_options(helios-sdk PRIVATE -w)
 endif()
 target_sources(libera-core PRIVATE $<TARGET_OBJECTS:helios-sdk>)
 
