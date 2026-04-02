@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # ── Tier 1: build + unit tests on all platforms ──────────────────────
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            install: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build
+          - os: macos-latest
+            install: brew install libusb ninja
+          - os: windows-latest
+            install: choco install ninja -y
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: ${{ matrix.install }}
+        shell: bash
+
+      - name: Configure
+        run: >
+          cmake --preset debug
+          -DLIBERA_BUILD_EXAMPLES=ON
+          ${{ runner.os == 'Windows' && '-DLIBERA_USE_BUNDLED_LIBUSB=ON' || '' }}
+        shell: bash
+
+      - name: Build
+        run: cmake --build --preset debug
+
+      - name: Test
+        run: ctest --preset debug --output-on-failure
+
+  # ── Tier 2: sanitizers on Linux (PR only) ────────────────────────────
+  sanitizers:
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [asan, tsan]
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure
