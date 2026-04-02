@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            install: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build
+            install: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build libwayland-dev wayland-protocols libxkbcommon-dev
           - os: macos-latest
             install: brew install libusb ninja
           - os: windows-latest
@@ -56,7 +56,7 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build libwayland-dev wayland-protocols libxkbcommon-dev
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
