@@ -144,26 +144,51 @@ void testPromotesFrameWhenItBecomesDueMidBatch() {
     controller.setArmed(true);
     controller.startFrameMode();
 
-    const auto startTime = std::chrono::steady_clock::now();
-    Frame frame1 = makeFrame(10.0f, 10);
-    frame1.time = startTime;
-    Frame frame2 = makeFrame(100.0f, 10);
-    frame2.time = startTime + std::chrono::milliseconds(10);
+    // Use spatially compact frames (all at the origin) to avoid transition
+    // blanking interfering with the scheduling test. Distinguish frames by
+    // the r channel: frame1 has r=0.1, frame2 has r=0.9.
+    auto makeCompactFrame = [](float rValue, std::size_t count) {
+        Frame f;
+        f.points.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            LaserPoint p{};
+            p.r = rValue;
+            f.points.push_back(p);
+        }
+        return f;
+    };
 
+    const auto startTime = std::chrono::steady_clock::now();
+    Frame frame1 = makeCompactFrame(0.1f, 10);
+    frame1.time = startTime;
     ASSERT_TRUE(controller.sendFrame(std::move(frame1)), "first timed frame queued");
+
+    // Start frame1 playing (consume 1 point) so it won't be treated as stale
+    // when frame2 is queued alongside it.
+    PointFillRequest drain{};
+    drain.minimumPointsRequired = 1;
+    drain.maximumPointsRequired = 1;
+    drain.estimatedFirstPointRenderTime = startTime;
+    ASSERT_TRUE(controller.requestPoints(drain), "drain start point");
+
+    Frame frame2 = makeCompactFrame(0.9f, 10);
+    frame2.time = startTime + std::chrono::milliseconds(1);
     ASSERT_TRUE(controller.sendFrame(std::move(frame2)), "second timed frame queued");
 
     PointFillRequest request{};
-    request.minimumPointsRequired = 15;
-    request.maximumPointsRequired = 15;
+    request.minimumPointsRequired = 14;
+    request.maximumPointsRequired = 14;
     request.estimatedFirstPointRenderTime = startTime;
 
     ASSERT_TRUE(controller.requestPoints(request), "mid-batch transition request succeeds");
     const auto batch = controller.lastBatch();
-    ASSERT_EQ(batch.size(), static_cast<std::size_t>(15), "batch size");
-    ASSERT_EQ(batch[0].x, 10.0f, "batch starts with first frame");
-    ASSERT_EQ(batch[9].x, 19.0f, "first frame ends before transition");
-    ASSERT_EQ(batch[10].x, 100.0f, "second frame starts as soon as it becomes due");
+    ASSERT_EQ(batch.size(), static_cast<std::size_t>(14), "batch size");
+    // First 9 points come from frame1 (r=0.1), then frame2 is promoted.
+    // Note: startup blank zeroes r on the first requestPoints call, but
+    // the second call is past the startup window.
+    ASSERT_EQ(batch[0].r, 0.1f, "batch continues first frame");
+    ASSERT_EQ(batch[8].r, 0.1f, "frame1 tail");
+    ASSERT_EQ(batch[9].r, 0.9f, "second frame starts as soon as it becomes due");
 }
 
 void testFutureFrameOnlyRequestsMinimumBlankLead() {
