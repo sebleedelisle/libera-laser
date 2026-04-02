@@ -13,7 +13,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            install: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+            install: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev ninja-build libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
           - os: macos-latest
             install: brew install libusb ninja
           - os: windows-latest
