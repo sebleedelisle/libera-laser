@@ -64,6 +64,9 @@ function(libera_configure_libusb)
 
     if (APPLE)
       set(CMAKE_BUILD_RPATH "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/macOS")
+    elseif (WIN32)
+      set(LIBERA_BUNDLED_LIBUSB_DLL_DIR_DEBUG   "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Windows/x64/Debug/dll"   CACHE INTERNAL "")
+      set(LIBERA_BUNDLED_LIBUSB_DLL_DIR_RELEASE "${LIBERA_BUNDLED_LIBUSB_DIR}/libusb_bin/Windows/x64/Release/dll" CACHE INTERNAL "")
     endif()
   endif()
 
