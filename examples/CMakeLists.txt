@@ -18,4 +18,11 @@ target_link_libraries(simple-frame-avb-demo PRIVATE libera-core)
 libera_apply_warnings(simple-frame-avb-demo)
 libera_apply_sanitizers(simple-frame-avb-demo)
 
+# Example plugin — built as a shared library to demonstrate the plugin API.
+add_library(example-plugin SHARED ${CMAKE_CURRENT_SOURCE_DIR}/example_plugin.cpp)
+target_include_directories(example-plugin PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>)
+set_target_properties(example-plugin PROPERTIES PREFIX "" OUTPUT_NAME "example-plugin")
+libera_apply_warnings(example-plugin)
+
 add_subdirectory(laser_tool)
