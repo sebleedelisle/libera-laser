@@ -108,6 +108,11 @@ target_sources(libera-core PRIVATE $<TARGET_OBJECTS:helios-sdk>)
 
 target_link_libraries(libera-core PUBLIC libusb::libusb)
 
+# Plugin system needs dlopen/dlsym on POSIX.
+if (NOT WIN32)
+    target_link_libraries(libera-core PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 # Windows needs Winsock2 for TCP and UDP symbols. Linux and macOS do not.
 # _WIN32_WINNT=0x0A00 targets Windows 10+, suppressing ASIO's version warnings
 # and enabling modern socket APIs.

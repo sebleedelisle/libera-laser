@@ -85,6 +85,13 @@ public:
     System();
     ~System();
 
+    /// Set the directory to scan for plugin shared libraries.
+    /// Call before constructing System.  If never called, defaults to
+    /// the LIBERA_PLUGIN_DIR environment variable, or "plugins" if unset.
+    /// Pass an empty string to disable plugin loading entirely.
+    static void setPluginDirectory(const std::string& path);
+    static const std::string& pluginDirectory();
+
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info);
     void shutdown();
