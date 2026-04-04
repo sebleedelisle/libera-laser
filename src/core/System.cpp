@@ -1,4 +1,7 @@
 #include "libera/System.hpp"
+#include "libera/plugin/PluginManager.hpp"
+
+#include <cstdlib>
 
 namespace libera::core {
 
@@ -19,7 +22,32 @@ void AddControllerManager(ControllerManagerFactory factory) {
 
 namespace libera {
 
+namespace {
+
+std::string& pluginDirStorage() {
+    static std::string dir = [] {
+        const char* env = std::getenv("LIBERA_PLUGIN_DIR");
+        return env ? std::string(env) : std::string("plugins");
+    }();
+    return dir;
+}
+
+} // anonymous namespace
+
+void System::setPluginDirectory(const std::string& path) {
+    pluginDirStorage() = path;
+}
+
+const std::string& System::pluginDirectory() {
+    return pluginDirStorage();
+}
+
 System::System() {
+    const auto& dir = pluginDirectory();
+    if (!dir.empty()) {
+        plugin::loadPluginsFromDirectory(dir);
+    }
+
     for (const auto& factory : core::getControllerManagerFactories()) {
         if (!factory) continue;
         auto manager = factory();
