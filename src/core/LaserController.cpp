@@ -145,11 +145,15 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
         return;
     }
 
-    // Skip stale frames: only skip if playback of the current frame hasn't started.
+    // Skip stale frames: only drop a front frame that has NEVER been played.
+    // `nextPoint == 0` alone is not enough — a frame that is being held-and-
+    // repeated (hold-last-frame behaviour) is also at nextPoint=0 between
+    // iterations, and we must not discard it.  `playCount == 0` is the
+    // unique marker for "queued but never touched".
     {
         std::size_t skipped = 0;
         while (frameQueue.size() > 1) {
-            if (frameQueue.front()->nextPoint != 0) {
+            if (frameQueue.front()->playCount != 0) {
                 break;
             }
             if (!frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
@@ -163,17 +167,23 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
         }
     }
 
-    if (!frameIsDueAt(*frameQueue.front(), estimatedFirstRenderTime)) {
+    // The scheduled `time` is the release target for a frame's FIRST play.
+    // Once a frame has been played at least once (playCount > 0) it is being
+    // held/repeated, so its original time is historical and we should keep
+    // feeding from it rather than blanking.
+    if (frameQueue.front()->playCount == 0 &&
+        !frameIsDueAt(*frameQueue.front(), estimatedFirstRenderTime)) {
         const auto now = std::chrono::steady_clock::now();
         const auto frameDueIn = std::chrono::duration<double, std::milli>(
             frameQueue.front()->time - estimatedFirstRenderTime).count();
         const auto renderLeadMs = std::chrono::duration<double, std::milli>(
             estimatedFirstRenderTime - now).count();
-        logInfoVerbose("[LaserController] fillFromFrameQueue: frame not due, blanking",
-                       minPoints, "pts",
-                       "frameDueInMs", frameDueIn,
-                       "renderLeadMs", renderLeadMs,
-                       "queueSize", frameQueue.size());
+        libera::log::logInfo("[LaserController] fillFromFrameQueue: frame not due, blanking ",
+                       minPoints, " pts frameDueInMs ", frameDueIn,
+                       " renderLeadMs ", renderLeadMs,
+                       " queueSize ", frameQueue.size(),
+                       " playCount ", frameQueue.front()->playCount,
+                       " nextPoint ", frameQueue.front()->nextPoint);
         publishQueueMetrics();
         appendBlankPoints(outputBuffer, minPoints);
         return;

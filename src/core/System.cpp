@@ -3,6 +3,16 @@
 #if LIBERA_ENABLE_PLUGINS
 #include "libera/plugin/PluginManager.hpp"
 #include <cstdlib>
+#include <filesystem>
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #endif
 
 namespace libera::core {
@@ -27,6 +37,51 @@ namespace libera {
 #if LIBERA_ENABLE_PLUGINS
 
 namespace {
+
+std::filesystem::path executableDirectory() {
+    namespace fs = std::filesystem;
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+    std::error_code ec;
+    auto canonical = fs::weakly_canonical(fs::path(buf), ec);
+    return canonical.parent_path();
+#elif defined(_WIN32)
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return fs::path(buf).parent_path();
+#else
+    std::error_code ec;
+    auto exe = fs::read_symlink("/proc/self/exe", ec);
+    if (ec) return {};
+    return exe.parent_path();
+#endif
+}
+
+std::string resolvePluginDirectory(const std::string& requested) {
+    namespace fs = std::filesystem;
+    if (requested.empty()) return requested;
+
+    fs::path p(requested);
+    std::error_code ec;
+
+    // Absolute paths are used as-is.
+    if (p.is_absolute()) return requested;
+
+    // Try the executable's directory first — gives a self-contained bundle
+    // that works regardless of the caller's current working directory.
+    auto exeRelative = executableDirectory() / p;
+    if (fs::is_directory(exeRelative, ec)) {
+        return exeRelative.string();
+    }
+
+    // Fall back to the original (cwd-relative) path so users can still
+    // override by launching from a directory that contains `plugins/`.
+    return requested;
+}
 
 std::string& pluginDirStorage() {
     static std::string dir = [] {
@@ -61,7 +116,7 @@ System::System() {
 #if LIBERA_ENABLE_PLUGINS
     const auto& dir = pluginDirectory();
     if (!dir.empty()) {
-        plugin::loadPluginsFromDirectory(dir);
+        plugin::loadPluginsFromDirectory(resolvePluginDirectory(dir));
     }
 #endif
 
