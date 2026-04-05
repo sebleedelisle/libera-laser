@@ -12,9 +12,9 @@ struct BufferEstimate {
 
 class BufferEstimator {
 public:
-    static BufferEstimate estimateFromAnchor(
-        int anchorBufferFullness,
-        std::chrono::steady_clock::time_point anchorTime,
+    static BufferEstimate estimateFromSnapshot(
+        int snapshotBufferFullness,
+        std::chrono::steady_clock::time_point snapshotTime,
         std::uint32_t pointRate,
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 

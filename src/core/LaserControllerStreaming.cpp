@@ -264,27 +264,27 @@ std::optional<BufferState> LaserControllerStreaming::getBufferState() const {
         return std::nullopt;
     }
 
-    if (!estimatedBufferAnchorValid.load(std::memory_order_relaxed)) {
+    if (!estimatedBufferSnapshotValid.load(std::memory_order_relaxed)) {
         return buildBufferState(totalBufferPoints, 0);
     }
 
-    const int anchorBufferFullness =
-        estimatedBufferAnchorFullness.load(std::memory_order_relaxed);
-    auto anchorPointRate =
-        estimatedBufferAnchorPointRate.load(std::memory_order_relaxed);
-    if (anchorPointRate == 0) {
-        anchorPointRate = getPointRate();
+    const int snapshotBufferFullness =
+        estimatedBufferSnapshotFullness.load(std::memory_order_relaxed);
+    auto snapshotPointRate =
+        estimatedBufferSnapshotPointRate.load(std::memory_order_relaxed);
+    if (snapshotPointRate == 0) {
+        snapshotPointRate = getPointRate();
     }
 
-    const auto anchorTick = estimatedBufferAnchorTick.load(std::memory_order_relaxed);
-    const auto anchorTime = std::chrono::steady_clock::time_point{
-        std::chrono::steady_clock::duration{anchorTick}};
+    const auto snapshotTick = estimatedBufferSnapshotTick.load(std::memory_order_relaxed);
+    const auto snapshotTime = std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration{snapshotTick}};
 
-    const int estimatedBufferFullness = calculateBufferFullnessFromAnchor(
-        anchorBufferFullness,
-        anchorTime,
-        anchorPointRate,
-        anchorBufferFullness);
+    const int estimatedBufferFullness = calculateBufferFullnessFromSnapshot(
+        snapshotBufferFullness,
+        snapshotTime,
+        snapshotPointRate,
+        snapshotBufferFullness);
 
     return buildBufferState(totalBufferPoints, estimatedBufferFullness);
 }
@@ -374,44 +374,44 @@ void LaserControllerStreaming::setEstimatedBufferCapacity(int totalBufferPoints)
 }
 
 void LaserControllerStreaming::clearEstimatedBufferState() {
-    estimatedBufferAnchorValid.store(false, std::memory_order_relaxed);
+    estimatedBufferSnapshotValid.store(false, std::memory_order_relaxed);
     estimatedBufferCapacity.store(0, std::memory_order_relaxed);
-    estimatedBufferAnchorFullness.store(0, std::memory_order_relaxed);
-    estimatedBufferAnchorPointRate.store(0, std::memory_order_relaxed);
-    estimatedBufferAnchorTick.store(0, std::memory_order_relaxed);
+    estimatedBufferSnapshotFullness.store(0, std::memory_order_relaxed);
+    estimatedBufferSnapshotPointRate.store(0, std::memory_order_relaxed);
+    estimatedBufferSnapshotTick.store(0, std::memory_order_relaxed);
 }
 
-void LaserControllerStreaming::updateEstimatedBufferAnchor(
-    int anchorBufferFullness,
-    std::chrono::steady_clock::time_point anchorTime,
+void LaserControllerStreaming::updateEstimatedBufferSnapshot(
+    int snapshotBufferFullness,
+    std::chrono::steady_clock::time_point snapshotTime,
     std::uint32_t pointRateValue) {
-    estimatedBufferAnchorFullness.store(std::max(0, anchorBufferFullness), std::memory_order_relaxed);
+    estimatedBufferSnapshotFullness.store(std::max(0, snapshotBufferFullness), std::memory_order_relaxed);
     if (pointRateValue == 0) {
         pointRateValue = getPointRate();
     }
-    estimatedBufferAnchorPointRate.store(pointRateValue, std::memory_order_relaxed);
-    estimatedBufferAnchorTick.store(anchorTime.time_since_epoch().count(), std::memory_order_relaxed);
-    estimatedBufferAnchorValid.store(true, std::memory_order_relaxed);
+    estimatedBufferSnapshotPointRate.store(pointRateValue, std::memory_order_relaxed);
+    estimatedBufferSnapshotTick.store(snapshotTime.time_since_epoch().count(), std::memory_order_relaxed);
+    estimatedBufferSnapshotValid.store(true, std::memory_order_relaxed);
 }
 
-void LaserControllerStreaming::updateEstimatedBufferAnchorNow(
-    int anchorBufferFullness,
+void LaserControllerStreaming::updateEstimatedBufferSnapshotNow(
+    int snapshotBufferFullness,
     std::uint32_t pointRateValue) {
-    updateEstimatedBufferAnchor(
-        anchorBufferFullness,
+    updateEstimatedBufferSnapshot(
+        snapshotBufferFullness,
         std::chrono::steady_clock::now(),
         pointRateValue);
 }
 
-int LaserControllerStreaming::calculateBufferFullnessFromAnchor(
-    int anchorBufferFullness,
-    std::chrono::steady_clock::time_point anchorTime,
+int LaserControllerStreaming::calculateBufferFullnessFromSnapshot(
+    int snapshotBufferFullness,
+    std::chrono::steady_clock::time_point snapshotTime,
     std::uint32_t rate,
     int fallbackBufferFullness,
     bool* projected) const {
-    const auto estimate = BufferEstimator::estimateFromAnchor(
-        anchorBufferFullness,
-        anchorTime,
+    const auto estimate = BufferEstimator::estimateFromSnapshot(
+        snapshotBufferFullness,
+        snapshotTime,
         rate);
 
     if (projected) {
@@ -474,37 +474,7 @@ std::optional<BufferState> LaserControllerStreaming::buildBufferState(
 }
 
 void LaserControllerStreaming::setConnectionState(bool connected) noexcept {
-    const bool previouslyConnected =
-        controllerConnected.exchange(connected, std::memory_order_relaxed);
-    if (connected && !previouslyConnected) {
-        // Fresh connection (or reconnection): the device's point rate is
-        // unknown/stale, so force the next sync to push it again.
-        pointRatePushNeeded.store(true, std::memory_order_relaxed);
-    }
-}
-
-bool LaserControllerStreaming::sendPointRateToDevice(std::uint32_t /*rate*/) {
-    return true;
-}
-
-void LaserControllerStreaming::syncPointRateToDevice() {
-    const auto desired = pointRate.load(std::memory_order_relaxed);
-    const bool forced = pointRatePushNeeded.exchange(false, std::memory_order_relaxed);
-    const bool mismatch =
-        desired != lastSentPointRate.load(std::memory_order_relaxed);
-    if (!forced && !mismatch) {
-        return;
-    }
-    if (sendPointRateToDevice(desired)) {
-        lastSentPointRate.store(desired, std::memory_order_relaxed);
-    } else {
-        // Try again on the next tick.
-        pointRatePushNeeded.store(true, std::memory_order_relaxed);
-    }
-}
-
-std::uint32_t LaserControllerStreaming::getActivePointRate() const noexcept {
-    return lastSentPointRate.load(std::memory_order_relaxed);
+    controllerConnected.store(connected, std::memory_order_relaxed);
 }
 
 void LaserControllerStreaming::recordIntermittentError(std::string_view errorType) {

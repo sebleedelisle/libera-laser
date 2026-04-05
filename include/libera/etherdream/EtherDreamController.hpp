@@ -62,9 +62,15 @@ public:
     
 protected:
     void run() override;
-    bool sendPointRateToDevice(std::uint32_t rate) override;
 
 private:
+    /// Push the desired point rate to the DAC if it differs from the last-sent
+    /// value, or if a forced re-push is pending (e.g. after reconnect). Called
+    /// once per run-loop tick. Retries on send failure by leaving the
+    /// pointRatePushNeeded flag set for the next tick.
+    void syncPointRate();
+
+
     /// Wait for the response frame to a specific command.
     expected<Ack>
     waitForResponse(char command);
@@ -117,6 +123,15 @@ private:
     std::optional<std::error_code> lastError;
 
     size_t pendingRateChangeCount = 0;
+
+    // Tracks the rate we've successfully told the DAC about. Only touched from
+    // the worker thread, so it doesn't need to be atomic. Starts at 0 so the
+    // first tick always pushes the desired rate.
+    std::uint32_t lastSentPointRate = 0;
+    // Latched true on (re)connect so the next syncPointRate() tick force-sends
+    // the rate even if it matches lastSentPointRate (which is stale after a
+    // reconnect because the DAC's own state has been lost).
+    bool pointRatePushNeeded = true;
 
     mutable std::atomic<int> lastEstimatedBufferFullness{0};
     mutable std::atomic<int> lastKnownBufferCapacity{0};

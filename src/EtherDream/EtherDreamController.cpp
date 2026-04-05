@@ -115,6 +115,9 @@ void EtherDreamController::run() {
         }
         // make sure to blank points if reconnecting
         resetStartupBlank();
+        // DAC's internal rate is unknown after a fresh connection/handshake,
+        // so force the next syncPointRate() to push the current value.
+        pointRatePushNeeded = true;
 
         while (running && connectionActive) {
             if (clearRequired) {
@@ -125,7 +128,7 @@ void EtherDreamController::run() {
                 sendPrepare();
             }
 
-            syncPointRateToDevice();
+            syncPointRate();
 
             sleepUntilNextPoints();
 
@@ -235,15 +238,23 @@ bool EtherDreamController::hasActiveConnection() const {
     return tcpClient.is_connected() && !lastNetworkError().has_value() && connectionActive;
 }
 
-bool EtherDreamController::sendPointRateToDevice(std::uint32_t rate) {
-    auto ack = sendPointRate(rate);
-    if (!ack) {
+void EtherDreamController::syncPointRate() {
+    const auto desired = getPointRate();
+    // Short-circuit when nothing has changed and no resync is pending.
+    if (!pointRatePushNeeded && desired == lastSentPointRate) {
+        return;
+    }
+    auto ack = sendPointRate(desired);
+    if (ack) {
+        lastSentPointRate = desired;
+        pointRatePushNeeded = false;
+    } else {
         if (ack.error() != std::errc::operation_canceled) {
             handleNetworkFailure("point rate command", ack.error());
         }
-        return false;
+        // Leave the latch set so the next tick retries.
+        pointRatePushNeeded = true;
     }
-    return true;
 }
 
 expected<Ack> EtherDreamController::sendCommand() {
@@ -456,7 +467,7 @@ expected<Ack> EtherDreamController::sendPing() {
 
 int EtherDreamController::estimateBufferFullness() const {
     bool projected = false;
-    const int estimated = calculateBufferFullnessFromAnchor(
+    const int estimated = calculateBufferFullnessFromSnapshot(
         lastKnownStatus.bufferFullness,
         lastReceiveTime,
         lastKnownStatus.pointRate,

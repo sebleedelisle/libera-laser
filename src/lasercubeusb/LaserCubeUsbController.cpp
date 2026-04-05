@@ -284,12 +284,13 @@ libera::expected<void> LaserCubeUsbController::connect(const LaserCubeUsbControl
                                  ? std::min(getPointRate(), maxPointRate.load(std::memory_order_relaxed))
                                  : getPointRate();
     LaserControllerStreaming::setPointRate(initialRate);
-    // setConnectionState(true) above latches a forced resync, so the run loop
-    // will push the rate to the device on its next tick.
+    // Device's internal rate is unknown after a fresh connection, so force
+    // the next syncPointRate() tick to push the current value.
+    pointRatePushNeeded = true;
     lastDataSentTime = std::chrono::steady_clock::time_point{};
     lastDataSentBufferSize = 0;
     setEstimatedBufferCapacity(getTotalBufferCapacity());
-    updateEstimatedBufferAnchorNow(0, initialRate);
+    updateEstimatedBufferSnapshotNow(0, initialRate);
 
     return {};
 }
@@ -321,7 +322,7 @@ void LaserCubeUsbController::run() {
             continue;
         }
         setConnectionState(true);
-        syncPointRateToDevice();
+        syncPointRate();
         waitUntilReadyToSend();
         if (!sendPoints()) {
             std::this_thread::sleep_for(2ms);
@@ -329,20 +330,30 @@ void LaserCubeUsbController::run() {
     }
 }
 
-bool LaserCubeUsbController::sendPointRateToDevice(std::uint32_t rate) {
+void LaserCubeUsbController::syncPointRate() {
+    const auto desired = getPointRate();
+    // Short-circuit when nothing has changed and no resync is pending.
+    if (!pointRatePushNeeded && desired == lastSentPointRate) {
+        return;
+    }
     if (!usbHandle) {
         recordConnectionError(error_types::usb::connectionLost);
-        return false;
+        pointRatePushNeeded = true;
+        return;
     }
-    const bool ok = send_uint32(usbHandle->get(), 0x82, rate);
-    if (!ok) {
+    const bool ok = send_uint32(usbHandle->get(), 0x82, desired);
+    if (ok) {
+        lastSentPointRate = desired;
+        pointRatePushNeeded = false;
+    } else {
         recordIntermittentError(error_types::usb::statusError);
+        // Leave the latch set so the next tick retries.
+        pointRatePushNeeded = true;
     }
-    return ok;
 }
 
 void LaserCubeUsbController::waitUntilReadyToSend() {
-    const auto rate = static_cast<int>(getActivePointRate());
+    const auto rate = static_cast<int>(lastSentPointRate);
     if (rate == 0) {
         return;
     }
@@ -366,8 +377,8 @@ void LaserCubeUsbController::waitUntilReadyToSend() {
 }
 
 int LaserCubeUsbController::estimateBufferFullness() const {
-    const auto rate = getActivePointRate();
-    return calculateBufferFullnessFromAnchor(
+    const auto rate = lastSentPointRate;
+    return calculateBufferFullnessFromSnapshot(
         lastDataSentBufferSize,
         lastDataSentTime,
         rate,
@@ -384,7 +395,7 @@ bool LaserCubeUsbController::sendPoints() {
         return false;
     }
 
-    const auto activeRate = getActivePointRate();
+    const auto activeRate = lastSentPointRate;
     if (activeRate == 0) {
         return true;
     }
@@ -476,10 +487,10 @@ bool LaserCubeUsbController::sendPoints() {
         capacity);
     lastDataSentTime = now;
     lastDataSentBufferSize = estimatedAfterSend;
-    updateEstimatedBufferAnchor(
+    updateEstimatedBufferSnapshot(
         estimatedAfterSend,
         now,
-        getActivePointRate());
+        lastSentPointRate);
     recordLatencySample(now - sendStartTime);
 
     return true;
