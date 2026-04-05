@@ -43,10 +43,6 @@ void LaserCubeNetController::updateDiscoveredStatus(const LaserCubeNetStatus& st
     const auto clampedRate =
         LaserCubeNetConfig::clampPointRate(getPointRate(), status.pointRateMax);
     LaserControllerStreaming::setPointRate(clampedRate);
-    pendingPointRate.store(clampedRate, std::memory_order_relaxed);
-    if (!running.load(std::memory_order_relaxed)) {
-        currentPointRate.store(clampedRate, std::memory_order_relaxed);
-    }
 
     if (!networkConnected.load(std::memory_order_relaxed)) {
         reconnectRequested.store(true, std::memory_order_relaxed);
@@ -65,8 +61,6 @@ libera::expected<void> LaserCubeNetController::connectToStatus(const LaserCubeNe
     const auto initialRate =
         LaserCubeNetConfig::clampPointRate(getPointRate(), status.pointRateMax);
     LaserControllerStreaming::setPointRate(initialRate);
-    currentPointRate.store(initialRate, std::memory_order_relaxed);
-    pendingPointRate.store(initialRate, std::memory_order_relaxed);
     messageTimes.fill(std::chrono::steady_clock::time_point{});
     pendingAckCount = 0;
 
@@ -178,14 +172,7 @@ void LaserCubeNetController::run() {
         }
 
         setConnectionState(true);
-        // Push point-rate changes down to the controller when requested.
-        const auto targetPointRate = pendingPointRate.load(std::memory_order_relaxed);
-        const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
-        if (targetPointRate != activePointRate) {
-            if (sendPointRate(targetPointRate)) {
-                currentPointRate.store(targetPointRate, std::memory_order_relaxed);
-            }
-        }
+        syncPointRateToDevice();
 
         // Send at most one packet per loop; pacing is handled by buffer estimation.
         (void)sendPoints();
@@ -195,7 +182,7 @@ void LaserCubeNetController::run() {
         // This avoids a busy loop when the controller doesn't need more data yet.
         {
             const int bufferFullness = lastEstimatedBufferFullness.load(std::memory_order_relaxed);
-            const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
+            const auto activePointRate = getActivePointRate();
             const int targetFull = LaserCubeNetConfig::targetBufferPoints(
                 activePointRate, getTotalBufferCapacity(), targetLatency());
             const int excess = bufferFullness - targetFull;
@@ -217,23 +204,17 @@ void LaserCubeNetController::run() {
 }
 
 void LaserCubeNetController::setPointRate(std::uint32_t pointRateValue) {
-    core::LaserControllerStreaming::setPointRate(pointRateValue);
     pointRateValue = LaserCubeNetConfig::clampPointRate(
         pointRateValue,
         maxPointRate.load(std::memory_order_relaxed));
-    if (!running.load()) {
-        currentPointRate.store(pointRateValue, std::memory_order_relaxed);
-        pendingPointRate.store(pointRateValue, std::memory_order_relaxed);
-    } else {
-        pendingPointRate.store(pointRateValue, std::memory_order_relaxed);
-    }
+    core::LaserControllerStreaming::setPointRate(pointRateValue);
 }
 
 bool LaserCubeNetController::sendPoints() {
     // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
-    const auto activePointRate = currentPointRate.load(std::memory_order_relaxed);
+    const auto activePointRate = getActivePointRate();
 
     // Estimate how full the controller buffer is right now.
     const int minEstimatedBufferFullness =
@@ -343,7 +324,7 @@ bool LaserCubeNetController::sendPoints() {
     return success;
 }
 
-bool LaserCubeNetController::sendPointRate(std::uint32_t rate) {
+bool LaserCubeNetController::sendPointRateToDevice(std::uint32_t rate) {
     core::ByteBuffer payload;
     payload.appendUInt32(rate);
     return sendCommand(LaserCubeNetConfig::CMD_SET_ILDA_RATE, payload.data(), payload.size());

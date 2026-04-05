@@ -1,1 +1,4 @@
 build/
+build-mac/
+build-debug/
+build-asan/

@@ -7,12 +7,10 @@
 #include "libera/etherdream/EtherDreamCommand.hpp"
 #include "libera/etherdream/EtherDreamResponse.hpp"
 #include "libera/etherdream/EtherDreamControllerInfo.hpp"
-#include <deque>
 #include <memory>
 #include <string_view>
 #include <optional>
 #include <chrono>
-#include <mutex>
 
 namespace libera::etherdream {
 
@@ -53,8 +51,6 @@ public:
     expected<void> connect();
     expected<void> connect(const EtherDreamControllerInfo& info);
 
-    void setPointRate(std::uint32_t pointRate) override;
-
     void close();                        // idempotent
     bool isConnected() const;           // const-safe
     /// Expose last network error (if any) for higher-level status reporting.
@@ -66,11 +62,9 @@ public:
     
 protected:
     void run() override;
-
+    bool sendPointRateToDevice(std::uint32_t rate) override;
 
 private:
-    std::optional<std::uint32_t> nextPendingRateChange();
-
     /// Wait for the response frame to a specific command.
     expected<Ack>
     waitForResponse(char command);
@@ -122,9 +116,7 @@ private:
 
     std::optional<std::error_code> lastError;
 
-    std::mutex pendingRatesMutex;
-    std::deque<std::uint32_t> pendingRateChanges;
-    size_t pendingRateChangeCount = 0; 
+    size_t pendingRateChangeCount = 0;
 
     mutable std::atomic<int> lastEstimatedBufferFullness{0};
     mutable std::atomic<int> lastKnownBufferCapacity{0};

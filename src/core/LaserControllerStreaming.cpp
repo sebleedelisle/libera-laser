@@ -474,7 +474,37 @@ std::optional<BufferState> LaserControllerStreaming::buildBufferState(
 }
 
 void LaserControllerStreaming::setConnectionState(bool connected) noexcept {
-    controllerConnected.store(connected, std::memory_order_relaxed);
+    const bool previouslyConnected =
+        controllerConnected.exchange(connected, std::memory_order_relaxed);
+    if (connected && !previouslyConnected) {
+        // Fresh connection (or reconnection): the device's point rate is
+        // unknown/stale, so force the next sync to push it again.
+        pointRatePushNeeded.store(true, std::memory_order_relaxed);
+    }
+}
+
+bool LaserControllerStreaming::sendPointRateToDevice(std::uint32_t /*rate*/) {
+    return true;
+}
+
+void LaserControllerStreaming::syncPointRateToDevice() {
+    const auto desired = pointRate.load(std::memory_order_relaxed);
+    const bool forced = pointRatePushNeeded.exchange(false, std::memory_order_relaxed);
+    const bool mismatch =
+        desired != lastSentPointRate.load(std::memory_order_relaxed);
+    if (!forced && !mismatch) {
+        return;
+    }
+    if (sendPointRateToDevice(desired)) {
+        lastSentPointRate.store(desired, std::memory_order_relaxed);
+    } else {
+        // Try again on the next tick.
+        pointRatePushNeeded.store(true, std::memory_order_relaxed);
+    }
+}
+
+std::uint32_t LaserControllerStreaming::getActivePointRate() const noexcept {
+    return lastSentPointRate.load(std::memory_order_relaxed);
 }
 
 void LaserControllerStreaming::recordIntermittentError(std::string_view errorType) {

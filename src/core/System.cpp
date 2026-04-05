@@ -1,7 +1,9 @@
 #include "libera/System.hpp"
-#include "libera/plugin/PluginManager.hpp"
 
+#if LIBERA_ENABLE_PLUGINS
+#include "libera/plugin/PluginManager.hpp"
 #include <cstdlib>
+#endif
 
 namespace libera::core {
 
@@ -21,6 +23,8 @@ void AddControllerManager(ControllerManagerFactory factory) {
 } // namespace libera::core
 
 namespace libera {
+
+#if LIBERA_ENABLE_PLUGINS
 
 namespace {
 
@@ -42,11 +46,24 @@ const std::string& System::pluginDirectory() {
     return pluginDirStorage();
 }
 
+#else
+
+void System::setPluginDirectory(const std::string&) {}
+
+const std::string& System::pluginDirectory() {
+    static const std::string empty;
+    return empty;
+}
+
+#endif
+
 System::System() {
+#if LIBERA_ENABLE_PLUGINS
     const auto& dir = pluginDirectory();
     if (!dir.empty()) {
         plugin::loadPluginsFromDirectory(dir);
     }
+#endif
 
     for (const auto& factory : core::getControllerManagerFactories()) {
         if (!factory) continue;
@@ -89,9 +106,6 @@ void System::shutdown() {
         return;
     }
 
-    // Teardown runs in reverse creation order so managers that may depend on
-    // shared lower-level runtimes (e.g. libusb) release their handles before
-    // other managers tear down those runtimes.
     for (auto it = managers.rbegin(); it != managers.rend(); ++it) {
         if (*it) {
             (*it)->closeAll();

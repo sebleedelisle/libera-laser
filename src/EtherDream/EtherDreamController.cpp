@@ -114,7 +114,7 @@ void EtherDreamController::run() {
             continue;
         }
         // make sure to blank points if reconnecting
-        resetStartupBlank(); 
+        resetStartupBlank();
 
         while (running && connectionActive) {
             if (clearRequired) {
@@ -125,11 +125,7 @@ void EtherDreamController::run() {
                 sendPrepare();
             }
 
-            if (auto newrate = nextPendingRateChange()) {
-                if (auto rateAck = sendPointRate(*newrate); !rateAck) {
-                    handleNetworkFailure("point rate command", rateAck.error());
-                }
-            }
+            syncPointRateToDevice();
 
             sleepUntilNextPoints();
 
@@ -239,25 +235,16 @@ bool EtherDreamController::hasActiveConnection() const {
     return tcpClient.is_connected() && !lastNetworkError().has_value() && connectionActive;
 }
 
-void EtherDreamController::setPointRate(std::uint32_t pointRateValue) {
-    LaserControllerStreaming::setPointRate(pointRateValue);
-    {
-        std::lock_guard<std::mutex> lock(pendingRatesMutex);
-        pendingRateChanges.push_back(pointRateValue);
+bool EtherDreamController::sendPointRateToDevice(std::uint32_t rate) {
+    auto ack = sendPointRate(rate);
+    if (!ack) {
+        if (ack.error() != std::errc::operation_canceled) {
+            handleNetworkFailure("point rate command", ack.error());
+        }
+        return false;
     }
+    return true;
 }
-
-std::optional<std::uint32_t> EtherDreamController::nextPendingRateChange() {
-    std::lock_guard<std::mutex> lock(pendingRatesMutex);
-    if (pendingRateChanges.empty()) {
-        return std::nullopt;
-    }
-    auto next = pendingRateChanges.back();
-    pendingRateChanges.clear();
-    return next;
-}
-
-
 
 expected<Ack> EtherDreamController::sendCommand() {
 

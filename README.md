@@ -15,40 +15,10 @@ The project uses a permissive license and is intended for broad adoption in lase
 
 The library discovers laser controllers on the system and provides a list of available controllers. You can then instantiate one or more controllers and stream points in either streaming or frame mode.
 
-## Include patterns
+## Documentation
 
-Default (all built-in controller managers registered):
-
-```cpp
-#include "libera.h"
-```
-
-Selective (register only chosen managers):
-
-```cpp
-#include "libera/System.hpp"
-#include "libera/etherdream/EtherDreamManager.hpp"
-#include "libera/helios/HeliosManager.hpp"
-```
-
-### Streaming mode
-Streaming mode is inspired by audio engines: you provide a callback, and the controller requests points when it needs more data. The callback receives:
-- A minimum number of points required to keep playback smooth.
-- A maximum number of points the controller can accept.
-- An estimated timestamp for when the first point will be rendered.
-
-### Frame mode
-Frame mode is built into the `LaserController` base class. You can enqueue frames, query whether the controller is ready for another frame, and let the frame management system feed the streaming callback internally.
-
-### Controller health/status
-Every controller now exposes a shared status/error API:
-- `getStatus()` returns `Good`, `Issues`, or `Error`.
-- `getErrors()` returns `{code, label, count}` entries.
-- `clearErrors()` resets error counters and intermittent warning state.
-
-Error type keys are shared by transport class:
-- Network controllers use `network.*` types (for example `network.timeout`, `network.packet_loss`, `network.buffer_underflow`).
-- USB controllers use `usb.*` types (for example `usb.timeout`, `usb.transfer_failed`, `usb.connection_lost`).
+- [Integrating Libera into your laser app](docs/integration.md) — discovery, connecting, arming, the point format, frame mode vs. streaming mode, and health monitoring.
+- [Writing a Libera plugin](docs/plugins.md) — adding support for a new laser controller via a shared-library plugin.
 
 ## Build
 
