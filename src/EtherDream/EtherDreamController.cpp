@@ -73,7 +73,7 @@ expected<void> EtherDreamController::connect() {
     if (auto connectError = tcpClient.connect(endpoint); connectError) {
         logError("[EtherDreamController] connect failed", connectError.message(),
                  "target", controllerInfo->ip(), controllerInfo->port(),
-                 "timeout_ms", tcpClient.connectTimeout().count());
+                 "timeout_ms", tcpClient.getConnectTimeout().count());
         lastError = connectError;
         recordConnectionError(error_types::network::connectFailed);
         return unexpected(connectError);
@@ -278,13 +278,13 @@ expected<Ack> EtherDreamController::sendPointRate(std::uint32_t rate) {
     commandBuffer.setPointRateCommand(rate);
 
     logInfoVerbose("[EtherDream] TX 'q'", "rate", rate,
-             "timeout_ms", tcpClient.defaultTimeout().count());
+             "timeout_ms", tcpClient.getDefaultTimeout().count());
 
     auto ack = sendCommand();
     if (!ack) {
         if (ack.error() == asio::error::timed_out) {
         logError("[EtherDream] point-rate command timed out after",
-                 tcpClient.defaultTimeout().count(), "ms");
+                 tcpClient.getDefaultTimeout().count(), "ms");
         recordIntermittentError(error_types::network::timeout);
         }
         return ack;
@@ -439,7 +439,7 @@ void EtherDreamController::sendBegin() {
         if (auto ack = sendCommand(); !ack) {
             if (ack.error() == asio::error::timed_out) {
                 logError("[EtherDream] begin write timeout after",
-                         tcpClient.defaultTimeout().count(), "ms");
+                         tcpClient.getDefaultTimeout().count(), "ms");
                 recordIntermittentError(error_types::network::timeout);
             }
             if (ack.error() != asio::error::timed_out &&

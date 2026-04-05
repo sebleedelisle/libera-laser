@@ -17,7 +17,7 @@ namespace libera::net {
  *
  * Implementation highlights:
  * - Holds a shared `asio::io_context` plus an `executor_work_guard` to keep it alive.
- * - A background `std::thread` calls `io_.run()` until the guard is released.
+ * - A background `std::thread` calls `io.run()` until the guard is released.
  *
  * Lifetime notes:
  * - Destroy network clients before `NetService` so their handlers complete while
@@ -38,12 +38,12 @@ public:
     NetService(NetService&&) = delete;
     NetService& operator=(NetService&&) = delete;
 
-    std::shared_ptr<asio::io_context> io() { return io_; }
+    std::shared_ptr<asio::io_context> getIO() { return io; }
 
 private:
-    std::shared_ptr<asio::io_context> io_;
-    asio::executor_work_guard<asio::io_context::executor_type> work_guard_;
-    std::thread t_;
+    std::shared_ptr<asio::io_context> io;
+    asio::executor_work_guard<asio::io_context::executor_type> workGuard;
+    std::thread thread;
 };
 
 NetService& ensureNetService();

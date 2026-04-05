@@ -17,11 +17,11 @@ namespace libera::net {
  */
 class UdpSocket {
 public:
-    explicit UdpSocket(asio::io_context& io) : sock_(io) {}
+    explicit UdpSocket(asio::io_context& io) : sock(io) {}
 
     std::error_code open_v4() {
         std::error_code ec;
-        sock_.open(udp::v4(), ec);
+        sock.open(udp::v4(), ec);
         if (ec) {
             logError("[UdpSocket] open_v4 failed", ec.message());
         }
@@ -30,7 +30,7 @@ public:
 
     std::error_code bind_any(uint16_t port) {
         std::error_code ec;
-        sock_.bind(udp::endpoint(udp::v4(), port), ec);
+        sock.bind(udp::endpoint(udp::v4(), port), ec);
         if (ec) {
             logError("[UdpSocket] bind_any failed on port", port, ec.message());
         }
@@ -39,7 +39,7 @@ public:
 
     std::error_code enable_broadcast(bool on=true) {
         std::error_code ec;
-        sock_.set_option(asio::socket_base::broadcast(on), ec);
+        sock.set_option(asio::socket_base::broadcast(on), ec);
         return ec;
     }
 
@@ -47,10 +47,10 @@ public:
     std::error_code send_to(const void* data, std::size_t n,
                                       const udp::endpoint& ep, std::chrono::milliseconds timeout,
                                       bool logTimeout = true) {
-        auto ex = sock_.get_executor();
+        auto ex = sock.get_executor();
         return with_deadline(ex, timeout,
-            [&](auto cb){ sock_.async_send_to(asio::buffer(data, n), ep, 0, cb); },
-            [&]{ sock_.cancel(); },
+            [&](auto cb){ sock.async_send_to(asio::buffer(data, n), ep, 0, cb); },
+            [&]{ sock.cancel(); },
             "udp_send", logTimeout);
     }
 
@@ -59,20 +59,20 @@ public:
                                         udp::endpoint& out_ep, std::size_t& out_n,
                                         std::chrono::milliseconds timeout,
                                         bool logTimeout = true) {
-        auto ex = sock_.get_executor();
+        auto ex = sock.get_executor();
         // Keep these alive even if the handler fires after this call returns.
         auto receivedPtr = std::make_shared<std::size_t>(0);
         auto endpointPtr = std::make_shared<udp::endpoint>();
 
         auto ec = with_deadline(ex, timeout,
             [&](auto cb){
-                sock_.async_receive_from(asio::buffer(data, max), *endpointPtr, 0,
+                sock.async_receive_from(asio::buffer(data, max), *endpointPtr, 0,
                     [cb, receivedPtr, endpointPtr](const std::error_code& ec, std::size_t n){
                         *receivedPtr = n;
                         cb(ec);
                     });
             },
-            [&]{ sock_.cancel(); },
+            [&]{ sock.cancel(); },
             "udp_recv", logTimeout);
 
         // Copy back results for the caller.
@@ -81,11 +81,11 @@ public:
         return ec;
     }
 
-    udp::socket& raw() { return sock_; }
-    void close() { std::error_code ignore; sock_.close(ignore); }
+    udp::socket& raw() { return sock; }
+    void close() { std::error_code ignore; sock.close(ignore); }
 
 private:
-    udp::socket sock_;
+    udp::socket sock;
 };
 
 } // namespace libera::net

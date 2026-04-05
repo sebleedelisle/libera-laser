@@ -69,7 +69,7 @@ private:
     expected<Ack>
     waitForResponse(char command);
 
-    /// Send the prepared command stored in commandBuffer_ and wait for its ACK.
+    /// Send the prepared command stored in commandBuffer and wait for its ACK.
     expected<Ack>
     sendCommand();
 
