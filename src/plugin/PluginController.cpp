@@ -1,5 +1,6 @@
 #include "libera/plugin/PluginController.hpp"
 
+#include "libera/core/BufferEstimator.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -12,15 +13,18 @@ namespace libera::plugin {
 
 namespace {
 
-constexpr int DEFAULT_MIN_BATCH_POINTS = 20;
-constexpr int DEFAULT_MAX_BATCH_POINTS = 4096;
-constexpr double TARGET_BATCH_DURATION_MS = 10.0;
+// Used when the plugin doesn't report buffer state: target ~10ms at the
+// current rate, split evenly between min and max so fillFromFrameQueue
+// has flexibility when content frames are shorter than the batch.
+constexpr int FALLBACK_MIN_BATCH_POINTS = 20;
+constexpr int FALLBACK_MAX_BATCH_POINTS = 4096;
+constexpr double FALLBACK_BATCH_DURATION_MS = 10.0;
 
-int defaultBatchPointCount(std::uint32_t pointRate) {
-    if (pointRate == 0) return DEFAULT_MIN_BATCH_POINTS;
-    const double raw = (static_cast<double>(pointRate) * TARGET_BATCH_DURATION_MS) / 1000.0;
+int fallbackBatchPointCount(std::uint32_t pointRate) {
+    if (pointRate == 0) return FALLBACK_MIN_BATCH_POINTS;
+    const double raw = (static_cast<double>(pointRate) * FALLBACK_BATCH_DURATION_MS) / 1000.0;
     const auto rounded = static_cast<int>(std::lround(raw));
-    return std::clamp(rounded, DEFAULT_MIN_BATCH_POINTS, DEFAULT_MAX_BATCH_POINTS);
+    return std::clamp(rounded, FALLBACK_MIN_BATCH_POINTS, FALLBACK_MAX_BATCH_POINTS);
 }
 
 void convertPoints(const std::vector<core::LaserPoint>& src,
@@ -155,7 +159,7 @@ void PluginController::run() {
     resetStartupBlank();
 
     std::vector<libera_point_t> pluginPoints;
-    pluginPoints.reserve(DEFAULT_MAX_BATCH_POINTS);
+    pluginPoints.reserve(FALLBACK_MAX_BATCH_POINTS);
 
     while (running.load()) {
         if (!connected.load(std::memory_order_relaxed)) {
@@ -169,36 +173,75 @@ void PluginController::run() {
         funcs.set_armed(pluginHandle, isArmed());
 
         const auto rate = getPointRate();
-        const int targetPoints = defaultBatchPointCount(rate);
 
-        // Throttle against plugin-reported back-pressure.  If we have buffer
-        // state and the buffer is > ~80% full, skip this cycle briefly.
-        bool bufferFull = false;
-        if (funcs.get_buffer_state) {
-            libera_buffer_state_t bs{-1, -1};
-            if (funcs.get_buffer_state(pluginHandle, &bs) == 0) {
-                cachedPointsInBuffer.store(bs.points_in_buffer, std::memory_order_relaxed);
-                cachedTotalBufferPoints.store(bs.total_buffer_points, std::memory_order_relaxed);
-                if (bs.total_buffer_points > 0 && bs.points_in_buffer >= 0) {
-                    const int headroom = bs.total_buffer_points - bs.points_in_buffer;
-                    if (headroom < targetPoints / 2) {
-                        bufferFull = true;
-                    }
-                }
-            }
+        // Query the plugin's buffer state.  When available, this drives
+        // latency-aware sizing identical to the built-in controllers: we
+        // aim to keep the plugin's buffer filled to `targetBufferPoints`
+        // (rate * targetLatency), and ask for the deficit.
+        libera_buffer_state_t bs{-1, -1};
+        bool haveBuffer = false;
+        if (funcs.get_buffer_state &&
+            funcs.get_buffer_state(pluginHandle, &bs) == 0 &&
+            bs.total_buffer_points > 0 && bs.points_in_buffer >= 0) {
+            cachedPointsInBuffer.store(bs.points_in_buffer, std::memory_order_relaxed);
+            cachedTotalBufferPoints.store(bs.total_buffer_points, std::memory_order_relaxed);
+            haveBuffer = true;
         }
-        if (bufferFull) {
-            std::this_thread::sleep_for(2ms);
-            continue;
+
+        std::size_t minPoints;
+        std::size_t maxPoints;
+
+        if (haveBuffer) {
+            const int capacity = bs.total_buffer_points;
+            const int fullness = bs.points_in_buffer;
+            const int freeSpace = std::max(0, capacity - fullness);
+            const int target = core::BufferEstimator::targetBufferPoints(
+                rate, capacity, targetLatency(),
+                /* minimumBufferFloor   */ 0,
+                /* safetyHeadroomPoints */ 0);
+            const int deficit = std::max(0, target - fullness);
+
+            // Nothing to send: buffer already at or above target, or no
+            // room for new points.  Sleep a short time so we don't spin.
+            if (deficit <= 0 || freeSpace <= 0) {
+                std::this_thread::sleep_for(2ms);
+                continue;
+            }
+
+            minPoints = static_cast<std::size_t>(deficit);
+            maxPoints = static_cast<std::size_t>(freeSpace);
+        } else {
+            // No buffer state from the plugin — use a fixed ~10ms batch.
+            const int fixed = fallbackBatchPointCount(rate);
+            minPoints = static_cast<std::size_t>(std::max(fixed / 2, 1));
+            maxPoints = static_cast<std::size_t>(fixed);
+        }
+
+        // When the plugin reports buffer state, we know how long the queued
+        // points will take to play — so the first point of THIS new batch
+        // will render after that.  This matters for frame scheduling:
+        // fillFromFrameQueue uses this time to decide which queued frame is
+        // due.  Getting it wrong means frames play late (glitches on rapidly
+        // changing content).
+        // When the plugin doesn't report buffer state, we fall back to the
+        // host's configured target latency — that's what a well-behaved
+        // plugin's pipeline should be converging toward anyway, and it
+        // matches the stamp sendFrame() puts on unscheduled frames.
+        auto renderTimeLead = std::chrono::duration_cast<std::chrono::milliseconds>(targetLatency());
+        if (haveBuffer && rate > 0 && bs.points_in_buffer > 0) {
+            const double ms = (static_cast<double>(bs.points_in_buffer) * 1000.0)
+                              / static_cast<double>(rate);
+            renderTimeLead = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::duration<double, std::milli>(ms));
         }
 
         // Pull points through requestPoints(), which invokes the frame-mode
         // callback (fillFromFrameQueue) and then applies scanner sync,
         // startup/shutdown blanking, and other processing.
         core::PointFillRequest request;
-        request.minimumPointsRequired = static_cast<std::size_t>(std::max(targetPoints / 2, 1));
-        request.maximumPointsRequired = static_cast<std::size_t>(targetPoints);
-        request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now() + 10ms;
+        request.minimumPointsRequired = minPoints;
+        request.maximumPointsRequired = maxPoints;
+        request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now() + renderTimeLead;
 
         if (!requestPoints(request) || pointsToSend.empty()) {
             std::this_thread::sleep_for(2ms);
@@ -223,6 +266,38 @@ void PluginController::run() {
             } else {
                 recordIntermittentError(code);
             }
+        }
+
+        // 1 Hz diagnostic summary — prints whenever PluginController is
+        // busy in the run loop.
+        const auto nowSample = std::chrono::steady_clock::now();
+        if (nowSample >= nextLogAt) {
+            const double blankPct = diagSentPoints > 0
+                ? (100.0 * diagBlankPoints) / static_cast<double>(diagSentPoints)
+                : 0.0;
+            libera::log::logInfo("[PluginController] ",
+                "rate=", rate,
+                " sent=", diagSentPoints,
+                " blank=", diagBlankPoints, " (", blankPct, "%)",
+                " underruns=", diagUnderruns,
+                " fullSleeps=", diagBufferFullSleeps,
+                " ringFill=[", (diagMinFullness == INT_MAX ? 0 : diagMinFullness),
+                             "..", diagMaxFullness, "]",
+                " qFrames=[", (diagMinQueuedFrames == SIZE_MAX ? 0 : diagMinQueuedFrames),
+                             "..", diagMaxQueuedFrames, "]",
+                " leadMs=[", (diagMinRenderLeadMs == INT_MAX ? 0 : diagMinRenderLeadMs),
+                            "..", diagMaxRenderLeadMs, "]");
+            diagSentPoints = 0;
+            diagBlankPoints = 0;
+            diagUnderruns = 0;
+            diagBufferFullSleeps = 0;
+            diagMinFullness = INT_MAX;
+            diagMaxFullness = 0;
+            diagMinRenderLeadMs = INT_MAX;
+            diagMaxRenderLeadMs = 0;
+            diagMinQueuedFrames = SIZE_MAX;
+            diagMaxQueuedFrames = 0;
+            nextLogAt = nowSample + 1s;
         }
     }
 
