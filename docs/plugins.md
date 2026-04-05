@@ -1,5 +1,11 @@
 # Writing a Libera plugin
 
+> ⚠️ **Work in progress / proof of concept.** The plugin system is under
+> active development and the ABI, lifecycle, host services, and behaviour
+> described below **will change** before it stabilises. Expect incompatible
+> updates — rebuild your plugin against the current header whenever you
+> update Libera. Do not rely on this interface for production work yet.
+
 Libera supports **plugins**: shared libraries that add support for new laser
 controllers without having to fork or recompile Libera itself. If you make a
 controller and you'd like Libera apps to talk to it, a plugin is how you do it.

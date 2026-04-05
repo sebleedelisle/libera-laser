@@ -1,6 +1,12 @@
 /*
  * libera_plugin.h — Public C API for libera DAC plugins.
  *
+ * ⚠️  WORK IN PROGRESS — PROOF OF CONCEPT.
+ *     The plugin ABI is not stable yet.  Function signatures, host services,
+ *     error codes, and lifecycle behaviour WILL change in future releases.
+ *     Rebuild your plugin against the current header whenever you update
+ *     libera.  Do not rely on this interface for production work yet.
+ *
  * Plugin authors: implement all libera_plugin_* functions below and compile
  * your code into a shared library (.dylib / .so / .dll).  Place the resulting
  * file in the libera plugins directory and it will be loaded automatically.
