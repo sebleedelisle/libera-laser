@@ -32,13 +32,13 @@ public:
 protected:
     void run() override;
     void setPointRate(std::uint32_t pointRate) override;
+    bool sendPointRateToDevice(std::uint32_t rate) override;
 
 private:
     libera::expected<void> connectToStatus(const LaserCubeNetStatus& status);
     bool reconnectToLatestStatus();
 
     bool sendPoints();
-    bool sendPointRate(std::uint32_t rate);
     bool sendData(const std::uint8_t* buffer, std::size_t size);
     bool sendCommand(std::uint8_t cmd, const std::uint8_t* payload, std::size_t size);
     void checkAcks();
@@ -54,8 +54,6 @@ private:
     std::string ipAddress;
 
     std::atomic<int> pointBufferCapacity{1000};
-    std::atomic<std::uint32_t> currentPointRate{30000};
-    std::atomic<std::uint32_t> pendingPointRate{30000};
     std::atomic<std::uint32_t> maxPointRate{60000};
     std::atomic<bool> networkConnected{false};
     std::atomic<bool> reconnectRequested{false};

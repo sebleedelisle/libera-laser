@@ -28,10 +28,10 @@ public:
 
 protected:
     void run() override;
+    bool sendPointRateToDevice(std::uint32_t rate) override;
 
 private:
     bool sendPoints();
-    bool sendPointRate(std::uint32_t rate);
     void waitUntilReadyToSend();
 
     int estimateBufferFullness() const;
@@ -41,8 +41,6 @@ private:
     std::unique_ptr<LaserCubeUsbHandle> usbHandle;
 
     std::atomic<bool> usbConnected{false};
-    std::atomic<std::uint32_t> currentPointRate{0};
-    std::atomic<std::uint32_t> pendingPointRate{30000};
     std::atomic<std::uint32_t> maxPointRate{0};
     std::atomic<int> maxSamplesPerTransfer{0};
 

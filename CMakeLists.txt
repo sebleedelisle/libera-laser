@@ -24,6 +24,7 @@ option(LIBERA_BUILD_TESTS "Build libera-core tests" ${BUILD_TESTING})
 option(LIBERA_BUILD_INTEGRATION_TESTS "Build integration tests (loopback/network)" OFF)
 option(LIBERA_BUILD_HARDWARE_TESTS "Build hardware tests (requires controller hardware)" OFF)
 option(LIBERA_BUILD_EXAMPLES "Build example applications" OFF)
+option(LIBERA_ENABLE_PLUGINS "Enable runtime plugin loading (disable to exclude all plugin code)" ON)
 
 # Optional: a few sensible warnings. Comment out if you prefer quiet builds.
 function(libera_apply_warnings target)
@@ -56,11 +57,20 @@ file(GLOB_RECURSE LIBERA_CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
+# Exclude plugin sources when plugin support is disabled.
+if (NOT LIBERA_ENABLE_PLUGINS)
+    list(FILTER LIBERA_CORE_SOURCES EXCLUDE REGEX ".*/plugin/.*")
+endif()
+
 # ----------------------------
 # Define the library target
 # ----------------------------
 # By default this is a static library. You can change to SHARED if you prefer.
 add_library(libera-core ${LIBERA_CORE_SOURCES})
+
+if (LIBERA_ENABLE_PLUGINS)
+    target_compile_definitions(libera-core PUBLIC LIBERA_ENABLE_PLUGINS=1)
+endif()
 
 # Public include directories:
 # - BUILD_INTERFACE is used when building this project directly.
@@ -109,7 +119,7 @@ target_sources(libera-core PRIVATE $<TARGET_OBJECTS:helios-sdk>)
 target_link_libraries(libera-core PUBLIC libusb::libusb)
 
 # Plugin system needs dlopen/dlsym on POSIX.
-if (NOT WIN32)
+if (LIBERA_ENABLE_PLUGINS AND NOT WIN32)
     target_link_libraries(libera-core PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
