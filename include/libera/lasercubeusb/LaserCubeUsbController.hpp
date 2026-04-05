@@ -28,9 +28,12 @@ public:
 
 protected:
     void run() override;
-    bool sendPointRateToDevice(std::uint32_t rate) override;
 
 private:
+    /// Push the desired point rate to the device if it differs from the
+    /// last-sent value, or if a forced re-push is pending after reconnect.
+    void syncPointRate();
+
     bool sendPoints();
     void waitUntilReadyToSend();
 
@@ -46,6 +49,13 @@ private:
 
     std::chrono::steady_clock::time_point lastDataSentTime{};
     int lastDataSentBufferSize{0};
+
+    // Tracks the rate we've successfully told the device about. Worker-thread
+    // only, so not atomic. Starts at 0 so the first tick always pushes.
+    std::uint32_t lastSentPointRate{0};
+    // Latched true on (re)connect so the next syncPointRate() tick force-sends
+    // the rate even if it matches lastSentPointRate (stale after reconnect).
+    bool pointRatePushNeeded{true};
 
     core::ByteBuffer packetBuffer;
 };

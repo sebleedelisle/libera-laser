@@ -17,13 +17,13 @@ static int g_failures = 0;
         ++g_failures; \
     } } while(0)
 
-static void testEstimateFromAnchorProjects() {
+static void testEstimateFromSnapshotProjects() {
     const auto now = std::chrono::steady_clock::now();
-    const auto anchorTime = now - std::chrono::milliseconds(10);
+    const auto snapshotTime = now - std::chrono::milliseconds(10);
 
-    const auto estimate = BufferEstimator::estimateFromAnchor(
+    const auto estimate = BufferEstimator::estimateFromSnapshot(
         1000,
-        anchorTime,
+        snapshotTime,
         30000,
         now);
 
@@ -31,29 +31,29 @@ static void testEstimateFromAnchorProjects() {
     ASSERT_EQ(estimate.bufferFullness, 700, "10ms at 30kpps should consume 300 points");
 }
 
-static void testEstimateFromAnchorFallback() {
+static void testEstimateFromSnapshotFallback() {
     const auto now = std::chrono::steady_clock::now();
-    const auto estimate = BufferEstimator::estimateFromAnchor(
+    const auto estimate = BufferEstimator::estimateFromSnapshot(
         512,
         std::chrono::steady_clock::time_point{},
         30000,
         now);
 
-    ASSERT_TRUE(!estimate.projected, "missing anchor should not project");
-    ASSERT_EQ(estimate.bufferFullness, 512, "fallback keeps anchor fullness");
+    ASSERT_TRUE(!estimate.projected, "missing snapshot should not project");
+    ASSERT_EQ(estimate.bufferFullness, 512, "fallback keeps snapshot fullness");
 }
 
-static void testEstimateFromAnchorZeroRateFallback() {
+static void testEstimateFromSnapshotZeroRateFallback() {
     const auto now = std::chrono::steady_clock::now();
-    const auto anchorTime = now - std::chrono::milliseconds(5);
-    const auto estimate = BufferEstimator::estimateFromAnchor(
+    const auto snapshotTime = now - std::chrono::milliseconds(5);
+    const auto estimate = BufferEstimator::estimateFromSnapshot(
         420,
-        anchorTime,
+        snapshotTime,
         0,
         now);
 
     ASSERT_TRUE(!estimate.projected, "zero rate should not project");
-    ASSERT_EQ(estimate.bufferFullness, 420, "zero-rate fallback keeps anchor fullness");
+    ASSERT_EQ(estimate.bufferFullness, 420, "zero-rate fallback keeps snapshot fullness");
 }
 
 static void testMinimumBufferPoints() {
@@ -107,9 +107,9 @@ static void testClampSleepMillis() {
 }
 
 int main() {
-    testEstimateFromAnchorProjects();
-    testEstimateFromAnchorFallback();
-    testEstimateFromAnchorZeroRateFallback();
+    testEstimateFromSnapshotProjects();
+    testEstimateFromSnapshotFallback();
+    testEstimateFromSnapshotZeroRateFallback();
     testMinimumBufferPoints();
     testTargetBufferPointsUsesLatency();
     testTargetBufferPointsRespectsSafetyHeadroom();

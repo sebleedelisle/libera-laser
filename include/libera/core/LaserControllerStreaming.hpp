@@ -208,23 +208,23 @@ protected:
     /// Clear host-estimated buffer state; default getBufferState() returns nullopt.
     void clearEstimatedBufferState();
 
-    /// Update the projected buffer anchor used by default getBufferState().
+    /// Update the projected buffer snapshot used by default getBufferState().
     /// pointRateValue=0 uses getPointRate() at the time of this call.
-    void updateEstimatedBufferAnchor(
-        int anchorBufferFullness,
-        std::chrono::steady_clock::time_point anchorTime,
+    void updateEstimatedBufferSnapshot(
+        int snapshotBufferFullness,
+        std::chrono::steady_clock::time_point snapshotTime,
         std::uint32_t pointRateValue = 0);
 
-    /// Convenience overload that stamps the anchor at steady_clock::now().
-    void updateEstimatedBufferAnchorNow(
-        int anchorBufferFullness,
+    /// Convenience overload that stamps the snapshot at steady_clock::now().
+    void updateEstimatedBufferSnapshotNow(
+        int snapshotBufferFullness,
         std::uint32_t pointRateValue = 0);
 
-    /// Estimate current buffer fullness by projecting consumption from an anchor.
+    /// Estimate current buffer fullness by projecting consumption from an snapshot.
     /// If projection is not possible, fallbackBufferFullness is returned.
-    int calculateBufferFullnessFromAnchor(
-        int anchorBufferFullness,
-        std::chrono::steady_clock::time_point anchorTime,
+    int calculateBufferFullnessFromSnapshot(
+        int snapshotBufferFullness,
+        std::chrono::steady_clock::time_point snapshotTime,
         std::uint32_t rate,
         int fallbackBufferFullness,
         bool* projected = nullptr) const;
@@ -243,29 +243,7 @@ protected:
                                                           int pointsInBuffer);
 
     /// Update whether the controller connection is currently healthy.
-    /// A false→true transition forces the next syncPointRateToDevice() call
-    /// to re-send the current point rate, even if it hasn't changed.
     void setConnectionState(bool connected) noexcept;
-
-    /// Push the desired point rate to the device if it differs from the
-    /// last-sent value, or if setConnectionState() has latched a forced
-    /// resync since the last call. Subclasses should call this once per
-    /// run-loop tick while connected. The actual I/O is delegated to
-    /// sendPointRateToDevice(), which subclasses override.
-    void syncPointRateToDevice();
-
-    /// Actually send @p rate to the hardware. Return true on success.
-    /// Default implementation is a no-op returning true, for controllers
-    /// that embed the rate in each frame (Helios) or are driven externally
-    /// (AVB, Plugin). Streaming-style controllers override this.
-    virtual bool sendPointRateToDevice(std::uint32_t rate);
-
-    /// Rate the device was last successfully told to use. Returns 0 if
-    /// no rate has been sent yet (i.e. before the first successful
-    /// sendPointRateToDevice() call since construction). Subclasses
-    /// should prefer this over getPointRate() for buffer/timing math
-    /// that models the device's actual playback speed.
-    std::uint32_t getActivePointRate() const noexcept;
 
     /// Increment a transient/intermittent error type counter.
     void recordIntermittentError(std::string_view errorType);
@@ -308,14 +286,12 @@ private:
     void incrementErrorCount(std::string_view errorType);
 
     std::atomic<int> estimatedBufferCapacity{0};
-    std::atomic<int> estimatedBufferAnchorFullness{0};
-    std::atomic<std::uint32_t> estimatedBufferAnchorPointRate{0};
-    std::atomic<SteadyRep> estimatedBufferAnchorTick{0};
-    std::atomic<bool> estimatedBufferAnchorValid{false};
+    std::atomic<int> estimatedBufferSnapshotFullness{0};
+    std::atomic<std::uint32_t> estimatedBufferSnapshotPointRate{0};
+    std::atomic<SteadyRep> estimatedBufferSnapshotTick{0};
+    std::atomic<bool> estimatedBufferSnapshotValid{false};
 
     std::atomic<bool> controllerConnected{false};
-    std::atomic<bool> pointRatePushNeeded{false};
-    std::atomic<std::uint32_t> lastSentPointRate{0};
     std::atomic<bool> hasIntermittentErrors{false};
     mutable std::mutex errorCountsMutex;
     std::unordered_map<std::string, std::uint64_t> errorCounts;

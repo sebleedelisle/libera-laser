@@ -555,7 +555,7 @@ HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsig
     targetFramePoints.store(defaultFramePoints, std::memory_order_relaxed);
     frameBuffer.reserve(defaultFramePoints);
     setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
-    updateEstimatedBufferAnchorNow(0, getPointRate());
+    updateEstimatedBufferSnapshotNow(0, getPointRate());
     statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
 }
 
@@ -571,7 +571,7 @@ HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextVal
     targetFramePoints.store(defaultFramePoints, std::memory_order_relaxed);
     frameBuffer.reserve(defaultFramePoints);
     setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
-    updateEstimatedBufferAnchorNow(0, getPointRate());
+    updateEstimatedBufferSnapshotNow(0, getPointRate());
     statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
 }
 
@@ -627,7 +627,7 @@ void HeliosController::updateControllerIndex(unsigned int controllerIndex) {
     consecutiveStatusErrors = 0;
     consecutiveWriteErrors = 0;
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
-    updateEstimatedBufferAnchorNow(0, getPointRate());
+    updateEstimatedBufferSnapshotNow(0, getPointRate());
     statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
     resetStartupBlank();
 }
@@ -722,7 +722,7 @@ void HeliosController::run() {
         const unsigned int pps = getPointRate();
 
         setEstimatedBufferCapacity(static_cast<int>(framePoints));
-        updateEstimatedBufferAnchorNow(0, pps);
+        updateEstimatedBufferSnapshotNow(0, pps);
 
         // The Helios is single-buffered: it plays each frame once then idles
         // while the host polls status and transfers the next batch over USB.
@@ -807,7 +807,7 @@ void HeliosController::run() {
                 detail::smoothWriteLeadMicros(previousWriteLeadMicros, measuredWriteLeadMicros),
                 std::memory_order_relaxed);
             setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
-            updateEstimatedBufferAnchor(
+            updateEstimatedBufferSnapshot(
                 static_cast<int>(frameBuffer.size()),
                 sendDone,
                 pps);

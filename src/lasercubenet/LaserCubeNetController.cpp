@@ -117,6 +117,9 @@ libera::expected<void> LaserCubeNetController::connectToStatus(const LaserCubeNe
     networkConnected.store(true, std::memory_order_relaxed);
     reconnectRequested.store(false, std::memory_order_relaxed);
     setConnectionState(true);
+    // Device's internal rate is unknown after a fresh connection, so force
+    // the next syncPointRate() tick to push the current value.
+    pointRatePushNeeded = true;
     resetStartupBlank();
     setVerbose(false);
     return {};
@@ -172,7 +175,7 @@ void LaserCubeNetController::run() {
         }
 
         setConnectionState(true);
-        syncPointRateToDevice();
+        syncPointRate();
 
         // Send at most one packet per loop; pacing is handled by buffer estimation.
         (void)sendPoints();
@@ -182,7 +185,7 @@ void LaserCubeNetController::run() {
         // This avoids a busy loop when the controller doesn't need more data yet.
         {
             const int bufferFullness = lastEstimatedBufferFullness.load(std::memory_order_relaxed);
-            const auto activePointRate = getActivePointRate();
+            const auto activePointRate = lastSentPointRate;
             const int targetFull = LaserCubeNetConfig::targetBufferPoints(
                 activePointRate, getTotalBufferCapacity(), targetLatency());
             const int excess = bufferFullness - targetFull;
@@ -214,17 +217,17 @@ bool LaserCubeNetController::sendPoints() {
     // Advance a notional frame index to mirror the LaserDockNet protocol.
     frameNumber++;
 
-    const auto activePointRate = getActivePointRate();
+    const auto activePointRate = lastSentPointRate;
 
     // Estimate how full the controller buffer is right now.
     const int minEstimatedBufferFullness =
         std::max(
-            calculateBufferFullnessFromAnchor(
+            calculateBufferFullnessFromSnapshot(
                 lastDataSentBufferSize,
                 lastDataSentTime,
                 activePointRate,
                 0),
-            calculateBufferFullnessFromAnchor(
+            calculateBufferFullnessFromSnapshot(
                 lastReportedBufferFullness.load(std::memory_order_relaxed),
                 lastAckTime,
                 activePointRate,
@@ -324,10 +327,22 @@ bool LaserCubeNetController::sendPoints() {
     return success;
 }
 
-bool LaserCubeNetController::sendPointRateToDevice(std::uint32_t rate) {
+void LaserCubeNetController::syncPointRate() {
+    const auto desired = getPointRate();
+    // Short-circuit when nothing has changed and no resync is pending.
+    if (!pointRatePushNeeded && desired == lastSentPointRate) {
+        return;
+    }
     core::ByteBuffer payload;
-    payload.appendUInt32(rate);
-    return sendCommand(LaserCubeNetConfig::CMD_SET_ILDA_RATE, payload.data(), payload.size());
+    payload.appendUInt32(desired);
+    const bool ok = sendCommand(LaserCubeNetConfig::CMD_SET_ILDA_RATE, payload.data(), payload.size());
+    if (ok) {
+        lastSentPointRate = desired;
+        pointRatePushNeeded = false;
+    } else {
+        // Leave the latch set so the next tick retries.
+        pointRatePushNeeded = true;
+    }
 }
 
 bool LaserCubeNetController::sendData(const std::uint8_t* buffer, std::size_t size) {
@@ -442,7 +457,7 @@ void LaserCubeNetController::checkAcks() {
         lastReportedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
         lastEstimatedBufferFullness.store(bufferFullness, std::memory_order_relaxed);
 
-        // Always reset the sent-data anchor to ack ground truth.
+        // Always reset the sent-data snapshot to ack ground truth.
         // The previous guard (sentTime >= lastDataSentTime) was never
         // satisfied because sendPoints() updates lastDataSentTime to now
         // on every packet, so the ack's sentTime was always older.  This

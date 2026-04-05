@@ -5,34 +5,34 @@
 
 namespace libera::core {
 
-BufferEstimate BufferEstimator::estimateFromAnchor(
-    int anchorBufferFullness,
-    std::chrono::steady_clock::time_point anchorTime,
+BufferEstimate BufferEstimator::estimateFromSnapshot(
+    int snapshotBufferFullness,
+    std::chrono::steady_clock::time_point snapshotTime,
     std::uint32_t pointRate,
     std::chrono::steady_clock::time_point now) {
     if (pointRate == 0) {
-        return BufferEstimate{anchorBufferFullness, false};
+        return BufferEstimate{snapshotBufferFullness, false};
     }
 
-    if (anchorTime == std::chrono::steady_clock::time_point{}) {
-        return BufferEstimate{anchorBufferFullness, false};
+    if (snapshotTime == std::chrono::steady_clock::time_point{}) {
+        return BufferEstimate{snapshotBufferFullness, false};
     }
 
-    const auto elapsed = now - anchorTime;
+    const auto elapsed = now - snapshotTime;
     if (elapsed <= std::chrono::steady_clock::duration::zero()) {
-        return BufferEstimate{anchorBufferFullness, false};
+        return BufferEstimate{snapshotBufferFullness, false};
     }
 
     const auto elapsedUs =
         std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
     if (elapsedUs <= 0) {
-        return BufferEstimate{anchorBufferFullness, false};
+        return BufferEstimate{snapshotBufferFullness, false};
     }
 
     const double consumed =
         (static_cast<double>(pointRate) * static_cast<double>(elapsedUs)) / 1'000'000.0;
     const int estimated =
-        static_cast<int>(std::llround(static_cast<double>(anchorBufferFullness) - consumed));
+        static_cast<int>(std::llround(static_cast<double>(snapshotBufferFullness) - consumed));
 
     return BufferEstimate{std::max(0, estimated), true};
 }
