@@ -25,7 +25,7 @@ public:
     class ScopedOverride {
     public:
         explicit ScopedOverride(duration timeout)
-        : previous_(storage()) {
+        : previous(storage()) {
             storage() = sanitize(timeout);
         }
 
@@ -33,11 +33,11 @@ public:
         ScopedOverride& operator=(const ScopedOverride&) = delete;
 
         ~ScopedOverride() {
-            storage() = previous_;
+            storage() = previous;
         }
 
     private:
-        duration previous_;
+        duration previous;
     };
 
 private:

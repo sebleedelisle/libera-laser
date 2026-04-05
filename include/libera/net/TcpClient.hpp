@@ -25,34 +25,34 @@ using duration = TimeoutConfig::duration;
 class TcpClient {
 public:
     TcpClient()
-    : io_(shared_io_context())
-    , socket_(*io_)
-    , strand_(asio::make_strand(*io_))
-    , defaultTimeout_(TimeoutConfig::defaultTimeout())
-    , connectTimeout_(TimeoutConfig::defaultTimeout())
+    : io(shared_io_context())
+    , socket(*io)
+    , strand(asio::make_strand(*io))
+    , defaultTimeout(TimeoutConfig::defaultTimeout())
+    , connectTimeout(TimeoutConfig::defaultTimeout())
     {}
 
     void setDefaultTimeout(duration timeout) {
-        defaultTimeout_ = sanitize(timeout);
+        defaultTimeout = sanitize(timeout);
     }
 
-    duration defaultTimeout() const { return defaultTimeout_; }
+    duration getDefaultTimeout() const { return defaultTimeout; }
 
     void setConnectTimeout(duration timeout) {
-        connectTimeout_ = sanitize(timeout);
+        connectTimeout = sanitize(timeout);
     }
 
-    duration connectTimeout() const { return connectTimeout_; }
+    duration getConnectTimeout() const { return connectTimeout; }
 
     // Access to the socket (non-const)
-    tcp::socket& socket() { return socket_; }
+    tcp::socket& getSocket() { return socket; }
 
     // Overload 1: connect from a range/container of *endpoints* (e.g., std::array<tcp::endpoint, N>)
     // Delegates to the single-endpoint overload so each attempt resets the socket
     // before calling connect_one().
     std::error_code connect(const tcp::endpoint& endpoint, duration timeout) {
         close();
-        socket_ = tcp::socket(strand_);
+        socket = tcp::socket(strand);
         auto ec = connect_one(endpoint, timeout);
         if (ec) {
             // A timed-out async_connect leaves the socket open but unusable until it
@@ -63,7 +63,7 @@ public:
     }
 
     std::error_code connect(const tcp::endpoint& endpoint) {
-        return connect(endpoint, connectTimeout_);
+        return connect(endpoint, connectTimeout);
     }
 
     template <typename Endpoints>
@@ -80,7 +80,7 @@ public:
 
     template <typename Endpoints>
     std::error_code connect(const Endpoints& endpoints) {
-        return connect(endpoints, connectTimeout_);
+        return connect(endpoints, connectTimeout);
     }
 
     // Overload 2: connect from resolver results (entries have .endpoint())
@@ -102,12 +102,12 @@ public:
     template <typename Results>
     std::error_code connect(Results results,
                        decltype(std::declval<typename Results::value_type>().endpoint(), 0) = 0) {
-        return connect(results, connectTimeout_);
+        return connect(results, connectTimeout);
     }
 
     std::error_code read_exact(void* buf, std::size_t n, duration timeout,
                                std::size_t* bytesTransferredOut = nullptr) {
-        auto ex = socket_.get_executor();
+        auto ex = socket.get_executor();
         const auto effectiveTimeout = sanitize(timeout);
         // Keep the byte count alive even if the handler fires after this call
         // returns (e.g. cancellation races). A stack variable would be invalid
@@ -115,13 +115,13 @@ public:
         auto bytesTransferredPtr = std::make_shared<std::size_t>(0);
         auto ec = with_deadline(ex, effectiveTimeout,
             [&](auto completion){
-                asio::async_read(socket_, asio::buffer(buf, n),
+                asio::async_read(socket, asio::buffer(buf, n),
                     [&, completion, bytesTransferredPtr](const std::error_code& op_ec, std::size_t transferred){
                         *bytesTransferredPtr = transferred;
                         completion(op_ec);
                     });
             },
-            [&]{ socket_.cancel(); },
+            [&]{ socket.cancel(); },
             "tcp_read"
         );
         if (bytesTransferredOut) {
@@ -131,42 +131,42 @@ public:
     }
 
     std::error_code write_all(const void* buf, std::size_t n, duration timeout) {
-        auto ex = socket_.get_executor();
+        auto ex = socket.get_executor();
         const auto effectiveTimeout = sanitize(timeout);
         auto ec = with_deadline(ex, effectiveTimeout,
             [&](auto completion){
-                asio::async_write(socket_, asio::buffer(buf, n),
+                asio::async_write(socket, asio::buffer(buf, n),
                     [completion](const std::error_code& op_ec, std::size_t){
                         completion(op_ec);
                     });
             },
-            [&]{ socket_.cancel(); },
+            [&]{ socket.cancel(); },
             "tcp_write"
         );
         return ec;
     }
 
     std::error_code read_exact(void* buf, std::size_t n, std::size_t* bytesTransferredOut = nullptr) {
-        return read_exact(buf, n, defaultTimeout_, bytesTransferredOut);
+        return read_exact(buf, n, defaultTimeout, bytesTransferredOut);
     }
 
     std::error_code write_all(const void* buf, std::size_t n) {
-        return write_all(buf, n, defaultTimeout_);
+        return write_all(buf, n, defaultTimeout);
     }
 
     void setLowLatency() {
         std::error_code ec;
-        socket_.set_option(tcp::no_delay(true), ec);
-        socket_.set_option(asio::socket_base::keep_alive(true), ec);
+        socket.set_option(tcp::no_delay(true), ec);
+        socket.set_option(asio::socket_base::keep_alive(true), ec);
     }
 
-    bool is_open() const { return socket_.is_open(); }
+    bool is_open() const { return socket.is_open(); }
     bool is_connected() const {
-        if (!socket_.is_open()) {
+        if (!socket.is_open()) {
             return false;
         }
         std::error_code ec;
-        (void)socket_.remote_endpoint(ec);
+        (void)socket.remote_endpoint(ec);
         return !ec;
     }
 
@@ -175,17 +175,17 @@ public:
     // waiting for timeouts.
     void cancel() {
         std::error_code ec;
-        socket_.cancel(ec);
+        socket.cancel(ec);
     }
 
     void close() {
         logInfo("[TcpClient] close()");
-        if (!socket_.is_open()) return;
+        if (!socket.is_open()) return;
         std::error_code ec;
         // Proactively cancel outstanding operations first (pattern: cancel -> shutdown -> close).
-        socket_.cancel(ec);
-        socket_.shutdown(tcp::socket::shutdown_both, ec);
-        socket_.close(ec);
+        socket.cancel(ec);
+        socket.shutdown(tcp::socket::shutdown_both, ec);
+        socket.close(ec);
     }
 
 private:
@@ -198,11 +198,11 @@ private:
     }
 
     std::error_code connect_one(const tcp::endpoint& ep, duration timeout) {
-        auto ex = socket_.get_executor();
+        auto ex = socket.get_executor();
         const auto effectiveTimeout = sanitize(timeout);
         return with_deadline(ex, effectiveTimeout,
-            [&](auto completion){ socket_.async_connect(ep, completion); },
-            [&]{ socket_.cancel(); },
+            [&](auto completion){ socket.async_connect(ep, completion); },
+            [&]{ socket.cancel(); },
             "tcp_connect"
         );
     }
@@ -211,11 +211,11 @@ private:
         return timeout.count() < 0 ? duration::zero() : timeout;
     }
 
-    std::shared_ptr<asio::io_context> io_;
-    tcp::socket socket_;
-    asio::strand<asio::io_context::executor_type> strand_;
-    duration defaultTimeout_;
-    duration connectTimeout_;
+    std::shared_ptr<asio::io_context> io;
+    tcp::socket socket;
+    asio::strand<asio::io_context::executor_type> strand;
+    duration defaultTimeout;
+    duration connectTimeout;
 };
 
 } // namespace libera::net

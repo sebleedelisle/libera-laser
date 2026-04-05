@@ -11,17 +11,17 @@ NetService& static_service() {
 } // namespace
 
 NetService::NetService()
-: io_(std::make_shared<asio::io_context>())
-, work_guard_(asio::make_work_guard(*io_))
-, t_([this]{ io_->run(); })
+: io(std::make_shared<asio::io_context>())
+, workGuard(asio::make_work_guard(*io))
+, thread([this]{ io->run(); })
 {
     logInfo("Creating NetService object");
 }
 
 NetService::~NetService() {
-    work_guard_.reset();
-    io_->stop();
-    if (t_.joinable()) t_.join();
+    workGuard.reset();
+    io->stop();
+    if (thread.joinable()) thread.join();
 }
 
 NetService& ensureNetService() {
@@ -29,11 +29,11 @@ NetService& ensureNetService() {
 }
 
 std::shared_ptr<asio::io_context> shared_io_context() {
-    return static_service().io();
+    return static_service().getIO();
 }
 
 asio::io_context& io_context() {
-    return *static_service().io();
+    return *static_service().getIO();
 }
 
 } // namespace libera::net
