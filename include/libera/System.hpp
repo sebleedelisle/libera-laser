@@ -89,8 +89,16 @@ public:
     /// Call before constructing System.  If never called, defaults to
     /// the LIBERA_PLUGIN_DIR environment variable, or "plugins" if unset.
     /// Pass an empty string to disable plugin loading entirely.
+    /// Replaces any previously configured directories.
     static void setPluginDirectory(const std::string& path);
     static const std::string& pluginDirectory();
+
+    /// Append an additional directory to the plugin search list.
+    /// Each directory will be scanned when System is constructed.
+    /// Absolute paths are used as-is; relative paths are resolved against
+    /// the executable directory first, then the current working directory.
+    static void addPluginDirectory(const std::string& path);
+    static const std::vector<std::string>& pluginDirectories();
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info);

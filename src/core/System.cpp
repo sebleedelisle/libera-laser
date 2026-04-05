@@ -83,21 +83,34 @@ std::string resolvePluginDirectory(const std::string& requested) {
     return requested;
 }
 
-std::string& pluginDirStorage() {
-    static std::string dir = [] {
+std::vector<std::string>& pluginDirStorage() {
+    static std::vector<std::string> dirs = [] {
         const char* env = std::getenv("LIBERA_PLUGIN_DIR");
-        return env ? std::string(env) : std::string("plugins");
+        return std::vector<std::string>{ env ? std::string(env) : std::string("plugins") };
     }();
-    return dir;
+    return dirs;
 }
 
 } // anonymous namespace
 
 void System::setPluginDirectory(const std::string& path) {
-    pluginDirStorage() = path;
+    auto& dirs = pluginDirStorage();
+    dirs.clear();
+    if (!path.empty()) dirs.push_back(path);
 }
 
 const std::string& System::pluginDirectory() {
+    static const std::string empty;
+    const auto& dirs = pluginDirStorage();
+    return dirs.empty() ? empty : dirs.front();
+}
+
+void System::addPluginDirectory(const std::string& path) {
+    if (path.empty()) return;
+    pluginDirStorage().push_back(path);
+}
+
+const std::vector<std::string>& System::pluginDirectories() {
     return pluginDirStorage();
 }
 
@@ -110,12 +123,19 @@ const std::string& System::pluginDirectory() {
     return empty;
 }
 
+void System::addPluginDirectory(const std::string&) {}
+
+const std::vector<std::string>& System::pluginDirectories() {
+    static const std::vector<std::string> empty;
+    return empty;
+}
+
 #endif
 
 System::System() {
 #if LIBERA_ENABLE_PLUGINS
-    const auto& dir = pluginDirectory();
-    if (!dir.empty()) {
+    for (const auto& dir : pluginDirectories()) {
+        if (dir.empty()) continue;
         plugin::loadPluginsFromDirectory(resolvePluginDirectory(dir));
     }
 #endif
