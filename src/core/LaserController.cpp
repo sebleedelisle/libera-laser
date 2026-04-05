@@ -178,12 +178,11 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
             frameQueue.front()->time - estimatedFirstRenderTime).count();
         const auto renderLeadMs = std::chrono::duration<double, std::milli>(
             estimatedFirstRenderTime - now).count();
-        libera::log::logInfo("[LaserController] fillFromFrameQueue: frame not due, blanking ",
-                       minPoints, " pts frameDueInMs ", frameDueIn,
-                       " renderLeadMs ", renderLeadMs,
-                       " queueSize ", frameQueue.size(),
-                       " playCount ", frameQueue.front()->playCount,
-                       " nextPoint ", frameQueue.front()->nextPoint);
+        logInfoVerbose("[LaserController] fillFromFrameQueue: frame not due, blanking",
+                       minPoints, "pts",
+                       "frameDueInMs", frameDueIn,
+                       "renderLeadMs", renderLeadMs,
+                       "queueSize", frameQueue.size());
         publishQueueMetrics();
         appendBlankPoints(outputBuffer, minPoints);
         return;

@@ -267,38 +267,6 @@ void PluginController::run() {
                 recordIntermittentError(code);
             }
         }
-
-        // 1 Hz diagnostic summary — prints whenever PluginController is
-        // busy in the run loop.
-        const auto nowSample = std::chrono::steady_clock::now();
-        if (nowSample >= nextLogAt) {
-            const double blankPct = diagSentPoints > 0
-                ? (100.0 * diagBlankPoints) / static_cast<double>(diagSentPoints)
-                : 0.0;
-            libera::log::logInfo("[PluginController] ",
-                "rate=", rate,
-                " sent=", diagSentPoints,
-                " blank=", diagBlankPoints, " (", blankPct, "%)",
-                " underruns=", diagUnderruns,
-                " fullSleeps=", diagBufferFullSleeps,
-                " ringFill=[", (diagMinFullness == INT_MAX ? 0 : diagMinFullness),
-                             "..", diagMaxFullness, "]",
-                " qFrames=[", (diagMinQueuedFrames == SIZE_MAX ? 0 : diagMinQueuedFrames),
-                             "..", diagMaxQueuedFrames, "]",
-                " leadMs=[", (diagMinRenderLeadMs == INT_MAX ? 0 : diagMinRenderLeadMs),
-                            "..", diagMaxRenderLeadMs, "]");
-            diagSentPoints = 0;
-            diagBlankPoints = 0;
-            diagUnderruns = 0;
-            diagBufferFullSleeps = 0;
-            diagMinFullness = INT_MAX;
-            diagMaxFullness = 0;
-            diagMinRenderLeadMs = INT_MAX;
-            diagMaxRenderLeadMs = 0;
-            diagMinQueuedFrames = SIZE_MAX;
-            diagMaxQueuedFrames = 0;
-            nextLogAt = nowSample + 1s;
-        }
     }
 
     // Disarm on shutdown.
