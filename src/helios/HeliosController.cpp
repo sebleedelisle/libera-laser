@@ -163,8 +163,8 @@ int queryHeliosUsbFirmwareVersion(libusb_device_handle* handle) {
 namespace error_types = libera::core::error_types;
 
 struct HeliosController::DirectUsbConnection {
-    explicit DirectUsbConnection(libusb_device_handle* deviceHandle)
-        : handle(deviceHandle) {
+    DirectUsbConnection(libusb_device_handle* deviceHandle, int fw)
+        : handle(deviceHandle), firmwareVersion(fw) {
         // Keep one reusable transfer buffer per DAC instance. The Helios USB
         // path is hot and allocation churn here is unnecessary.
         bulkTransferBuffer.reserve((HELIOS_MAX_POINTS * 7) + 5);
@@ -375,6 +375,46 @@ struct HeliosController::DirectUsbConnection {
         return HELIOS_SUCCESS;
     }
 
+    int getFirmwareVersion() const {
+        return firmwareVersion;
+    }
+
+    int getName(char* out) {
+        std::lock_guard<std::mutex> lock(ioMutex);
+        if (!handle || isClosed()) {
+            return HELIOS_ERROR_DEVICE_CLOSED;
+        }
+        std::uint8_t request[2] = {0x05, 0};
+        const int sendRc = sendControlLocked(request, 2, 32);
+        if (sendRc != HELIOS_SUCCESS) {
+            return sendRc;
+        }
+        std::array<std::uint8_t, 32> response{};
+        int actualLength = 0;
+        const int rc = libusb_interrupt_transfer(handle, EP_INT_IN, response.data(),
+                                                 static_cast<int>(response.size()), &actualLength, 32);
+        if (rc != LIBUSB_SUCCESS) {
+            return HELIOS_ERROR_LIBUSB_BASE + rc;
+        }
+        if (actualLength < 1 || response[0] != 0x85) {
+            return HELIOS_ERROR_DEVICE_RESULT;
+        }
+        std::memcpy(out, response.data() + 1, 31);
+        out[31] = '\0';
+        return HELIOS_SUCCESS;
+    }
+
+    int setName(const char* name) {
+        std::lock_guard<std::mutex> lock(ioMutex);
+        if (!handle || isClosed()) {
+            return HELIOS_ERROR_DEVICE_CLOSED;
+        }
+        std::uint8_t txBuffer[32] = {0x06};
+        std::strncpy(reinterpret_cast<char*>(txBuffer + 1), name, 30);
+        txBuffer[31] = '\0';
+        return sendControlLocked(txBuffer, 32, 32);
+    }
+
 private:
     int sendControlLocked(std::uint8_t* buffer, unsigned int length, unsigned int timeoutMs) {
         if (buffer == nullptr) {
@@ -430,6 +470,7 @@ private:
     std::atomic<bool> closed{false};
     std::atomic<bool> abandonHandleOnClose{false};
     bool shutterOpen = false;
+    int firmwareVersion = 0;
     std::mutex ioMutex;
     std::vector<std::uint8_t> bulkTransferBuffer;
 };
@@ -531,9 +572,9 @@ std::shared_ptr<HeliosController> HeliosController::connectUsb(
         // firmware query plus SDK version announce gives the device one full
         // request/response roundtrip before the streaming thread starts polling
         // status, which reduces spurious first-poll USB errors.
-        (void)queryHeliosUsbFirmwareVersion(handle);
+        const int fw = queryHeliosUsbFirmwareVersion(handle);
         (void)announceHeliosSdkVersion(handle);
-        directConnection = std::make_unique<DirectUsbConnection>(handle);
+        directConnection = std::make_unique<DirectUsbConnection>(handle, fw);
         break;
     }
 
@@ -652,6 +693,39 @@ void HeliosController::setFramePointCount(std::size_t points) {
 
 std::size_t HeliosController::framePointCount() const {
     return targetFramePoints.load(std::memory_order_relaxed);
+}
+
+int HeliosController::getFirmwareVersion() const {
+    if (sdk) {
+        return sdk->GetFirmwareVersion(index.load(std::memory_order_relaxed));
+    }
+    if (usbConnection) {
+        return usbConnection->getFirmwareVersion();
+    }
+    return 0;
+}
+
+std::string HeliosController::getDacName() const {
+    char buf[32] = {0};
+    if (sdk) {
+        sdk->GetName(index.load(std::memory_order_relaxed), buf);
+    } else if (usbConnection) {
+        usbConnection->getName(buf);
+    }
+    return std::string(buf);
+}
+
+bool HeliosController::setDacName(const std::string& name) {
+    std::string truncated = name.substr(0, 30);
+    char buf[32] = {0};
+    std::strncpy(buf, truncated.c_str(), 30);
+    if (sdk) {
+        return sdk->SetName(index.load(std::memory_order_relaxed), buf) == HELIOS_SUCCESS;
+    }
+    if (usbConnection) {
+        return usbConnection->setName(buf) == HELIOS_SUCCESS;
+    }
+    return false;
 }
 
 void HeliosController::run() {

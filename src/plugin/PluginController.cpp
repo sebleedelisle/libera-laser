@@ -85,6 +85,8 @@ bool PluginController::open() {
     if (funcs.set_point_rate) {
         funcs.set_point_rate(pluginHandle, getPointRate());
     }
+    // Force the first run() iteration to push the current armed state.
+    lastSentArmed = !isArmed();
     return true;
 }
 
@@ -93,13 +95,6 @@ void PluginController::setPointRate(std::uint32_t pointRateValue) {
     if (pluginHandle && funcs.set_point_rate) {
         funcs.set_point_rate(pluginHandle, pointRateValue);
     }
-}
-
-std::optional<core::BufferState> PluginController::getBufferState() const {
-    const auto pts = cachedPointsInBuffer.load(std::memory_order_relaxed);
-    const auto cap = cachedTotalBufferPoints.load(std::memory_order_relaxed);
-    if (pts < 0 || cap <= 0) return std::nullopt;
-    return buildBufferState(cap, pts);
 }
 
 void PluginController::recordLatencyFromPlugin(std::uint64_t nanoseconds) {
@@ -161,16 +156,45 @@ void PluginController::run() {
     std::vector<libera_point_t> pluginPoints;
     pluginPoints.reserve(FALLBACK_MAX_BATCH_POINTS);
 
+    constexpr auto reconnectRetryDelay = 1s;
+
     while (running.load()) {
         if (!connected.load(std::memory_order_relaxed)) {
+            // Drop the old handle (it may already be invalid) and try to
+            // obtain a fresh one.  Plugin authors don't have to implement
+            // reconnect logic themselves — it lives here so every plugin
+            // gets it for free.
             setConnectionState(false);
-            std::this_thread::sleep_for(100ms);
-            continue;
+            if (pluginHandle) {
+                funcs.disconnect(pluginHandle);
+                pluginHandle = nullptr;
+            }
+            pluginHandle = funcs.connect(controllerId.c_str(),
+                                         static_cast<libera_host_ctx_t>(this));
+            if (!pluginHandle) {
+                std::this_thread::sleep_for(reconnectRetryDelay);
+                continue;
+            }
+            // Fresh connection: push the current rate to the new handle
+            // and force the next tick to re-push armed state.
+            if (funcs.set_point_rate) {
+                funcs.set_point_rate(pluginHandle, getPointRate());
+            }
+            lastSentArmed = !isArmed();
+            resetStartupBlank();
+            connected.store(true, std::memory_order_relaxed);
         }
         setConnectionState(true);
 
-        // Keep the plugin's armed state in sync.
-        funcs.set_armed(pluginHandle, isArmed());
+        // Push armed state only on transitions.  The base class already
+        // blanks r/g/b (and pins x/y) in requestPoints() when !isArmed(),
+        // so funcs.set_armed() is a plugin-side safety signal layered on
+        // top of that, not the primary blanking mechanism.
+        const bool armedNow = isArmed();
+        if (armedNow != lastSentArmed) {
+            funcs.set_armed(pluginHandle, armedNow);
+            lastSentArmed = armedNow;
+        }
 
         const auto rate = getPointRate();
 
@@ -183,8 +207,8 @@ void PluginController::run() {
         if (funcs.get_buffer_state &&
             funcs.get_buffer_state(pluginHandle, &bs) == 0 &&
             bs.total_buffer_points > 0 && bs.points_in_buffer >= 0) {
-            cachedPointsInBuffer.store(bs.points_in_buffer, std::memory_order_relaxed);
-            cachedTotalBufferPoints.store(bs.total_buffer_points, std::memory_order_relaxed);
+            setEstimatedBufferCapacity(bs.total_buffer_points);
+            updateEstimatedBufferSnapshotNow(bs.points_in_buffer, rate);
             haveBuffer = true;
         }
 

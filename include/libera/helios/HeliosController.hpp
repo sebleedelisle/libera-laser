@@ -52,6 +52,17 @@ public:
     void setFramePointCount(std::size_t points);
     std::size_t framePointCount() const;
 
+    /// Returns the firmware version stored on the DAC.
+    /// For USB Helios: a simple integer (≤ 255). For IDN: AABBCC format (vAA.BB.CC).
+    int getFirmwareVersion() const;
+
+    /// Returns the persistent name stored on the DAC hardware.
+    std::string getDacName() const;
+
+    /// Writes a new persistent name to the DAC hardware (max 30 characters).
+    /// Returns true on success. The name survives power cycles.
+    bool setDacName(const std::string& name);
+
 protected:
     void run() override;
 

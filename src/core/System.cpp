@@ -173,7 +173,11 @@ System::connectController(const core::ControllerInfo& info) {
     if (it == managerByType.end() || !it->second) {
         return nullptr;
     }
-    return it->second->connectController(info);
+    auto controller = it->second->connectController(info);
+    if (controller) {
+        controller->setControllerIdentity(info.idValue(), info.labelValue());
+    }
+    return controller;
 }
 
 void System::shutdown() {

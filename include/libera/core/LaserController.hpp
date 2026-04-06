@@ -20,6 +20,8 @@ struct Frame {
     std::chrono::steady_clock::time_point time{};
     std::size_t playCount = 0;
     std::size_t nextPoint = 0; // cursor of the next sample to emit
+    // Set internally when the frame is first played; used to enforce maxFrameTime().
+    std::chrono::steady_clock::time_point firstPlayTime{};
 };
 
 class LaserController : public LaserControllerStreaming {
@@ -41,6 +43,21 @@ public:
      * @brief Get the global target latency used by frame-mode controllers.
      */
     static std::chrono::milliseconds targetLatency();
+
+    /**
+     * @brief Set the maximum time the last frame will be held/looped when no new frame arrives.
+     *
+     * If no new frame is submitted before this deadline expires, output goes
+     * blank automatically. Set to zero to disable the limit (loop forever).
+     * Default is 100 ms, which gives a generous window to replace a frame
+     * while still going blank cleanly if the sender stops or pauses.
+     */
+    static void setMaxFrameHoldTime(std::chrono::milliseconds time);
+
+    /**
+     * @brief Get the current max frame hold time. Default is 100 ms.
+     */
+    static std::chrono::milliseconds maxFrameHoldTime();
 
     bool sendFrame(Frame&& frame);
     void startFrameMode();

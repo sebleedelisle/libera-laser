@@ -18,6 +18,8 @@
 #include "libera/core/ThreadUtils.hpp"
 #include "libera/log/Log.hpp"
 
+namespace libera { class System; }
+
 namespace libera::core {
 
 /**
@@ -115,22 +117,12 @@ public:
      */
     void setRequestPointsCallback(const RequestPointsCallback &callback);
 
-    /**
-     * @brief Ask the callback for more points and append them to the main buffer.
-     *
-     * Typical usage is from a hardware-specific run loop: call requestPoints() to
-     * invoke the user-supplied callback, then send pointsToSend to the controller.
-     *
-     * @param request Fill request (min points required, estimated render time).
-     * @return false if no callback is installed, true if points were appended.
-     */
-    bool requestPoints(const PointFillRequest &request);
 
-    /// Start the worker thread.
-    void start();
+    /// Start the worker thread. Called by the framework — not intended for user code.
+    void startThread();
 
-    /// Request the thread to stop and wait for it to finish.
-    void stop();
+    /// Request the worker thread to stop and wait for it to finish. Called by the framework — not intended for user code.
+    void stopThread();
 
     /**
      * @brief Configure the desired output point rate (points per second).
@@ -160,9 +152,17 @@ public:
     /// Clear aggregated error counters and intermittent warning state.
     void clearErrors();
 
-    // arm status - needs to be set or no output! 
+    // arm status - needs to be set or no output!
     bool isArmed() const noexcept;
-    void setArmed(bool state = true); 
+    void setArmed(bool state = true);
+
+    /// Human-readable label for this controller (e.g. "Helios DAC 1").
+    /// Set automatically by the framework after connectController().
+    const std::string& getName() const noexcept;
+
+    /// Stable unique identifier for this controller.
+    /// Set automatically by the framework after connectController().
+    const std::string& getID() const noexcept;
 
     // Offset expressed in 1/10,000th of a second (0.1 ms) units.
     void setScannerSync(double offsetTenThousandths); 
@@ -170,15 +170,32 @@ public:
     void setVerbose(bool enabled);
     bool isVerbose() const noexcept;
 
+
+protected:
+    friend class ::libera::System;
+
+    /// Worker loop implemented by subclasses.
+    virtual void run() = 0;
+
+    /**
+     * @brief Ask the callback for more points and append them to the main buffer.
+     *
+     * Called from subclass run loops. Invokes the user-supplied callback, then
+     * sends pointsToSend to the controller.
+     *
+     * @param request Fill request (min points required, estimated render time).
+     * @return false if no callback is installed, true if points were appended.
+     */
+    bool requestPoints(const PointFillRequest &request);
+
     /// Reset the startup blanking window to 1 ms worth of points.
     void resetStartupBlank();
 
     /// Reset the shutdown blanking window (blank-in-place before returning to centre).
     void resetShutdownBlank();
 
-protected:
-    /// Worker loop implemented by subclasses.
-    virtual void run() = 0;
+    /// Called by System::connectController() to stamp identity from ControllerInfo.
+    void setControllerIdentity(std::string id, std::string name);
 
     template <typename... Args>
     void logInfoVerbose(Args&&... args) const {
@@ -250,6 +267,9 @@ protected:
 
     /// Increment a connection failure error type counter and mark disconnected.
     void recordConnectionError(std::string_view errorType);
+
+    std::string controllerName_;
+    std::string controllerId_;
 
     std::atomic<bool> armed{false};
 

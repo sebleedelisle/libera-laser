@@ -57,7 +57,6 @@ public:
     bool open();
 
     void setPointRate(std::uint32_t pointRateValue) override;
-    std::optional<core::BufferState> getBufferState() const override;
 
     // Called by the host-services callbacks installed in PluginManager.
     void recordLatencyFromPlugin(std::uint64_t nanoseconds);
@@ -76,9 +75,10 @@ private:
     void* pluginHandle = nullptr;
     std::atomic<bool> connected{false};
 
-    // Cached buffer state reported by the plugin (last successful query).
-    mutable std::atomic<std::int32_t> cachedPointsInBuffer{-1};
-    mutable std::atomic<std::int32_t> cachedTotalBufferPoints{-1};
+    // Last armed state pushed to the plugin via funcs.set_armed(). Only
+    // touched from the run() thread; we push on transition rather than
+    // on every tick.
+    bool lastSentArmed = false;
 };
 
 } // namespace libera::plugin
