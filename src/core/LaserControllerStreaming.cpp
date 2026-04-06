@@ -185,7 +185,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
 }
 
 
-void LaserControllerStreaming::start() {
+void LaserControllerStreaming::startThread() {
     if (running) return; // Already running.
     workerFinished.store(false, std::memory_order_relaxed);
     running = true;
@@ -196,8 +196,8 @@ void LaserControllerStreaming::start() {
     });
 }
 
-void LaserControllerStreaming::stop() {
-    logInfoVerbose("[LaserControllerStreaming] stop()");
+void LaserControllerStreaming::stopThread() {
+    logInfoVerbose("[LaserControllerStreaming] stopThread()");
     running = false;
     timedJoin(worker, workerFinished, std::chrono::milliseconds(5000),
               "LaserControllerStreaming::worker");
@@ -237,6 +237,19 @@ int LaserControllerStreaming::millisToPoints(double millis) const {
 
 bool LaserControllerStreaming::isArmed() const noexcept {
     return armed.load(std::memory_order_relaxed);
+}
+
+const std::string& LaserControllerStreaming::getName() const noexcept {
+    return controllerName_;
+}
+
+const std::string& LaserControllerStreaming::getID() const noexcept {
+    return controllerId_;
+}
+
+void LaserControllerStreaming::setControllerIdentity(std::string id, std::string name) {
+    controllerId_ = std::move(id);
+    controllerName_ = std::move(name);
 }
 
 void LaserControllerStreaming::setArmed(bool state) {

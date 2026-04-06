@@ -100,6 +100,14 @@ you'll get back the existing instance.
 
 You can hold onto the `shared_ptr` for the lifetime of your laser output.
 
+Once connected, the controller exposes the same identity fields that were on
+the `ControllerInfo`, so you don't need to keep the info object around:
+
+```cpp
+std::cout << controller->getName() << "\n";  // e.g. "Ether Dream 1234"
+std::cout << controller->getID()   << "\n";  // stable unique identifier
+```
+
 ## Step 3 — arm the controller
 
 Controllers start in an **unarmed** state and will not emit any light until you
@@ -194,6 +202,20 @@ while (running) {
 `isReadyForNewFrame()` returns `true` when the internal queue has room.
 `sendFrame()` hands ownership of the frame over to Libera, which then feeds it
 to the hardware at the right pace.
+
+**Hold time and auto-blanking.** By default, if no new frame arrives within
+100 ms the last frame stops looping and output goes blank automatically. This
+means your laser turns off cleanly if your app pauses or stops sending — no
+extra code required. You can adjust the window with `setMaxFrameHoldTime()`,
+or set it to zero to loop the last frame indefinitely:
+
+```cpp
+// Blank after 200 ms of no new frames (e.g. for slower frame rates):
+core::LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(200));
+
+// Loop the last frame forever (legacy behaviour):
+core::LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(0));
+```
 
 ### Streaming mode (more control)
 

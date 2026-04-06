@@ -276,7 +276,7 @@ PluginDelegateManager::connectController(const core::ControllerInfo& info) {
     activeControllers[info.idValue()] = controller;
 
     controller->startFrameMode();
-    controller->start();
+    controller->startThread();
 
     return controller;
 }
@@ -285,7 +285,7 @@ void PluginDelegateManager::closeAll() {
     std::lock_guard lock(activeMutex);
     for (auto& [id, weak] : activeControllers) {
         if (auto ctrl = weak.lock()) {
-            ctrl->stop();
+            ctrl->stopThread();
         }
     }
     activeControllers.clear();

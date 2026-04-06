@@ -24,6 +24,14 @@ std::atomic<std::int64_t>& targetLatencyMsStorage() {
     return latencyMs;
 }
 
+std::atomic<std::int64_t>& maxFrameHoldTimeMsStorage() {
+    // Default 100 ms: generous window to replace a frame, but output goes
+    // blank automatically if the sender stops or pauses.
+    // Set to 0 to disable (loop the last frame forever).
+    static std::atomic<std::int64_t> ms{100};
+    return ms;
+}
+
 } // namespace
 
 LaserController::LaserController() = default;
@@ -37,6 +45,16 @@ void LaserController::setTargetLatency(std::chrono::milliseconds latency) {
 std::chrono::milliseconds LaserController::targetLatency() {
     return std::chrono::milliseconds(
         targetLatencyMsStorage().load(std::memory_order_relaxed));
+}
+
+void LaserController::setMaxFrameHoldTime(std::chrono::milliseconds time) {
+    const auto clamped = std::max<std::int64_t>(0, time.count());
+    maxFrameHoldTimeMsStorage().store(clamped, std::memory_order_relaxed);
+}
+
+std::chrono::milliseconds LaserController::maxFrameHoldTime() {
+    return std::chrono::milliseconds(
+        maxFrameHoldTimeMsStorage().load(std::memory_order_relaxed));
 }
 
 // returns false if the controller isn't ready for a new frame or if the frame is empty. 
@@ -190,7 +208,10 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
 
     while(true) {
         Frame* currentFrame = frameQueue.front().get();
-        if(currentFrame->playCount==0) currentFrame->playCount++;
+        if(currentFrame->playCount==0) {
+            currentFrame->firstPlayTime = std::chrono::steady_clock::now();
+            currentFrame->playCount++;
+        }
 
         assert(currentFrame->points.size()>0 && "Empty frame in buffer");
 
@@ -224,6 +245,18 @@ void LaserController::fillFromFrameQueue(const PointFillRequest& request,
             frameQueue.pop_front();
             // currentFrame pointer is now dangling — do not access it.
         } else {
+            // Hold-last-frame: check max frame time before looping.
+            const auto maxFT = maxFrameHoldTime();
+            if (maxFT.count() > 0) {
+                const auto elapsed = std::chrono::steady_clock::now() - currentFrame->firstPlayTime;
+                if (elapsed >= maxFT) {
+                    frameQueue.pop_front();
+                    const std::size_t needed = minPoints > outputBuffer.size() ? minPoints - outputBuffer.size() : 0;
+                    appendBlankPoints(outputBuffer, needed);
+                    publishQueueMetrics();
+                    return;
+                }
+            }
             currentFrame->nextPoint = 0;
             currentFrame->playCount++;
         }

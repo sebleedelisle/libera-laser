@@ -355,7 +355,7 @@ IdnManager::connectController(const core::ControllerInfo& info) {
 
     if (controller) {
         // Keep existing behavior: calling connectController can re-start a controller.
-        controller->start();
+        controller->startThread();
     }
 
     return controller;
@@ -370,7 +370,7 @@ void IdnManager::closeAll() {
 
     for (auto& [index, dev] : snapshot) {
         if (!dev) continue;
-        dev->stop();
+        dev->stopThread();
         dev->close();
     }
 

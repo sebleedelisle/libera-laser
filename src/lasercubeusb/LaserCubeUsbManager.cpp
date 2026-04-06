@@ -223,7 +223,7 @@ LaserCubeUsbManager::connectController(const core::ControllerInfo& info) {
         activeControllers.erase(usbInfo->idValue());
         return nullptr;
     }
-    controller->start();
+    controller->startThread();
 
     return controller;
 }
@@ -237,7 +237,7 @@ void LaserCubeUsbManager::closeAll() {
 
     for (auto& [id, controller] : snapshot) {
         if (controller) {
-            controller->stop();
+            controller->stopThread();
             controller->close();
         }
     }

@@ -324,7 +324,7 @@ void AvbManager::closeAll() {
         if (!controller) {
             continue;
         }
-        controller->stop();
+        controller->stopThread();
         controller->close();
     }
 }

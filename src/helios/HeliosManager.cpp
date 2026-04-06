@@ -678,7 +678,7 @@ HeliosManager::connectController(const core::ControllerInfo& info) {
 
     if (controller) {
         // Keep existing behavior: calling connectController can re-start a controller.
-        controller->start();
+        controller->startThread();
     }
 
     return controller;
@@ -694,7 +694,7 @@ void HeliosManager::closeAll() {
     for (auto& [name, dev] : snapshot) {
         (void)name;
         if (!dev) continue;
-        dev->stop();
+        dev->stopThread();
         // Shutdown-only escape hatch:
         // the direct Helios USB path has shown libusb_close() crashes during
         // app teardown on macOS. After the worker thread is joined there is no

@@ -45,7 +45,7 @@ void LaserCubeNetManager::closeAll() {
 
     for (auto& [id, dev] : snapshot) {
         if (dev) {
-            dev->stop();
+            dev->stopThread();
             dev->close();
         }
     }
@@ -185,7 +185,7 @@ LaserCubeNetManager::connectController(const core::ControllerInfo& info) {
         if (auto result = controller->connect(*lcInfo); !result) {
             logError("[LaserCubeNetManager] initial connect failed", result.error().message());
         }
-        controller->start();
+        controller->startThread();
     }
 
     return controller;

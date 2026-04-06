@@ -112,7 +112,7 @@ EtherDreamManager::connectController(const core::ControllerInfo& info) {
         if (auto result = controller->connect(*etherInfo); !result) {
             logError("[EtherDreamManager] initial connect failed", result.error().message());
         }
-        controller->start();
+        controller->startThread();
     }
 
     return controller;
@@ -135,7 +135,7 @@ void EtherDreamManager::closeAll() {
 
     for (auto& [id, dev] : snapshot) {
         if (!dev) continue;
-        dev->stop();
+        dev->stopThread();
         dev->close();
     }
 
