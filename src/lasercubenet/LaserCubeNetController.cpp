@@ -27,7 +27,7 @@ LaserCubeNetController::LaserCubeNetController(LaserCubeNetControllerInfo info)
 }
 
 LaserCubeNetController::~LaserCubeNetController() {
-    stop();
+    stopThread();
     close();
 }
 

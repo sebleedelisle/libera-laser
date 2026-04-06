@@ -65,7 +65,7 @@ PluginController::PluginController(const PluginFunctions& funcs,
 , controllerId(controllerId) {}
 
 PluginController::~PluginController() {
-    stop();
+    stopThread();
     if (pluginHandle) {
         funcs.disconnect(pluginHandle);
         pluginHandle = nullptr;
