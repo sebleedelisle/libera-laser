@@ -71,7 +71,7 @@ LaserControllerStreaming::LaserControllerStreaming() {
 }
 
 LaserControllerStreaming::~LaserControllerStreaming() {
-    stop();
+    stopThread();
 }
 
 void LaserControllerStreaming::setRequestPointsCallback(const RequestPointsCallback &callback) {

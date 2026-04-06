@@ -617,7 +617,7 @@ HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextVal
 }
 
 HeliosController::~HeliosController() {
-    stop();
+    stopThread();
     close();
 }
 

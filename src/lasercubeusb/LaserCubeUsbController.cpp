@@ -172,7 +172,7 @@ LaserCubeUsbController::LaserCubeUsbController(std::shared_ptr<libusb_context> c
     : usbContext(std::move(context)) {}
 
 LaserCubeUsbController::~LaserCubeUsbController() {
-    stop();
+    stopThread();
     close();
 }
 
