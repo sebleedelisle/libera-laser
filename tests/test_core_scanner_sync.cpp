@@ -27,6 +27,10 @@ public:
     const std::vector<LaserPoint>& lastBatch() const {
         return pointsToSend;
     }
+
+    bool requestPoints(const PointFillRequest& request) {
+        return LaserControllerStreaming::requestPoints(request);
+    }
 };
 
 // ── Scanner sync default ─────────────────────────────────────────────
