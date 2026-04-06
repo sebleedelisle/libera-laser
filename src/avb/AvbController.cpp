@@ -29,7 +29,7 @@ AvbController::AvbController(std::string stableId,
 }
 
 AvbController::~AvbController() {
-    stop();
+    stopThread();
     close();
 }
 

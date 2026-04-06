@@ -39,7 +39,7 @@ EtherDreamController::EtherDreamController(EtherDreamControllerInfo info)
 
 EtherDreamController::~EtherDreamController() {
     // Orderly shutdown: stop the worker thread and close the TCP connection.
-    stop();
+    stopThread();
     close();
 }
 
