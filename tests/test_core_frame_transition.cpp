@@ -27,6 +27,10 @@ public:
         return pointsToSend;
     }
 
+    bool requestPoints(const PointFillRequest& request) {
+        return LaserController::requestPoints(request);
+    }
+
 protected:
     void run() override {}
 };

@@ -41,6 +41,10 @@ public:
     const std::vector<LaserPoint>& lastBatch() const {
         return pointsToSend;
     }
+
+    bool requestPoints(const PointFillRequest& request) {
+        return LaserControllerStreaming::requestPoints(request);
+    }
 };
 
 std::unordered_map<std::string, std::uint64_t>
