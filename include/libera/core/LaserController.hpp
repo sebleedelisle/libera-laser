@@ -26,6 +26,12 @@ struct Frame {
 
 class LaserController : public LaserControllerStreaming {
 public:
+    enum class ContentSource {
+        None,
+        UserPoints,
+        FrameQueue
+    };
+
     LaserController();
     virtual ~LaserController();
 
@@ -59,6 +65,15 @@ public:
      */
     static std::chrono::milliseconds maxFrameHoldTime();
 
+    /**
+     * @brief Install or clear the user point callback.
+     *
+     * Installing a callback switches the controller into streaming mode and
+     * clears any queued frame-mode state. Queueing a frame later will switch
+     * it back to frame mode automatically.
+     */
+    void setRequestPointsCallback(const RequestPointsCallback& callback);
+
     bool sendFrame(Frame&& frame);
     void startFrameMode();
     void stopFrameMode();
@@ -67,6 +82,17 @@ public:
     std::size_t queuedFrameCount() const;
 
 protected:
+    struct FrameFillRequest {
+        std::size_t maximumPointsRequired = 0;
+        std::size_t blankFramePointCount = 0;
+        std::chrono::steady_clock::time_point estimatedFirstPointRenderTime{};
+        std::uint64_t currentPointIndex = 0;
+    };
+
+    bool requestPoints(const PointFillRequest& request);
+    bool requestFrame(const FrameFillRequest& request, Frame& outputFrame);
+    bool isUsingFrameQueueSource() const;
+
     void fillFromFrameQueue(const PointFillRequest& request,
                            std::vector<LaserPoint>& outputBuffer);
     void drainPendingFrames();
@@ -77,6 +103,7 @@ private:
     mutable std::mutex pendingFramesMutex;
     std::deque<std::unique_ptr<Frame>> frameQueue;
     bool frameModeActive = false;
+    ContentSource activeSource = ContentSource::None;
     std::atomic<std::size_t> pendingFrameCount{0};
     std::atomic<std::size_t> pendingPointCount{0};
     std::atomic<std::size_t> frameQueueCountEstimate{0};
@@ -92,6 +119,7 @@ private:
     static constexpr float BLANK_POINTS_PER_UNIT_DISTANCE = 20.0f;
     static constexpr std::size_t MIN_BLANK_POINTS_PER_END = 2;
     std::vector<LaserPoint> pendingTransitionPoints;
+    std::unique_ptr<Frame> pendingTransitionFrame;
 
     void generateTransitionPoints(const LaserPoint& from, const LaserPoint& to,
                                   std::vector<LaserPoint>& out);

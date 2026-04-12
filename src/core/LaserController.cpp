@@ -57,6 +57,22 @@ std::chrono::milliseconds LaserController::maxFrameHoldTime() {
         maxFrameHoldTimeMsStorage().load(std::memory_order_relaxed));
 }
 
+void LaserController::setRequestPointsCallback(const RequestPointsCallback& callback) {
+    if (callback) {
+        // The public API keeps "last writer wins" behaviour: installing a user
+        // point callback abandons any queued frame-mode state immediately.
+        stopFrameMode();
+        LaserControllerStreaming::setRequestPointsCallback(callback);
+        activeSource = ContentSource::UserPoints;
+        return;
+    }
+
+    LaserControllerStreaming::setRequestPointsCallback({});
+    if (activeSource == ContentSource::UserPoints) {
+        activeSource = ContentSource::None;
+    }
+}
+
 // returns false if the controller isn't ready for a new frame or if the frame is empty. 
 
 bool LaserController::sendFrame(Frame&& frame) {
@@ -86,26 +102,37 @@ bool LaserController::sendFrame(Frame&& frame) {
 
 void LaserController::startFrameMode() {
     if (frameModeActive) {
+        activeSource = ContentSource::FrameQueue;
         return;
     }
+
+    // Frame mode owns scheduling internally, so it must not reuse the user
+    // point callback slot in the streaming base class.
+    LaserControllerStreaming::setRequestPointsCallback({});
     frameModeActive = true;
-    setRequestPointsCallback([this](const PointFillRequest& req, std::vector<LaserPoint>& out) {
-        fillFromFrameQueue(req, out);
-    });
+    activeSource = ContentSource::FrameQueue;
 }
 
 void LaserController::stopFrameMode() {
     if (!frameModeActive) {
         return;
     }
-    setRequestPointsCallback({});
+
     {
         std::lock_guard<std::mutex> lock(pendingFramesMutex);
         pendingFrames.clear();
         pendingFrameCount.store(0, std::memory_order_relaxed);
         pendingPointCount.store(0, std::memory_order_relaxed);
     }
+    frameQueue.clear();
+    pendingTransitionPoints.clear();
+    pendingTransitionFrame.reset();
+    updateFrameQueueMetricsUnsafe();
+    nominalFramePointCount.store(1, std::memory_order_relaxed);
     frameModeActive = false;
+    if (activeSource == ContentSource::FrameQueue) {
+        activeSource = ContentSource::None;
+    }
 }
 
 bool LaserController::isFrameModeEnabled() const {
@@ -122,6 +149,197 @@ bool LaserController::isReadyForNewFrame() const {
 std::size_t LaserController::queuedFrameCount() const {
     return frameQueueCountEstimate.load(std::memory_order_relaxed) +
            pendingFrameCount.load(std::memory_order_relaxed);
+}
+
+bool LaserController::requestPoints(const PointFillRequest& request) {
+    if (activeSource == ContentSource::UserPoints) {
+        return LaserControllerStreaming::requestPoints(request);
+    }
+
+    if (activeSource != ContentSource::FrameQueue) {
+        return false;
+    }
+
+    pointsToSend.clear();
+    fillFromFrameQueue(request, pointsToSend);
+
+    // Keep the point-stream contract identical to LaserControllerStreaming so
+    // existing controllers and tests continue to see the same behaviour.
+    assert(pointsToSend.size() >= request.minimumPointsRequired &&
+           "Frame queue did not provide the minimum required number of points.");
+    assert(pointsToSend.size() <= request.maximumPointsRequired &&
+           "Frame queue produced more points than allowed by maximumPointsRequired.");
+
+    if (pointsToSend.size() > request.maximumPointsRequired) {
+        logError("[LaserController::requestPoints] - too many points sent! Maximum :",
+                 request.maximumPointsRequired,
+                 " actual :",
+                 pointsToSend.size());
+        logError("[LaserController::requestPoints] - removing additional points");
+        pointsToSend.resize(request.maximumPointsRequired);
+    } else if (pointsToSend.size() < request.minimumPointsRequired) {
+        const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();
+        const LaserPoint blankPoint{};
+        pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
+    }
+
+    postProcessOutputPoints(pointsToSend);
+    return true;
+}
+
+bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outputFrame) {
+    if (activeSource != ContentSource::FrameQueue) {
+        return false;
+    }
+
+    outputFrame = Frame{};
+    drainPendingFrames();
+
+    auto estimatedFirstRenderTime = request.estimatedFirstPointRenderTime;
+    if (estimatedFirstRenderTime == std::chrono::steady_clock::time_point{}) {
+        estimatedFirstRenderTime = std::chrono::steady_clock::now();
+    }
+
+    const auto publishQueueMetrics = [this]() {
+        updateFrameQueueMetricsUnsafe();
+    };
+
+    const auto clampFrameToMaximum = [&request, this](Frame& frame) {
+        if (request.maximumPointsRequired == 0) {
+            frame.points.clear();
+            return;
+        }
+
+        if (frame.points.size() <= request.maximumPointsRequired) {
+            return;
+        }
+
+        logInfoVerbose("[LaserController] requestFrame: truncating frame from",
+                       frame.points.size(),
+                       "to",
+                       request.maximumPointsRequired,
+                       "points");
+        frame.points.resize(request.maximumPointsRequired);
+    };
+
+    const auto finishFrame = [&]() {
+        clampFrameToMaximum(outputFrame);
+        postProcessOutputPoints(outputFrame.points);
+        publishQueueMetrics();
+        return true;
+    };
+
+    const auto loadBlankFrame = [&]() {
+        outputFrame = Frame{};
+        appendBlankPoints(outputFrame.points, request.blankFramePointCount);
+    };
+
+    if (pendingTransitionFrame) {
+        outputFrame = *pendingTransitionFrame;
+        pendingTransitionFrame.reset();
+        return finishFrame();
+    }
+
+    if (frameQueue.empty()) {
+        loadBlankFrame();
+        return finishFrame();
+    }
+
+    // Skip stale frames that have never been sent. This matches the existing
+    // point-stream scheduler, which only discards a frame if a newer frame is
+    // already due and the older one has not started yet.
+    {
+        std::size_t skipped = 0;
+        while (frameQueue.size() > 1) {
+            if (frameQueue.front()->playCount != 0) {
+                break;
+            }
+            if (!frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
+                break;
+            }
+            frameQueue.pop_front();
+            ++skipped;
+        }
+        if (skipped > 0) {
+            logInfoVerbose("[LaserController] requestFrame: skipped", skipped, "stale frames");
+        }
+    }
+
+    while (true) {
+        if (frameQueue.empty()) {
+            loadBlankFrame();
+            return finishFrame();
+        }
+
+        Frame* currentFrame = frameQueue.front().get();
+        assert(currentFrame != nullptr && "Null frame in queue");
+        assert(!currentFrame->points.empty() && "Empty frame in queue");
+
+        // The timestamp only gates the very first play. Once a frame has
+        // started, we either hold it, replace it with the next due frame, or
+        // blank when the hold timeout expires.
+        if (currentFrame->playCount == 0 &&
+            !frameIsDueAt(*currentFrame, estimatedFirstRenderTime)) {
+            loadBlankFrame();
+            return finishFrame();
+        }
+
+        if (currentFrame->playCount > 0) {
+            if (frameQueue.size() > 1 &&
+                frameIsDueAt(*frameQueue[1], estimatedFirstRenderTime)) {
+                const LaserPoint lastPoint = currentFrame->points.back();
+                frameQueue.pop_front();
+
+                Frame* nextFrame = frameQueue.front().get();
+                assert(nextFrame != nullptr && !nextFrame->points.empty() &&
+                       "Next frame must contain points");
+
+                const LaserPoint& firstPoint = nextFrame->points.front();
+                const float dx = firstPoint.x - lastPoint.x;
+                const float dy = firstPoint.y - lastPoint.y;
+                const float distance = std::sqrt(dx * dx + dy * dy);
+
+                if (distance > BLANK_TRANSITION_DISTANCE_THRESHOLD) {
+                    pendingTransitionFrame = std::make_unique<Frame>();
+                    generateTransitionPoints(lastPoint,
+                                             firstPoint,
+                                             pendingTransitionFrame->points);
+                    outputFrame = *pendingTransitionFrame;
+                    pendingTransitionFrame.reset();
+                    return finishFrame();
+                }
+
+                continue;
+            }
+
+            const auto maxHold = maxFrameHoldTime();
+            if (maxHold.count() > 0) {
+                const auto elapsed = std::chrono::steady_clock::now() - currentFrame->firstPlayTime;
+                if (elapsed >= maxHold) {
+                    frameQueue.pop_front();
+                    loadBlankFrame();
+                    return finishFrame();
+                }
+            }
+        }
+
+        if (currentFrame->playCount == 0) {
+            currentFrame->firstPlayTime = std::chrono::steady_clock::now();
+        }
+
+        // Native-frame transports should consume whole frames. If a frame is
+        // too large for the backend, truncate the queued copy so the dropped
+        // tail does not leak into future hold/repeat submissions.
+        clampFrameToMaximum(*currentFrame);
+        currentFrame->nextPoint = 0;
+        ++currentFrame->playCount;
+        outputFrame = *currentFrame;
+        return finishFrame();
+    }
+}
+
+bool LaserController::isUsingFrameQueueSource() const {
+    return activeSource == ContentSource::FrameQueue;
 }
 
 void LaserController::fillFromFrameQueue(const PointFillRequest& request,
