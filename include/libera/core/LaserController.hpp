@@ -3,13 +3,10 @@
 #include "libera/core/LaserControllerStreaming.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cmath>
-#include <deque>
 #include <mutex>
-#include <vector>
 #include <memory>
+#include <vector>
 
 namespace libera::core {
 
@@ -23,6 +20,8 @@ struct Frame {
     // Set internally when the frame is first played; used to enforce maxFrameTime().
     std::chrono::steady_clock::time_point firstPlayTime{};
 };
+
+class FrameScheduler;
 
 class LaserController : public LaserControllerStreaming {
 public:
@@ -93,38 +92,11 @@ protected:
     bool requestFrame(const FrameFillRequest& request, Frame& outputFrame);
     bool isUsingFrameQueueSource() const;
 
-    void fillFromFrameQueue(const PointFillRequest& request,
-                           std::vector<LaserPoint>& outputBuffer);
-    void drainPendingFrames();
-
 private:
-
-    std::deque<std::unique_ptr<Frame>> pendingFrames;
-    mutable std::mutex pendingFramesMutex;
-    std::deque<std::unique_ptr<Frame>> frameQueue;
-    bool frameModeActive = false;
+    mutable std::mutex contentSourceMutex;
+    std::unique_ptr<FrameScheduler> frameScheduler;
     ContentSource activeSource = ContentSource::None;
-    std::atomic<std::size_t> pendingFrameCount{0};
-    std::atomic<std::size_t> pendingPointCount{0};
-    std::atomic<std::size_t> frameQueueCountEstimate{0};
-    std::atomic<std::size_t> frameQueuePointCountEstimate{0};
-    std::atomic<std::size_t> nominalFramePointCount{1};
-
-    void appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count);
-    void updateFrameQueueMetricsUnsafe();
     std::size_t queuedPointBudget() const;
-
-    // Automatic blanking for frame transitions / wraps.
-    static constexpr float BLANK_TRANSITION_DISTANCE_THRESHOLD = 0.2f;
-    static constexpr float BLANK_POINTS_PER_UNIT_DISTANCE = 20.0f;
-    static constexpr std::size_t MIN_BLANK_POINTS_PER_END = 2;
-    std::vector<LaserPoint> pendingTransitionPoints;
-    std::unique_ptr<Frame> pendingTransitionFrame;
-
-    void generateTransitionPoints(const LaserPoint& from, const LaserPoint& to,
-                                  std::vector<LaserPoint>& out);
-    void drainPendingTransition(std::vector<LaserPoint>& outputBuffer,
-                                std::size_t maxPoints);
 };
 
 } // namespace libera::core

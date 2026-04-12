@@ -289,6 +289,7 @@ protected:
 
     /// The installed callback that generates points (may be empty if not set).
     RequestPointsCallback requestPointsCallback{};
+    mutable std::mutex requestPointsCallbackMutex;
 
     /// Main buffer of points pending transmission to the controller.
     std::vector<LaserPoint> pointsToSend;
