@@ -75,12 +75,20 @@ LaserControllerStreaming::~LaserControllerStreaming() {
 }
 
 void LaserControllerStreaming::setRequestPointsCallback(const RequestPointsCallback &callback) {
-    // Store the callback (copied into the functor).
+    std::lock_guard<std::mutex> lock(requestPointsCallbackMutex);
+    // Callback swaps can race the worker thread, so copy under a mutex and let
+    // requestPoints() work with a stable local copy for the rest of the call.
     requestPointsCallback = callback;
 }
 
 bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
-    if (!requestPointsCallback) {
+    RequestPointsCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(requestPointsCallbackMutex);
+        callback = requestPointsCallback;
+    }
+
+    if (!callback) {
         // No callback set, so there is no way to produce points.
         return false;
     }
@@ -89,7 +97,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
     pointsToSend.clear();
 
     // Ask the user-supplied callback to append new points.
-    requestPointsCallback(request, pointsToSend);
+    callback(request, pointsToSend);
 
     // Debug-only: enforce the contract that the callback produced at least the requested minimum.
     assert(pointsToSend.size() >= request.minimumPointsRequired &&
