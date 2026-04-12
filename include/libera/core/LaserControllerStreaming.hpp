@@ -237,6 +237,13 @@ protected:
         int snapshotBufferFullness,
         std::uint32_t pointRateValue = 0);
 
+    /// Apply the shared post-generation point processing pipeline.
+    ///
+    /// This keeps startup/shutdown blanking and scanner-sync behaviour
+    /// identical whether the points came from the user callback or from an
+    /// internal frame scheduler.
+    void postProcessOutputPoints(std::vector<LaserPoint>& points);
+
     /// Estimate current buffer fullness by projecting consumption from an snapshot.
     /// If projection is not possible, fallbackBufferFullness is returned.
     int calculateBufferFullnessFromSnapshot(

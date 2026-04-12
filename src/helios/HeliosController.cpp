@@ -798,35 +798,56 @@ void HeliosController::run() {
         setEstimatedBufferCapacity(static_cast<int>(framePoints));
         updateEstimatedBufferSnapshotNow(0, pps);
 
-        // The Helios is single-buffered: it plays each frame once then idles
-        // while the host polls status and transfers the next batch over USB.
-        // If we allow short "runt" batches (e.g. 100 points instead of 300),
-        // the DAC dwells on the last point during that idle time, creating a
-        // visible bright spot.  Setting min == max ensures fillFromFrameQueue
-        // always wraps the frame to produce a full batch, keeping the
-        // inter-frame dead time consistent and as infrequent as possible.
-        core::PointFillRequest req;
-        req.minimumPointsRequired = framePoints;
-        req.maximumPointsRequired = framePoints;
         const auto writeLead = detail::requestRenderLead(
             std::chrono::microseconds(
                 estimatedWriteLeadMicros.load(std::memory_order_relaxed)));
-        req.estimatedFirstPointRenderTime =
+        const auto estimatedFirstRenderTime =
             std::chrono::steady_clock::now() + writeLead;
-        req.currentPointIndex = currentPointIndex.load(std::memory_order_relaxed);
+        const auto pointIndex = currentPointIndex.load(std::memory_order_relaxed);
 
-        if (!requestPoints(req)) {
-            std::this_thread::sleep_for(5ms);
+        std::vector<core::LaserPoint>* sourcePoints = &pointsToSend;
+        core::Frame nativeFrame;
+
+        if (usbConnection && isUsingFrameQueueSource()) {
+            // Direct Helios USB is a frame-driven transport: once the device
+            // reports a free slot, submit exactly one scheduled frame. The
+            // core scheduler decides whether that frame is content, hold-last,
+            // a transition blank, or an idle blank.
+            FrameFillRequest req;
+            req.maximumPointsRequired = HELIOS_MAX_POINTS;
+            req.blankFramePointCount = framePoints;
+            req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
+            req.currentPointIndex = pointIndex;
+
+            if (!requestFrame(req, nativeFrame)) {
+                std::this_thread::sleep_for(5ms);
+                continue;
+            }
+
+            sourcePoints = &nativeFrame.points;
+        } else {
+            // Streaming backends and SDK-backed Helios paths still pull a
+            // controller-sized point batch, which is then packed into one
+            // transport frame for submission.
+            core::PointFillRequest req;
+            req.minimumPointsRequired = framePoints;
+            req.maximumPointsRequired = framePoints;
+            req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
+            req.currentPointIndex = pointIndex;
+
+            if (!requestPoints(req)) {
+                std::this_thread::sleep_for(5ms);
+                continue;
+            }
+        }
+
+        if (sourcePoints->empty()) {
             continue;
         }
 
-        if (pointsToSend.empty()) {
-            continue;
-        }
-
-        frameBuffer.resize(pointsToSend.size());
-        for (std::size_t i = 0; i < pointsToSend.size(); ++i) {
-            const auto& p = pointsToSend[i];
+        frameBuffer.resize(sourcePoints->size());
+        for (std::size_t i = 0; i < sourcePoints->size(); ++i) {
+            const auto& p = (*sourcePoints)[i];
             auto& out = frameBuffer[i];
             out.x = encodeUnsigned16FromSignedUnit(p.x);
             out.y = encodeUnsigned16FromSignedUnit(p.y);
