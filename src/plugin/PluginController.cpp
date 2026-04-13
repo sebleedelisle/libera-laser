@@ -14,14 +14,17 @@ namespace libera::plugin {
 namespace {
 
 // Used when the plugin doesn't report buffer state: target ~10ms at the
-// current rate, split evenly between min and max so fillFromFrameQueue
-// has flexibility when content frames are shorter than the batch.
+// current rate, split evenly between min and max so the shared frame queue
+// adapter has some flexibility when content frames are shorter than the batch.
 constexpr int FALLBACK_MIN_BATCH_POINTS = 20;
 constexpr int FALLBACK_MAX_BATCH_POINTS = 4096;
 constexpr double FALLBACK_BATCH_DURATION_MS = 10.0;
 
 int fallbackBatchPointCount(std::uint32_t pointRate) {
-    if (pointRate == 0) return FALLBACK_MIN_BATCH_POINTS;
+    if (pointRate == 0) {
+        return FALLBACK_MIN_BATCH_POINTS;
+    }
+
     const double raw = (static_cast<double>(pointRate) * FALLBACK_BATCH_DURATION_MS) / 1000.0;
     const auto rounded = static_cast<int>(std::lround(raw));
     return std::clamp(rounded, FALLBACK_MIN_BATCH_POINTS, FALLBACK_MAX_BATCH_POINTS);
@@ -31,69 +34,101 @@ void convertPoints(const std::vector<core::LaserPoint>& src,
                    std::vector<libera_point_t>& dst) {
     dst.resize(src.size());
     for (std::size_t i = 0; i < src.size(); ++i) {
-        const auto& p = src[i];
-        auto& d = dst[i];
-        d.x = static_cast<int16_t>(std::clamp(p.x, -1.0f, 1.0f) * 32767.0f);
-        d.y = static_cast<int16_t>(std::clamp(p.y, -1.0f, 1.0f) * 32767.0f);
-        d.r = static_cast<uint16_t>(std::clamp(p.r, 0.0f, 1.0f) * 65535.0f);
-        d.g = static_cast<uint16_t>(std::clamp(p.g, 0.0f, 1.0f) * 65535.0f);
-        d.b = static_cast<uint16_t>(std::clamp(p.b, 0.0f, 1.0f) * 65535.0f);
-        d.i = static_cast<uint16_t>(std::clamp(p.i, 0.0f, 1.0f) * 65535.0f);
-        d.u1 = static_cast<uint16_t>(std::clamp(p.u1, 0.0f, 1.0f) * 65535.0f);
-        d.u2 = static_cast<uint16_t>(std::clamp(p.u2, 0.0f, 1.0f) * 65535.0f);
+        const auto& point = src[i];
+        auto& out = dst[i];
+        out.x = static_cast<int16_t>(std::clamp(point.x, -1.0f, 1.0f) * 32767.0f);
+        out.y = static_cast<int16_t>(std::clamp(point.y, -1.0f, 1.0f) * 32767.0f);
+        out.r = static_cast<uint16_t>(std::clamp(point.r, 0.0f, 1.0f) * 65535.0f);
+        out.g = static_cast<uint16_t>(std::clamp(point.g, 0.0f, 1.0f) * 65535.0f);
+        out.b = static_cast<uint16_t>(std::clamp(point.b, 0.0f, 1.0f) * 65535.0f);
+        out.i = static_cast<uint16_t>(std::clamp(point.i, 0.0f, 1.0f) * 65535.0f);
+        out.u1 = static_cast<uint16_t>(std::clamp(point.u1, 0.0f, 1.0f) * 65535.0f);
+        out.u2 = static_cast<uint16_t>(std::clamp(point.u2, 0.0f, 1.0f) * 65535.0f);
     }
 }
 
 const char* describeStatus(libera_status_t status) {
     switch (status) {
-        case LIBERA_OK:                   return "ok";
-        case LIBERA_ERR_DISCONNECTED:     return "disconnected";
-        case LIBERA_ERR_TIMEOUT:          return "timeout";
-        case LIBERA_ERR_BUSY:             return "busy";
-        case LIBERA_ERR_PROTOCOL:         return "protocol";
-        case LIBERA_ERR_INVALID_ARGUMENT: return "invalid_argument";
-        case LIBERA_ERR_INTERNAL:         return "internal";
+        case LIBERA_OK:
+            return "ok";
+        case LIBERA_ERR_DISCONNECTED:
+            return "disconnected";
+        case LIBERA_ERR_TIMEOUT:
+            return "timeout";
+        case LIBERA_ERR_BUSY:
+            return "busy";
+        case LIBERA_ERR_PROTOCOL:
+            return "protocol";
+        case LIBERA_ERR_INVALID_ARGUMENT:
+            return "invalid_argument";
+        case LIBERA_ERR_INTERNAL:
+            return "internal";
     }
     return "unknown";
 }
 
-} // anonymous namespace
+std::optional<std::uint32_t> propertyIndexForKey(const libera_plugin_api_t* api,
+                                                 const std::string& key) {
+    if (!api || !api->properties || api->property_count == 0) {
+        return std::nullopt;
+    }
 
-PluginController::PluginController(const PluginFunctions& funcs,
-                                   const std::string& controllerId)
-: funcs(funcs)
-, controllerId(controllerId) {}
+    for (std::uint32_t i = 0; i < api->property_count; ++i) {
+        const char* candidate = api->properties[i].key;
+        if (candidate && key == candidate) {
+            return i;
+        }
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
+
+PluginController::PluginController(const libera_plugin_api_t* api,
+                                   void* backendHandle,
+                                   const libera_controller_info_t& controllerInfo)
+: api(api)
+, backendHandle(backendHandle)
+, controllerInfo(controllerInfo) {}
 
 PluginController::~PluginController() {
     stopThread();
-    if (pluginHandle) {
-        funcs.disconnect(pluginHandle);
+    if (pluginHandle && api && api->destroy_controller) {
+        api->destroy_controller(pluginHandle);
         pluginHandle = nullptr;
     }
 }
 
 bool PluginController::open() {
-    pluginHandle = funcs.connect(controllerId.c_str(),
-                                 static_cast<libera_host_ctx_t>(this));
-    if (!pluginHandle) {
-        libera::log::logError("Plugin: failed to connect to ", controllerId);
+    if (!api || !api->connect_controller) {
         return false;
     }
-    connected.store(true);
-    setConnectionState(true);
-    // Propagate the current point rate immediately.
-    if (funcs.set_point_rate) {
-        funcs.set_point_rate(pluginHandle, getPointRate());
+
+    pluginHandle = api->connect_controller(
+        backendHandle,
+        &controllerInfo,
+        static_cast<libera_host_ctx_t>(this));
+    if (!pluginHandle) {
+        libera::log::logError("Plugin: failed to connect to ", controllerInfo.id);
+        return false;
     }
-    // Force the first run() iteration to push the current armed state.
+
+    connected.store(true, std::memory_order_relaxed);
+    setConnectionState(true);
+
+    if (api->set_point_rate) {
+        api->set_point_rate(pluginHandle, getPointRate());
+    }
+
     lastSentArmed = !isArmed();
     return true;
 }
 
 void PluginController::setPointRate(std::uint32_t pointRateValue) {
     core::LaserController::setPointRate(pointRateValue);
-    if (pluginHandle && funcs.set_point_rate) {
-        funcs.set_point_rate(pluginHandle, pointRateValue);
+    if (pluginHandle && api && api->set_point_rate) {
+        api->set_point_rate(pluginHandle, pointRateValue);
     }
 }
 
@@ -103,28 +138,41 @@ void PluginController::recordLatencyFromPlugin(std::uint64_t nanoseconds) {
 
 std::vector<PluginProperty> PluginController::listProperties() const {
     std::vector<PluginProperty> props;
-    if (!pluginHandle || !funcs.list_properties) return props;
+    if (!api || !api->properties || api->property_count == 0) {
+        return props;
+    }
 
-    auto emit = [](void* raw, const char* key, const char* label) {
-        auto* out = static_cast<std::vector<PluginProperty>*>(raw);
-        out->push_back({
+    props.reserve(api->property_count);
+    for (std::uint32_t i = 0; i < api->property_count; ++i) {
+        const char* key = api->properties[i].key;
+        const char* label = api->properties[i].label;
+        props.push_back({
             key ? std::string(key) : std::string{},
             label ? std::string(label) : std::string{}
         });
-    };
-    funcs.list_properties(pluginHandle, emit, &props);
+    }
+
     return props;
 }
 
 std::optional<std::string> PluginController::getProperty(const std::string& key) const {
-    if (!pluginHandle || !funcs.get_property) return std::nullopt;
+    if (!pluginHandle || !api || !api->read_property) {
+        return std::nullopt;
+    }
 
-    // First call: small stack buffer.  If the value doesn't fit, retry
-    // once with a heap buffer sized to the returned length.
+    const auto propertyIndex = propertyIndexForKey(api, key);
+    if (!propertyIndex) {
+        return std::nullopt;
+    }
+
     char stackBuf[256];
-    int needed = funcs.get_property(pluginHandle, key.c_str(),
-                                    stackBuf, sizeof(stackBuf));
-    if (needed < 0) return std::nullopt;
+    const int needed = api->read_property(pluginHandle,
+                                          *propertyIndex,
+                                          stackBuf,
+                                          sizeof(stackBuf));
+    if (needed < 0) {
+        return std::nullopt;
+    }
 
     if (static_cast<std::size_t>(needed) < sizeof(stackBuf)) {
         return std::string(stackBuf, static_cast<std::size_t>(needed));
@@ -132,10 +180,14 @@ std::optional<std::string> PluginController::getProperty(const std::string& key)
 
     std::string big;
     big.resize(static_cast<std::size_t>(needed) + 1);
-    const int rc = funcs.get_property(pluginHandle, key.c_str(),
+    const int rc = api->read_property(pluginHandle,
+                                      *propertyIndex,
                                       big.data(),
                                       static_cast<std::uint32_t>(big.size()));
-    if (rc < 0) return std::nullopt;
+    if (rc < 0) {
+        return std::nullopt;
+    }
+
     big.resize(static_cast<std::size_t>(std::min(rc, needed)));
     return big;
 }
@@ -143,9 +195,10 @@ std::optional<std::string> PluginController::getProperty(const std::string& key)
 void PluginController::reportErrorFromPlugin(const char* code, const char* /*label*/) {
     if (!code || !*code) {
         recordIntermittentError("plugin.error");
-    } else {
-        recordIntermittentError(code);
+        return;
     }
+
+    recordIntermittentError(code);
 }
 
 void PluginController::run() {
@@ -160,64 +213,60 @@ void PluginController::run() {
 
     while (running.load()) {
         if (!connected.load(std::memory_order_relaxed)) {
-            // Drop the old handle (it may already be invalid) and try to
-            // obtain a fresh one.  Plugin authors don't have to implement
-            // reconnect logic themselves — it lives here so every plugin
-            // gets it for free.
             setConnectionState(false);
-            if (pluginHandle) {
-                funcs.disconnect(pluginHandle);
+
+            if (pluginHandle && api->destroy_controller) {
+                api->destroy_controller(pluginHandle);
                 pluginHandle = nullptr;
             }
-            pluginHandle = funcs.connect(controllerId.c_str(),
-                                         static_cast<libera_host_ctx_t>(this));
+
+            pluginHandle = api->connect_controller(
+                backendHandle,
+                &controllerInfo,
+                static_cast<libera_host_ctx_t>(this));
             if (!pluginHandle) {
                 std::this_thread::sleep_for(reconnectRetryDelay);
                 continue;
             }
-            // Fresh connection: push the current rate to the new handle
-            // and force the next tick to re-push armed state.
-            if (funcs.set_point_rate) {
-                funcs.set_point_rate(pluginHandle, getPointRate());
+
+            if (api->set_point_rate) {
+                api->set_point_rate(pluginHandle, getPointRate());
             }
+
             lastSentArmed = !isArmed();
             resetStartupBlank();
             connected.store(true, std::memory_order_relaxed);
         }
+
         setConnectionState(true);
 
-        // Push armed state only on transitions.  The base class already
-        // blanks r/g/b (and pins x/y) in requestPoints() when !isArmed(),
-        // so funcs.set_armed() is a plugin-side safety signal layered on
-        // top of that, not the primary blanking mechanism.
         const bool armedNow = isArmed();
-        if (armedNow != lastSentArmed) {
-            funcs.set_armed(pluginHandle, armedNow);
+        if (armedNow != lastSentArmed && api->set_armed) {
+            api->set_armed(pluginHandle, armedNow);
+            lastSentArmed = armedNow;
+        } else if (!api->set_armed) {
             lastSentArmed = armedNow;
         }
 
         const auto rate = getPointRate();
 
-        // Query the plugin's buffer state.  When available, this drives
-        // latency-aware sizing identical to the built-in controllers: we
-        // aim to keep the plugin's buffer filled to `targetBufferPoints`
-        // (rate * targetLatency), and ask for the deficit.
-        libera_buffer_state_t bs{-1, -1};
+        libera_buffer_state_t bufferState{-1, -1};
         bool haveBuffer = false;
-        if (funcs.get_buffer_state &&
-            funcs.get_buffer_state(pluginHandle, &bs) == 0 &&
-            bs.total_buffer_points > 0 && bs.points_in_buffer >= 0) {
-            setEstimatedBufferCapacity(bs.total_buffer_points);
-            updateEstimatedBufferSnapshotNow(bs.points_in_buffer, rate);
+        if (api->get_buffer_state &&
+            api->get_buffer_state(pluginHandle, &bufferState) == 0 &&
+            bufferState.total_buffer_points > 0 &&
+            bufferState.points_in_buffer >= 0) {
+            setEstimatedBufferCapacity(bufferState.total_buffer_points);
+            updateEstimatedBufferSnapshotNow(bufferState.points_in_buffer, rate);
             haveBuffer = true;
         }
 
-        std::size_t minPoints;
-        std::size_t maxPoints;
+        std::size_t minPoints = 0;
+        std::size_t maxPoints = 0;
 
         if (haveBuffer) {
-            const int capacity = bs.total_buffer_points;
-            const int fullness = bs.points_in_buffer;
+            const int capacity = bufferState.total_buffer_points;
+            const int fullness = bufferState.points_in_buffer;
             const int freeSpace = std::max(0, capacity - fullness);
             const int target = core::BufferEstimator::targetBufferPoints(
                 rate, capacity, targetLatency(),
@@ -225,8 +274,6 @@ void PluginController::run() {
                 /* safetyHeadroomPoints */ 0);
             const int deficit = std::max(0, target - fullness);
 
-            // Nothing to send: buffer already at or above target, or no
-            // room for new points.  Sleep a short time so we don't spin.
             if (deficit <= 0 || freeSpace <= 0) {
                 std::this_thread::sleep_for(2ms);
                 continue;
@@ -235,37 +282,25 @@ void PluginController::run() {
             minPoints = static_cast<std::size_t>(deficit);
             maxPoints = static_cast<std::size_t>(freeSpace);
         } else {
-            // No buffer state from the plugin — use a fixed ~10ms batch.
             const int fixed = fallbackBatchPointCount(rate);
             minPoints = static_cast<std::size_t>(std::max(fixed / 2, 1));
             maxPoints = static_cast<std::size_t>(fixed);
         }
 
-        // When the plugin reports buffer state, we know how long the queued
-        // points will take to play — so the first point of THIS new batch
-        // will render after that.  This matters for frame scheduling:
-        // fillFromFrameQueue uses this time to decide which queued frame is
-        // due.  Getting it wrong means frames play late (glitches on rapidly
-        // changing content).
-        // When the plugin doesn't report buffer state, we fall back to the
-        // host's configured target latency — that's what a well-behaved
-        // plugin's pipeline should be converging toward anyway, and it
-        // matches the stamp sendFrame() puts on unscheduled frames.
         auto renderTimeLead = std::chrono::duration_cast<std::chrono::milliseconds>(targetLatency());
-        if (haveBuffer && rate > 0 && bs.points_in_buffer > 0) {
-            const double ms = (static_cast<double>(bs.points_in_buffer) * 1000.0)
-                              / static_cast<double>(rate);
+        if (haveBuffer && rate > 0 && bufferState.points_in_buffer > 0) {
+            const double ms =
+                (static_cast<double>(bufferState.points_in_buffer) * 1000.0) /
+                static_cast<double>(rate);
             renderTimeLead = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::duration<double, std::milli>(ms));
         }
 
-        // Pull points through requestPoints(), which invokes the frame-mode
-        // callback (fillFromFrameQueue) and then applies scanner sync,
-        // startup/shutdown blanking, and other processing.
         core::PointFillRequest request;
         request.minimumPointsRequired = minPoints;
         request.maximumPointsRequired = maxPoints;
-        request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now() + renderTimeLead;
+        request.estimatedFirstPointRenderTime =
+            std::chrono::steady_clock::now() + renderTimeLead;
 
         if (!requestPoints(request) || pointsToSend.empty()) {
             std::this_thread::sleep_for(2ms);
@@ -274,9 +309,9 @@ void PluginController::run() {
 
         convertPoints(pointsToSend, pluginPoints);
 
-        const auto status = funcs.send_points(pluginHandle,
-                                              pluginPoints.data(),
-                                              static_cast<uint32_t>(pluginPoints.size()));
+        const auto status = api->send_points(pluginHandle,
+                                             pluginPoints.data(),
+                                             static_cast<uint32_t>(pluginPoints.size()));
         pointsToSend.clear();
 
         if (status != LIBERA_OK) {
@@ -293,9 +328,8 @@ void PluginController::run() {
         }
     }
 
-    // Disarm on shutdown.
-    if (pluginHandle) {
-        funcs.set_armed(pluginHandle, false);
+    if (pluginHandle && api->set_armed) {
+        api->set_armed(pluginHandle, false);
     }
 }
 
