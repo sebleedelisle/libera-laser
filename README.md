@@ -18,6 +18,7 @@ The library discovers laser controllers on the system and provides a list of ava
 ## Documentation
 
 - [Integrating Libera into your laser app](docs/integration.md) — discovery, connecting, arming, the point format, frame mode vs. streaming mode, and health monitoring.
+- [Implementing a Libera controller backend](docs/controller_backends.md) — the content-source model, point-ingester vs. frame-ingester backends, and the current architecture gaps.
 - [Writing a Libera plugin](docs/plugins.md) — adding support for a new laser controller via a shared-library plugin.
 
 ## Build

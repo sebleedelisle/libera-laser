@@ -57,12 +57,12 @@ void prepareController(ContentSourceTestController& controller) {
 void testInstallingCallbackClearsQueuedFrames() {
     ContentSourceTestController controller;
     prepareController(controller);
-    controller.startFrameMode();
+    controller.useFrameQueue();
 
     ASSERT_TRUE(controller.sendFrame(makeFrameAt(0.25f, 4)), "frame queued");
     ASSERT_EQ(controller.queuedFrameCount(), static_cast<std::size_t>(1), "frame queue contains queued frame");
 
-    controller.setRequestPointsCallback(
+    controller.setPointCallback(
         [](const PointFillRequest& request, std::vector<LaserPoint>& out) {
             for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
                 LaserPoint point{};
@@ -75,6 +75,8 @@ void testInstallingCallbackClearsQueuedFrames() {
         });
 
     ASSERT_EQ(controller.queuedFrameCount(), static_cast<std::size_t>(0), "installing callback clears queued frames");
+    ASSERT_TRUE(controller.contentSource() == LaserController::ContentSource::PointCallback,
+                "content source switches to point callback");
 
     PointFillRequest request{};
     request.minimumPointsRequired = 1;
@@ -87,7 +89,7 @@ void testStartingFrameModeClearsUserCallback() {
     ContentSourceTestController controller;
     prepareController(controller);
 
-    controller.setRequestPointsCallback(
+    controller.setPointCallback(
         [](const PointFillRequest& request, std::vector<LaserPoint>& out) {
             for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
                 LaserPoint point{};
@@ -99,7 +101,9 @@ void testStartingFrameModeClearsUserCallback() {
             }
         });
 
-    controller.startFrameMode();
+    controller.useFrameQueue();
+    ASSERT_TRUE(controller.contentSource() == LaserController::ContentSource::FrameQueue,
+                "content source switches to frame queue");
 
     PointFillRequest request{};
     request.minimumPointsRequired = 1;

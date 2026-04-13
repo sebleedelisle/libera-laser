@@ -808,13 +808,14 @@ void HeliosController::run() {
         std::vector<core::LaserPoint>* sourcePoints = &pointsToSend;
         core::Frame nativeFrame;
 
-        if (usbConnection && isUsingFrameQueueSource()) {
-            // Direct Helios USB is a frame-driven transport: once the device
-            // reports a free slot, submit exactly one scheduled frame. The
-            // core scheduler decides whether that frame is content, hold-last,
-            // a transition blank, or an idle blank.
+        if (usbConnection) {
+            // Direct Helios USB is a frame-ingester transport. It always wants
+            // one complete submission for each free device slot, regardless of
+            // whether the active content source is the frame queue or a live
+            // point callback.
             FrameFillRequest req;
             req.maximumPointsRequired = HELIOS_MAX_POINTS;
+            req.preferredPointCount = framePoints;
             req.blankFramePointCount = framePoints;
             req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
             req.currentPointIndex = pointIndex;

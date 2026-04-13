@@ -25,9 +25,11 @@ public:
     bool requestFrameNow(std::size_t maximumPointsRequired,
                          std::size_t blankFramePointCount,
                          std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
-                         Frame& outputFrame) {
+                         Frame& outputFrame,
+                         std::size_t preferredPointCount = 0) {
         FrameFillRequest request{};
         request.maximumPointsRequired = maximumPointsRequired;
+        request.preferredPointCount = preferredPointCount;
         request.blankFramePointCount = blankFramePointCount;
         request.estimatedFirstPointRenderTime = estimatedFirstPointRenderTime;
         return LaserController::requestFrame(request, outputFrame);
@@ -71,7 +73,14 @@ void prepareController(FrameRequestTestController& controller,
     controller.setPointRate(0);
     controller.setArmed(true);
     controller.setPointRate(pointRate);
-    controller.startFrameMode();
+    controller.useFrameQueue();
+}
+
+void preparePointCallbackController(FrameRequestTestController& controller,
+                                    std::uint32_t pointRate = 1000) {
+    controller.setPointRate(0);
+    controller.setArmed(true);
+    controller.setPointRate(pointRate);
 }
 
 void testDueQueuedFramePassesThroughUnchanged() {
@@ -166,7 +175,7 @@ void testTransitionBlankFramePrecedesNextDistantFrame() {
     ASSERT_EQ(secondOutput.points.front().i, 1.0f, "next frame restores content intensity");
 }
 
-void testOversizedFrameIsTruncatedAndTailIsDropped() {
+void testOversizedFrameIsDeliveredAcrossMultipleTransportFrames() {
     FrameRequestTestController controller;
     LaserController::setTargetLatency(std::chrono::milliseconds(0));
     LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
@@ -178,16 +187,123 @@ void testOversizedFrameIsTruncatedAndTailIsDropped() {
     ASSERT_TRUE(controller.sendFrame(std::move(frame)), "oversized frame queued");
 
     Frame firstOutput;
-    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, firstOutput), "first truncated frame requested");
-    ASSERT_EQ(firstOutput.points.size(), static_cast<std::size_t>(4), "frame is truncated to backend maximum");
-    ASSERT_EQ(firstOutput.points.front().x, 30.0f, "truncated frame keeps leading points");
-    ASSERT_EQ(firstOutput.points.back().x, 33.0f, "truncated frame drops tail points");
+    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, firstOutput), "first chunk requested");
+    ASSERT_EQ(firstOutput.points.size(), static_cast<std::size_t>(4), "oversized frame is split to backend maximum");
+    ASSERT_EQ(firstOutput.points.front().x, 30.0f, "first chunk keeps the leading points");
+    ASSERT_EQ(firstOutput.points.back().x, 33.0f, "first chunk covers the first transport-sized slice");
 
     Frame secondOutput;
-    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, secondOutput), "held truncated frame requested");
-    ASSERT_EQ(secondOutput.points.size(), static_cast<std::size_t>(4), "truncated size is stable on hold");
-    ASSERT_EQ(secondOutput.points.front().x, 30.0f, "held frame repeats the truncated head");
-    ASSERT_EQ(secondOutput.points.back().x, 33.0f, "held frame never leaks the discarded tail");
+    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, secondOutput), "second chunk requested");
+    ASSERT_EQ(secondOutput.points.size(), static_cast<std::size_t>(4), "second chunk stays transport-sized");
+    ASSERT_EQ(secondOutput.points.front().x, 34.0f, "second chunk resumes from the logical frame cursor");
+    ASSERT_EQ(secondOutput.points.back().x, 37.0f, "second chunk reaches the original frame end");
+
+    Frame thirdOutput;
+    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, thirdOutput), "held oversized frame loops cleanly");
+    ASSERT_EQ(thirdOutput.points.size(), static_cast<std::size_t>(4), "looped chunk stays transport-sized");
+    ASSERT_EQ(thirdOutput.points.front().x, 30.0f, "loop restart returns to the true frame head");
+    ASSERT_EQ(thirdOutput.points.back().x, 33.0f, "loop restart preserves logical frame order");
+}
+
+void testOversizedFrameFinishesItsLoopBeforeSwitchingFrames() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    prepareController(controller);
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame first = makeSteppedFrame(70.0f, 8);
+    first.time = now;
+    ASSERT_TRUE(controller.sendFrame(std::move(first)), "first oversized frame queued");
+
+    Frame firstChunk;
+    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, firstChunk), "first chunk requested");
+    ASSERT_EQ(firstChunk.points.front().x, 70.0f, "first chunk starts at the logical frame head");
+    ASSERT_EQ(firstChunk.points.back().x, 73.0f, "first chunk consumes the first slice");
+
+    Frame second = makeFrameAt(77.0f, 0.0f, 4);
+    second.time = now;
+    for (auto& point : second.points) {
+        point.r = 0.5f;
+    }
+    ASSERT_TRUE(controller.sendFrame(std::move(second)), "replacement frame queued");
+
+    Frame secondChunk;
+    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, secondChunk), "current logical loop finishes before switch");
+    ASSERT_EQ(secondChunk.points.front().x, 74.0f, "second chunk resumes the oversized logical frame");
+    ASSERT_EQ(secondChunk.points.back().x, 77.0f, "second chunk reaches the original frame endpoint");
+    ASSERT_EQ(secondChunk.points.front().r, 1.0f, "second chunk still belongs to the original frame");
+
+    Frame replacementOutput;
+    ASSERT_TRUE(controller.requestFrameNow(4, 6, now, replacementOutput), "replacement frame plays after full loop");
+    ASSERT_EQ(replacementOutput.points.size(), static_cast<std::size_t>(4), "replacement frame size is preserved");
+    ASSERT_EQ(replacementOutput.points.front().x, 77.0f, "replacement frame starts once the logical loop completes");
+    ASSERT_EQ(replacementOutput.points.front().r, 0.5f, "replacement frame content is emitted after the switch");
+}
+
+void testPointCallbackCanFillOneTransportFrame() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    preparePointCallbackController(controller);
+
+    std::size_t nextPointIndex = 0;
+    controller.setPointCallback(
+        [&nextPointIndex](const PointFillRequest& request, std::vector<LaserPoint>& out) {
+            for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.x = 40.0f + static_cast<float>(nextPointIndex++);
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                point.i = 1.0f;
+                out.push_back(point);
+            }
+        });
+
+    Frame output;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           std::chrono::steady_clock::now(),
+                                           output,
+                                           5),
+                "requestFrame succeeds in point-callback mode");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(5), "preferred frame size is used for callback adaptation");
+    ASSERT_EQ(output.points.front().x, 40.0f, "callback frame keeps first callback point");
+    ASSERT_EQ(output.points.back().x, 44.0f, "callback frame keeps exact callback batch size");
+    ASSERT_EQ(output.points.front().i, 1.0f, "callback frame keeps content intensity");
+}
+
+void testPointCallbackFrameRequestHonoursBackendMaximum() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    preparePointCallbackController(controller);
+
+    std::size_t nextPointIndex = 0;
+    controller.setPointCallback(
+        [&nextPointIndex](const PointFillRequest& request, std::vector<LaserPoint>& out) {
+            for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.x = 60.0f + static_cast<float>(nextPointIndex++);
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                point.i = 1.0f;
+                out.push_back(point);
+            }
+        });
+
+    Frame output;
+    ASSERT_TRUE(controller.requestFrameNow(4,
+                                           6,
+                                           std::chrono::steady_clock::now(),
+                                           output,
+                                           8),
+                "requestFrame succeeds with oversized preferred point count");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(4), "callback adaptation clamps to backend maximum");
+    ASSERT_EQ(output.points.front().x, 60.0f, "clamped callback frame keeps the leading points");
+    ASSERT_EQ(output.points.back().x, 63.0f, "clamped callback frame drops the excess callback tail");
 }
 
 } // namespace
@@ -197,7 +313,10 @@ int main() {
     testFutureFrameReturnsIdleBlankFrame();
     testHoldLastFrameRepeatsPreviousContent();
     testTransitionBlankFramePrecedesNextDistantFrame();
-    testOversizedFrameIsTruncatedAndTailIsDropped();
+    testOversizedFrameIsDeliveredAcrossMultipleTransportFrames();
+    testOversizedFrameFinishesItsLoopBeforeSwitchingFrames();
+    testPointCallbackCanFillOneTransportFrame();
+    testPointCallbackFrameRequestHonoursBackendMaximum();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");
