@@ -128,17 +128,19 @@ The backend should not own:
 - shared point post-processing such as startup blanking, shutdown blanking, or
   scanner-sync colour delay
 
-## Current status
+## Current implementation
 
-The point-ingester path is already the normal shape in libera.
-
-The frame-ingester path now has the shared source-adaptation pieces too:
+Both backend shapes now fit the shared content-source model in libera:
 
 - `FrameQueue -> points` exists through `FrameScheduler`
 - `FrameQueue -> frame` exists through `requestFrame(...)`
 - `PointCallback -> points` exists through `LaserControllerStreaming`
 - `PointCallback -> frame` exists through `LaserController::requestFrame(...)`
 
-That means a new point-ingester backend can already fit this model cleanly.
-A new frame-ingester backend can fit it too, as long as it provides the
-transport's preferred frame size in `FrameFillRequest`.
+That means:
+
+- a point-ingester backend can call `requestPoints(...)` and let the shared
+  scheduler adapt either content source into point batches
+- a frame-ingester backend can call `requestFrame(...)` and let the shared
+  scheduler adapt either content source into whole-frame submissions, as long
+  as it provides the transport's preferred frame size in `FrameFillRequest`

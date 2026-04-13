@@ -20,9 +20,9 @@ struct PluginProperty {
 /*
  * Wraps one plugin-managed controller connection as a Libera LaserController.
  *
- * The worker thread (run()) stays host-owned: it requests points from the
- * shared scheduler, converts them to the plugin wire format, and forwards them
- * through the plugin's controller callbacks.
+ * The worker thread (run()) stays host-owned: it pulls points from Libera's
+ * shared content-source pipeline, converts them to the plugin wire format, and
+ * forwards them through the plugin's controller callbacks.
  */
 class PluginController : public core::LaserController {
 public:

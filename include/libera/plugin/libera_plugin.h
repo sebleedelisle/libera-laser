@@ -5,7 +5,7 @@
  *
  * - one plugin-wide "backend" object
  * - discover() on that backend
- * - connect_controller() returning one controller instance
+ * - connect_controller() returning one controller handle per live connection
  * - controller methods such as send_points(), set_armed(), and
  *   get_buffer_state()
  *
@@ -179,7 +179,7 @@ typedef struct {
     void  (*rescan)(void* backend);
 
     /*
-     * Required manager-like operations.
+     * Required backend operations.
      */
     void  (*discover)(void* backend,
                       libera_emit_controller_fn emit,
@@ -190,7 +190,7 @@ typedef struct {
                                 libera_host_ctx_t host_ctx);
 
     /*
-     * Required controller-like operations.
+     * Required per-controller operations.
      */
     void (*destroy_controller)(void* controller);
 
