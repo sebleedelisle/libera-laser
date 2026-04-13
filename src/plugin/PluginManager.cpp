@@ -18,8 +18,6 @@ namespace libera::plugin {
 
 namespace fs = std::filesystem;
 
-// ---- platform helpers --------------------------------------------------- //
-
 namespace {
 
 void* openLibrary(const std::string& path) {
@@ -31,7 +29,9 @@ void* openLibrary(const std::string& path) {
 }
 
 void closeLibrary(void* handle) {
-    if (!handle) return;
+    if (!handle) {
+        return;
+    }
 #ifdef _WIN32
     FreeLibrary(static_cast<HMODULE>(handle));
 #else
@@ -52,7 +52,9 @@ Fn resolveSymbol(void* handle, const char* name) {
 std::string libraryError() {
 #ifdef _WIN32
     DWORD err = GetLastError();
-    if (err == 0) return {};
+    if (err == 0) {
+        return {};
+    }
     LPSTR buf = nullptr;
     FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
                    nullptr, err, 0, reinterpret_cast<LPSTR>(&buf), 0, nullptr);
@@ -66,7 +68,9 @@ std::string libraryError() {
 }
 
 void hostLogCallback(libera_log_level_t level, const char* message) {
-    if (!message) return;
+    if (!message) {
+        return;
+    }
     switch (level) {
         case LIBERA_LOG_ERROR:
             libera::log::logError(message);
@@ -78,8 +82,11 @@ void hostLogCallback(libera_log_level_t level, const char* message) {
     }
 }
 
-void hostRecordLatencyCallback(libera_host_ctx_t host_ctx, uint64_t nanoseconds) {
-    if (!host_ctx) return;
+void hostRecordLatencyCallback(libera_host_ctx_t host_ctx,
+                               uint64_t nanoseconds) {
+    if (!host_ctx) {
+        return;
+    }
     auto* ctrl = static_cast<PluginController*>(host_ctx);
     ctrl->recordLatencyFromPlugin(nanoseconds);
 }
@@ -87,60 +94,102 @@ void hostRecordLatencyCallback(libera_host_ctx_t host_ctx, uint64_t nanoseconds)
 void hostReportErrorCallback(libera_host_ctx_t host_ctx,
                              const char* code,
                              const char* label) {
-    if (!host_ctx) return;
+    if (!host_ctx) {
+        return;
+    }
     auto* ctrl = static_cast<PluginController*>(host_ctx);
     ctrl->reportErrorFromPlugin(code, label);
 }
 
-// Single host services table shared across all loaded plugins.
 const libera_host_services_t kHostServices = {
-    /* abi_version    */ LIBERA_HOST_SERVICES_VERSION,
+    /* abi_version    */ LIBERA_PLUGIN_API_VERSION,
     /* log            */ &hostLogCallback,
     /* record_latency */ &hostRecordLatencyCallback,
     /* report_error   */ &hostReportErrorCallback,
 };
 
-bool isSharedLibrary(const fs::path& p) {
-    auto ext = p.extension().string();
+bool isSharedLibrary(const fs::path& path) {
+    const auto ext = path.extension().string();
     return ext == ".dylib" || ext == ".so" || ext == ".dll";
 }
 
-bool resolvePluginFunctions(void* handle, PluginFunctions& f, bool& isPlugin) {
-    // Check for the version symbol first — if absent, this shared library
-    // is not a libera plugin (e.g. a vendor SDK sitting in the same directory).
-    f.api_version = resolveSymbol<decltype(f.api_version)>(handle, "libera_plugin_api_version");
-    if (!f.api_version) {
-        isPlugin = false;
+bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
+    if (!api) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " returned a null API table");
         return false;
     }
-    isPlugin = true;
 
-#define RESOLVE(field, symbol)                                       \
-    f.field = resolveSymbol<decltype(f.field)>(handle, #symbol);     \
-    if (!f.field) {                                                  \
-        libera::log::logError("Plugin: missing symbol " #symbol);    \
-        return false;                                                \
+    if (api->abi_version != LIBERA_PLUGIN_API_VERSION) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " has API version ", api->abi_version,
+                              ", expected ", LIBERA_PLUGIN_API_VERSION);
+        return false;
     }
 
-    RESOLVE(type,               libera_plugin_type)
-    RESOLVE(name,               libera_plugin_name)
-    RESOLVE(init,               libera_plugin_init)
-    RESOLVE(shutdown,           libera_plugin_shutdown)
-    RESOLVE(discover,           libera_plugin_discover)
-    RESOLVE(connect,            libera_plugin_connect)
-    RESOLVE(set_point_rate,     libera_plugin_set_point_rate)
-    RESOLVE(send_points,        libera_plugin_send_points)
-    RESOLVE(get_buffer_state,   libera_plugin_get_buffer_state)
-    RESOLVE(set_armed,          libera_plugin_set_armed)
-    RESOLVE(disconnect,         libera_plugin_disconnect)
+    if (!api->type_name || !*api->type_name) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " did not provide a type_name");
+        return false;
+    }
 
-#undef RESOLVE
+    if (!api->display_name || !*api->display_name) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " did not provide a display_name");
+        return false;
+    }
 
-    // Optional exports — absence is fine, just means no capability.
-    f.rescan          = resolveSymbol<decltype(f.rescan)>(handle, "libera_plugin_rescan");
-    f.list_properties = resolveSymbol<decltype(f.list_properties)>(handle, "libera_plugin_list_properties");
-    f.get_property    = resolveSymbol<decltype(f.get_property)>(handle, "libera_plugin_get_property");
+    if (!api->discover) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " is missing discover()");
+        return false;
+    }
+
+    if (!api->connect_controller) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " is missing connect_controller()");
+        return false;
+    }
+
+    if (!api->destroy_controller) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " is missing destroy_controller()");
+        return false;
+    }
+
+    if (!api->send_points) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " is missing send_points()");
+        return false;
+    }
+
+    if (api->property_count > 0 && !api->properties) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " declared properties without a property table");
+        return false;
+    }
+
+    if (api->property_count > 0 && !api->read_property) {
+        libera::log::logError("Plugin: ", path.string(),
+                              " declared properties without read_property()");
+        return false;
+    }
+
     return true;
+}
+
+core::ControllerUsageState toUsageState(libera_controller_usage_state_t usageState) {
+    switch (usageState) {
+        case LIBERA_CONTROLLER_USAGE_IDLE:
+            return core::ControllerUsageState::Idle;
+        case LIBERA_CONTROLLER_USAGE_ACTIVE:
+            return core::ControllerUsageState::Active;
+        case LIBERA_CONTROLLER_USAGE_BUSY_EXCLUSIVE:
+            return core::ControllerUsageState::BusyExclusive;
+        case LIBERA_CONTROLLER_USAGE_UNKNOWN:
+        default:
+            return core::ControllerUsageState::Unknown;
+    }
 }
 
 std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
@@ -151,40 +200,37 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
         return nullptr;
     }
 
-    PluginFunctions funcs;
-    bool isPlugin = false;
-    if (!resolvePluginFunctions(handle, funcs, isPlugin)) {
+    auto getApi = resolveSymbol<decltype(&libera_plugin_get_api)>(
+        handle, "libera_plugin_get_api");
+    if (!getApi) {
+        // Not a Libera plugin — silently skip things like vendor SDKs.
         closeLibrary(handle);
-        if (!isPlugin) {
-            // Not a libera plugin — silently skip (e.g. a vendor SDK).
+        return nullptr;
+    }
+
+    const libera_plugin_api_t* api = getApi();
+    if (!validatePluginApi(api, path)) {
+        closeLibrary(handle);
+        return nullptr;
+    }
+
+    void* backendHandle = nullptr;
+    if (api->create_backend) {
+        backendHandle = api->create_backend(&kHostServices);
+        if (!backendHandle) {
+            libera::log::logError("Plugin: ", path.string(),
+                                  " create_backend() failed");
+            closeLibrary(handle);
             return nullptr;
         }
-        // It is a plugin but is missing required symbols.
-        return nullptr;
-    }
-
-    const uint32_t version = funcs.api_version();
-    if (version != LIBERA_PLUGIN_API_VERSION) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " has API version ", version,
-                              ", expected ", LIBERA_PLUGIN_API_VERSION);
-        closeLibrary(handle);
-        return nullptr;
-    }
-
-    const int rc = funcs.init(&kHostServices);
-    if (rc != 0) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " init() failed with code ", rc);
-        closeLibrary(handle);
-        return nullptr;
     }
 
     auto plugin = std::make_shared<LoadedPlugin>();
     plugin->libraryHandle = handle;
-    plugin->funcs = funcs;
-    plugin->typeName = funcs.type();
-    plugin->displayName = funcs.name();
+    plugin->api = api;
+    plugin->backendHandle = backendHandle;
+    plugin->typeName = api->type_name;
+    plugin->displayName = api->display_name;
     plugin->initialised = true;
 
     libera::log::logInfo("Plugin: loaded \"", plugin->displayName,
@@ -193,9 +239,7 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
     return plugin;
 }
 
-} // anonymous namespace
-
-// ---- PluginDelegateManager ---------------------------------------------- //
+} // namespace
 
 PluginDelegateManager::PluginDelegateManager(std::shared_ptr<LoadedPlugin> plugin)
 : plugin(std::move(plugin)) {}
@@ -210,9 +254,8 @@ std::string_view PluginDelegateManager::managedType() const {
 
 std::vector<std::unique_ptr<core::ControllerInfo>>
 PluginDelegateManager::discover() {
-    // Let network-discovery plugins refresh their cache before we enumerate.
-    if (plugin->funcs.rescan) {
-        plugin->funcs.rescan();
+    if (plugin->api->rescan) {
+        plugin->api->rescan(plugin->backendHandle);
     }
 
     struct DiscoverCtx {
@@ -220,30 +263,34 @@ PluginDelegateManager::discover() {
     } ctx;
 
     auto emit = [](void* raw, const libera_controller_info_t* info) {
-        auto* c = static_cast<DiscoverCtx*>(raw);
-        // Defensive: ensure the strings are null-terminated before we copy.
+        auto* discoverCtx = static_cast<DiscoverCtx*>(raw);
         libera_controller_info_t safe = *info;
+
         safe.id[sizeof(safe.id) - 1] = '\0';
         safe.label[sizeof(safe.label) - 1] = '\0';
-        c->infos.push_back(safe);
+        safe.network.ip[sizeof(safe.network.ip) - 1] = '\0';
+        safe.connect_cookie_size = std::min<std::uint32_t>(
+            safe.connect_cookie_size,
+            static_cast<std::uint32_t>(sizeof(safe.connect_cookie)));
+
+        discoverCtx->infos.push_back(safe);
     };
 
-    plugin->funcs.discover(emit, &ctx);
+    plugin->api->discover(plugin->backendHandle, emit, &ctx);
 
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
     results.reserve(ctx.infos.size());
 
     std::lock_guard lock(activeMutex);
 
-    for (const auto& ci : ctx.infos) {
-        std::string id(ci.id);
-        std::string label(ci.label);
-
+    for (const auto& pluginInfo : ctx.infos) {
         auto info = std::make_unique<PluginControllerInfo>(
-            id, label, ci.maxPointRate, plugin->typeName);
+            pluginInfo, plugin->typeName);
+        info->setUsageState(toUsageState(pluginInfo.usage_state));
 
-        // Mark as active if we already have an open controller for this id.
-        auto it = activeControllers.find(id);
+        // If we already own this controller in-process, report it as active
+        // rather than whatever discovery saw externally.
+        auto it = activeControllers.find(info->idValue());
         if (it != activeControllers.end() && !it->second.expired()) {
             info->setUsageState(core::ControllerUsageState::Active);
         }
@@ -255,9 +302,13 @@ PluginDelegateManager::discover() {
 
 std::shared_ptr<core::LaserController>
 PluginDelegateManager::connectController(const core::ControllerInfo& info) {
+    const auto* pluginInfo = dynamic_cast<const PluginControllerInfo*>(&info);
+    if (!pluginInfo) {
+        return nullptr;
+    }
+
     std::lock_guard lock(activeMutex);
 
-    // Reuse existing connection if still alive.
     auto it = activeControllers.find(info.idValue());
     if (it != activeControllers.end()) {
         if (auto existing = it->second.lock()) {
@@ -267,7 +318,9 @@ PluginDelegateManager::connectController(const core::ControllerInfo& info) {
     }
 
     auto controller = std::make_shared<PluginController>(
-        plugin->funcs, info.idValue());
+        plugin->api,
+        plugin->backendHandle,
+        pluginInfo->pluginInfo());
 
     if (!controller->open()) {
         return nullptr;
@@ -275,7 +328,7 @@ PluginDelegateManager::connectController(const core::ControllerInfo& info) {
 
     activeControllers[info.idValue()] = controller;
 
-    controller->startFrameMode();
+    controller->useFrameQueue();
     controller->startThread();
 
     return controller;
@@ -291,17 +344,17 @@ void PluginDelegateManager::closeAll() {
     activeControllers.clear();
 
     if (plugin && plugin->initialised) {
-        plugin->funcs.shutdown();
+        if (plugin->api->destroy_backend) {
+            plugin->api->destroy_backend(plugin->backendHandle);
+        }
+        plugin->backendHandle = nullptr;
         plugin->initialised = false;
     }
 }
 
-// ---- Public loader ------------------------------------------------------ //
-
 void loadPluginsFromDirectory(const std::string& path) {
     std::error_code ec;
     if (!fs::is_directory(path, ec)) {
-        // No plugin directory — that's fine, just skip.
         return;
     }
 
@@ -315,7 +368,9 @@ void loadPluginsFromDirectory(const std::string& path) {
 
     for (const auto& candidate : candidates) {
         auto plugin = loadPlugin(candidate);
-        if (!plugin) continue;
+        if (!plugin) {
+            continue;
+        }
 
         core::AddControllerManager([plugin]() {
             return std::make_unique<PluginDelegateManager>(plugin);
