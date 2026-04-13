@@ -225,7 +225,7 @@ how audio engines work and is a good fit if your source material is naturally
 continuous (a running oscillator, a generative pattern, a live input).
 
 ```cpp
-controller->setRequestPointsCallback(
+controller->setPointCallback(
     [](const core::PointFillRequest& req,
        std::vector<core::LaserPoint>& out) {
 

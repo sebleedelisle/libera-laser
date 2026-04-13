@@ -259,34 +259,29 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
         estimatedFirstRenderTime = std::chrono::steady_clock::now();
     }
 
-    const auto clampFrameToMaximum = [maximumPointsRequired = request.maximumPointsRequired, verbose](
-                                         Frame& frame) {
-        if (maximumPointsRequired == 0) {
-            frame.points.clear();
-            return;
-        }
+    const std::size_t maximumPointsRequired = request.maximumPointsRequired;
+    if (maximumPointsRequired == 0) {
+        return;
+    }
 
-        if (frame.points.size() <= maximumPointsRequired) {
-            return;
-        }
-
-        logSchedulerVerbose(verbose,
-                            "[FrameScheduler] fillFrame: truncating frame from",
-                            frame.points.size(),
-                            "to",
-                            maximumPointsRequired,
-                            "points");
-        frame.points.resize(maximumPointsRequired);
-    };
-
-    const auto loadBlankFrame = [this, &outputFrame, blankCount = request.blankFramePointCount]() {
+    const auto loadBlankFrame = [this,
+                                 &outputFrame,
+                                 blankCount = request.blankFramePointCount,
+                                 maximumPointsRequired]() {
         outputFrame = Frame{};
-        appendBlankPoints(outputFrame.points, blankCount);
+        appendBlankPoints(outputFrame.points, std::min(blankCount, maximumPointsRequired));
     };
+
+    // Transition blanking is chunked just like oversized content frames. If a
+    // previous call could not fit the entire transition, finish draining it
+    // before returning any more content.
+    if (!state->pendingTransitionPoints.empty()) {
+        drainPendingTransitionUnsafe(outputFrame.points, maximumPointsRequired);
+        return;
+    }
 
     if (state->frameQueue.empty()) {
         loadBlankFrame();
-        clampFrameToMaximum(outputFrame);
         return;
     }
 
@@ -313,7 +308,6 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
     while (true) {
         if (state->frameQueue.empty()) {
             loadBlankFrame();
-            clampFrameToMaximum(outputFrame);
             return;
         }
 
@@ -322,13 +316,13 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
         assert(!currentFrame->points.empty() && "Empty frame in queue");
 
         if (currentFrame->playCount == 0 &&
+            currentFrame->nextPoint == 0 &&
             !frameIsDueAt(*currentFrame, estimatedFirstRenderTime)) {
             loadBlankFrame();
-            clampFrameToMaximum(outputFrame);
             return;
         }
 
-        if (currentFrame->playCount > 0) {
+        if (currentFrame->nextPoint >= currentFrame->points.size()) {
             if (state->frameQueue.size() > 1 &&
                 frameIsDueAt(*state->frameQueue[1], estimatedFirstRenderTime)) {
                 const LaserPoint lastPoint = currentFrame->points.back();
@@ -344,36 +338,65 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
                 const float distance = std::sqrt(dx * dx + dy * dy);
 
                 if (distance > blankTransitionDistanceThreshold) {
-                    generateTransitionPoints(lastPoint, firstPoint, outputFrame.points);
-                    clampFrameToMaximum(outputFrame);
+                    generateTransitionPoints(lastPoint, firstPoint, state->pendingTransitionPoints);
+                    drainPendingTransitionUnsafe(outputFrame.points, maximumPointsRequired);
                     return;
                 }
 
                 continue;
             }
 
-            if (maxFrameHoldTime.count() > 0) {
+            if (currentFrame->playCount > 0 && maxFrameHoldTime.count() > 0) {
                 const auto elapsed = std::chrono::steady_clock::now() - currentFrame->firstPlayTime;
                 if (elapsed >= maxFrameHoldTime) {
                     state->frameQueue.pop_front();
                     loadBlankFrame();
-                    clampFrameToMaximum(outputFrame);
                     return;
                 }
             }
+
+            // No replacement frame is ready, so start a new logical loop of the
+            // same frame on the next iteration. Oversized frames therefore span
+            // multiple transport submissions, but short frames still pass through
+            // unchanged one loop at a time.
+            currentFrame->nextPoint = 0;
+            continue;
         }
 
-        if (currentFrame->playCount == 0) {
-            currentFrame->firstPlayTime = std::chrono::steady_clock::now();
+        if (currentFrame->nextPoint == 0) {
+            // firstPlayTime measures the age of the logical frame being held,
+            // not the age of an individual transport chunk. We only switch
+            // away from an oversized frame once this logical loop finishes.
+            if (currentFrame->playCount == 0) {
+                currentFrame->firstPlayTime = std::chrono::steady_clock::now();
+            }
+            ++currentFrame->playCount;
         }
 
-        // Whole-frame backends should keep sending the same truncated frame
-        // once a backend limit has clipped the original content.
-        clampFrameToMaximum(*currentFrame);
-        currentFrame->nextPoint = 0;
-        ++currentFrame->playCount;
-        outputFrame = *currentFrame;
-        clampFrameToMaximum(outputFrame);
+        const std::size_t available = currentFrame->points.size() - currentFrame->nextPoint;
+        const std::size_t toCopy = std::min(available, maximumPointsRequired);
+
+        if (currentFrame->points.size() > maximumPointsRequired) {
+            logSchedulerVerbose(verbose,
+                                "[FrameScheduler] fillFrame: chunking oversized frame",
+                                "framePoints",
+                                currentFrame->points.size(),
+                                "chunkStart",
+                                currentFrame->nextPoint,
+                                "chunkSize",
+                                toCopy,
+                                "max",
+                                maximumPointsRequired);
+        }
+
+        outputFrame = Frame{};
+        outputFrame.time = currentFrame->time;
+        outputFrame.points.insert(outputFrame.points.end(),
+                                  currentFrame->points.begin() +
+                                      static_cast<std::ptrdiff_t>(currentFrame->nextPoint),
+                                  currentFrame->points.begin() +
+                                      static_cast<std::ptrdiff_t>(currentFrame->nextPoint + toCopy));
+        currentFrame->nextPoint += toCopy;
         return;
     }
 }

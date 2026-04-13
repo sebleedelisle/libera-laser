@@ -51,22 +51,31 @@ std::chrono::milliseconds LaserController::maxFrameHoldTime() {
         maxFrameHoldTimeMsStorage().load(std::memory_order_relaxed));
 }
 
-void LaserController::setRequestPointsCallback(const RequestPointsCallback& callback) {
-    std::lock_guard<std::mutex> lock(contentSourceMutex);
-
-    if (callback) {
-        // Keep "last writer wins" behaviour, but serialize the source switch so
-        // the worker cannot observe the queue being torn down mid-request.
-        frameScheduler->reset();
-        LaserControllerStreaming::setRequestPointsCallback(callback);
-        activeSource = ContentSource::UserPoints;
+void LaserController::setPointCallback(const PointCallback& callback) {
+    if (!callback) {
+        clearPointCallback();
         return;
     }
 
+    std::lock_guard<std::mutex> lock(contentSourceMutex);
+
+    // Keep "last writer wins" behaviour, but serialize the source switch so
+    // the worker cannot observe the queue being torn down mid-request.
+    frameScheduler->reset();
+    LaserControllerStreaming::setRequestPointsCallback(callback);
+    activeSource = ContentSource::PointCallback;
+}
+
+void LaserController::clearPointCallback() {
+    std::lock_guard<std::mutex> lock(contentSourceMutex);
     LaserControllerStreaming::setRequestPointsCallback({});
-    if (activeSource == ContentSource::UserPoints) {
+    if (activeSource == ContentSource::PointCallback) {
         activeSource = ContentSource::None;
     }
+}
+
+void LaserController::setRequestPointsCallback(const RequestPointsCallback& callback) {
+    setPointCallback(callback);
 }
 
 // returns false if the controller isn't ready for a new frame or if the frame is empty. 
@@ -97,7 +106,7 @@ bool LaserController::sendFrame(Frame&& frame) {
     return frameScheduler->enqueueFrame(std::move(frame));
 }
 
-void LaserController::startFrameMode() {
+void LaserController::useFrameQueue() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     if (activeSource == ContentSource::FrameQueue) {
         return;
@@ -109,14 +118,32 @@ void LaserController::startFrameMode() {
     activeSource = ContentSource::FrameQueue;
 }
 
-void LaserController::stopFrameMode() {
+void LaserController::clearFrameQueue() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
-    if (activeSource != ContentSource::FrameQueue) {
-        return;
+    frameScheduler->reset();
+    if (activeSource == ContentSource::FrameQueue) {
+        activeSource = ContentSource::None;
     }
+}
 
+void LaserController::clearContentSource() {
+    std::lock_guard<std::mutex> lock(contentSourceMutex);
+    LaserControllerStreaming::setRequestPointsCallback({});
     frameScheduler->reset();
     activeSource = ContentSource::None;
+}
+
+LaserController::ContentSource LaserController::contentSource() const {
+    std::lock_guard<std::mutex> lock(contentSourceMutex);
+    return activeSource;
+}
+
+void LaserController::startFrameMode() {
+    useFrameQueue();
+}
+
+void LaserController::stopFrameMode() {
+    clearFrameQueue();
 }
 
 bool LaserController::isFrameModeEnabled() const {
@@ -143,7 +170,7 @@ bool LaserController::requestPoints(const PointFillRequest& request) {
         source = activeSource;
     }
 
-    if (source == ContentSource::UserPoints) {
+    if (source == ContentSource::PointCallback) {
         return LaserControllerStreaming::requestPoints(request);
     }
 
@@ -183,11 +210,51 @@ bool LaserController::requestPoints(const PointFillRequest& request) {
 }
 
 bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outputFrame) {
+    ContentSource source = ContentSource::None;
     {
         std::lock_guard<std::mutex> lock(contentSourceMutex);
-        if (activeSource != ContentSource::FrameQueue) {
+        source = activeSource;
+    }
+
+    if (source == ContentSource::PointCallback) {
+        std::size_t preferredPointCount = request.preferredPointCount;
+        if (preferredPointCount == 0) {
+            preferredPointCount = request.blankFramePointCount;
+        }
+        if (preferredPointCount == 0) {
+            preferredPointCount = request.maximumPointsRequired;
+        }
+        if (request.maximumPointsRequired > 0) {
+            preferredPointCount = std::min(preferredPointCount, request.maximumPointsRequired);
+        }
+
+        if (preferredPointCount == 0) {
+            outputFrame = Frame{};
             return false;
         }
+
+        PointFillRequest pointRequest{};
+        // Frame-ingester transports still need a deterministic batch size when
+        // adapting a point callback into one hardware frame, so request an
+        // exact point count here instead of a min/max range.
+        pointRequest.minimumPointsRequired = preferredPointCount;
+        pointRequest.maximumPointsRequired = preferredPointCount;
+        pointRequest.estimatedFirstPointRenderTime = request.estimatedFirstPointRenderTime;
+        pointRequest.currentPointIndex = request.currentPointIndex;
+
+        if (!LaserControllerStreaming::requestPoints(pointRequest)) {
+            outputFrame = Frame{};
+            return false;
+        }
+
+        outputFrame = Frame{};
+        outputFrame.points = pointsToSend;
+        return true;
+    }
+
+    if (source != ContentSource::FrameQueue) {
+        outputFrame = Frame{};
+        return false;
     }
 
     FramePullRequest schedulerRequest;
