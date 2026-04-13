@@ -88,13 +88,15 @@ using RequestPointsCallback =
                        std::vector<LaserPoint> &outputBuffer)>;
 
 /**
- * @brief Base controller class that manages callback-driven point generation.
+ * @brief Base transport utility class for callback-driven point generation.
  *
- * Subclasses (e.g. EtherDreamController, HeliosController) are responsible
- * for actually sending points to hardware. This base class only handles:
+ * Subclasses are responsible for actually encoding/sending data to hardware.
+ * This base class only handles:
  * - Storing a user-provided callback.
  * - Requesting batches of new points via requestPoints().
  * - Accumulating generated points into an internal buffer for later use.
+ *
+ * LaserController layers shared frame-queue scheduling on top of this base.
  *
  * Threading model:
  * - Base manages a worker thread that calls virtual `run()` until `stop()`.
@@ -180,11 +182,12 @@ protected:
     /**
      * @brief Ask the callback for more points and append them to the main buffer.
      *
-     * Called from subclass run loops. Invokes the user-supplied callback, then
-     * sends pointsToSend to the controller.
+     * Called from subclass run loops. Invokes the user-supplied callback and
+     * stores the generated points in `pointsToSend` for the caller to encode
+     * and submit.
      *
      * @param request Fill request (min points required, estimated render time).
-     * @return false if no callback is installed, true if points were appended.
+     * @return false if no callback is installed, true if the callback path ran.
      */
     bool requestPoints(const PointFillRequest &request);
 

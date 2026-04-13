@@ -8,7 +8,7 @@ backend model:
 
 - one plugin-wide **backend** object
 - `discover()` on that backend
-- `connect_controller()` returning one **controller** instance
+- `connect_controller()` returning one **controller handle** per live connection
 - controller methods such as `send_points()`, `set_armed()`, and
   `get_buffer_state()`
 
@@ -43,6 +43,21 @@ That maps directly onto Libera's built-in structure:
 
 - built-in `ControllerManagerBase` ~= plugin backend callbacks
 - built-in `LaserController` ~= plugin controller handle plus controller callbacks
+
+## Loading plugin libraries
+
+Configure plugin search paths before you construct `libera::System`:
+
+```cpp
+libera::System::setPluginDirectory("plugins");
+libera::System::addPluginDirectory("/absolute/path/to/more/plugins");
+
+libera::System liberaSystem;
+```
+
+If you never call `setPluginDirectory()`, Libera uses `LIBERA_PLUGIN_DIR` when
+that environment variable is set, otherwise it looks for a `plugins/`
+directory.
 
 ## Required callbacks
 
@@ -206,6 +221,9 @@ The plugin's job is just to:
 - open/close controller connections
 - accept point batches in `send_points()`
 - optionally expose buffer state so the host can pace itself accurately
+
+Whether the application is using queued frames or a live point callback, the
+host adapts that content source into point batches before calling the plugin.
 
 If your vendor SDK is internally frame-based, it is fine for the plugin to
 buffer points and feed the SDK from its own worker thread.

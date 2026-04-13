@@ -8,15 +8,20 @@
  *
  * - one plugin-wide backend object
  * - discover() on that backend
- * - connect_controller() returning one controller instance
+ * - connect_controller() returning one controller handle per live connection
  * - controller methods such as send_points(), set_armed(), and
  *   get_buffer_state()
  *
- * Build as a shared library and place the output in Libera's plugins
- * directory:
+ * Build as a shared library and place the output in one of Libera's plugin
+ * directories (configured with System::setPluginDirectory() /
+ * System::addPluginDirectory()):
  *
- *   # macOS / Linux
+ *   # macOS
  *   c++ -shared -fPIC -std=c++17 -o example-plugin.dylib example_plugin.cpp \
+ *       -I ../include
+ *
+ *   # Linux
+ *   c++ -shared -fPIC -std=c++17 -o example-plugin.so example_plugin.cpp \
  *       -I ../include
  *
  *   # Windows (MSVC)

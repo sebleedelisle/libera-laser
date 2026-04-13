@@ -14,8 +14,8 @@ namespace libera::plugin {
 namespace {
 
 // Used when the plugin doesn't report buffer state: target ~10ms at the
-// current rate, split evenly between min and max so the shared frame queue
-// adapter has some flexibility when content frames are shorter than the batch.
+// current rate, split evenly between min and max so the shared content-source
+// adapter has some flexibility when queued frames are shorter than the batch.
 constexpr int FALLBACK_MIN_BATCH_POINTS = 20;
 constexpr int FALLBACK_MAX_BATCH_POINTS = 4096;
 constexpr double FALLBACK_BATCH_DURATION_MS = 10.0;

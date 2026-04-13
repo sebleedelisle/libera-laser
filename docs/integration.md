@@ -6,10 +6,10 @@ worry — the terms are explained as they come up.
 
 ## What Libera does for you
 
-Libera is a C++ library for anyone that makes laser software. It handles all 
-of the discovery and communcation for a wide variety of laser **controllers** - 
-the hardware boxes (or network devices) that take point data from your computer 
-and turn it into the signals that drive a diplay laser's colours, brightness and 
+Libera is a C++ library for anyone that makes laser software. It handles all
+of the discovery and communication for a wide variety of laser **controllers** -
+the hardware boxes (or network devices) that take point data from your computer
+and turn it into the signals that drive a display laser's colours, brightness and
 scanning mirrors. Libera gives you:
 
 - **Discovery** — a single call that finds every supported controller currently
@@ -58,7 +58,17 @@ If you like, you can instead include just the controllers you want to support:
 #include "libera/helios/HeliosManager.hpp"
 ```
 
-Only the controller types you include will be discovered.
+Only the built-in controller types you include will be discovered.
+
+Plugins are loaded separately from the directories configured before you
+construct `System`:
+
+```cpp
+libera::System::setPluginDirectory("plugins");
+libera::System::addPluginDirectory("/absolute/path/to/more/plugins");
+
+libera::System liberaSystem;
+```
 
 ## Step 1 — discover controllers
 
@@ -168,6 +178,10 @@ core::LaserPoint green{-0.5f, -0.5f, 0.0f, 1.0f, 0.0f };   // bottom-left, green
 
 Libera gives you two ways to feed points to a controller. Both are supported on
 every controller type; pick whichever suits your app.
+
+Only one content source is active at a time. Installing a point callback clears
+any queued frames; queueing a frame later switches the controller back to the
+shared frame queue automatically.
 
 ### Frame mode (easier)
 
