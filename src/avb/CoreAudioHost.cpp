@@ -510,10 +510,15 @@ bool rtAudioOpenStreamCompat(RtAudio& audio,
     }
 }
 
-bool rtAudioDeviceWasProbed(const RtAudio::DeviceInfo& info) {
-    if constexpr (HasRtAudioProbedMember<RtAudio::DeviceInfo>::value) {
-        return info.probed;
-    }
+template <typename DeviceInfo>
+std::enable_if_t<HasRtAudioProbedMember<DeviceInfo>::value, bool>
+rtAudioDeviceWasProbed(const DeviceInfo& info) {
+    return info.probed;
+}
+
+template <typename DeviceInfo>
+std::enable_if_t<!HasRtAudioProbedMember<DeviceInfo>::value, bool>
+rtAudioDeviceWasProbed(const DeviceInfo&) {
     return true;
 }
 
