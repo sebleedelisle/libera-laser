@@ -12,11 +12,12 @@
 namespace libera::plugin {
 
 /*
- * Represents one loaded plugin shared library.
+ * Represents one loaded plugin shared library and its optional backend state.
  */
 struct LoadedPlugin {
     void* libraryHandle = nullptr;
-    PluginFunctions funcs;
+    const libera_plugin_api_t* api = nullptr;
+    void* backendHandle = nullptr;
     std::string typeName;
     std::string displayName;
     bool initialised = false;

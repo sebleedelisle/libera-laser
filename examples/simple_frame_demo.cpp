@@ -122,8 +122,9 @@ int main() {
 
         core::Frame frame = makeWhiteCircleFrame(submittedFrameCount);
 
-        // sendFrame() hands the frame over to the library's internal frame-mode
-        // scheduler, which feeds the hardware-specific streaming callback.
+        // sendFrame() hands the frame over to the library's internal scheduler.
+        // The concrete backend then pulls either point batches or whole frames
+        // from that shared queue depending on what the transport expects.
         if (controller->sendFrame(std::move(frame))) {
             logInfo("Sent frame number ", submittedFrameCount);
             submittedFrameCount++;
