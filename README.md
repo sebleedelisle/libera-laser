@@ -1,5 +1,7 @@
 # libera - cross-platform laser control
 
+[![CI](https://github.com/sebleedelisle/libera-laser/actions/workflows/ci.yml/badge.svg)](https://github.com/sebleedelisle/libera-laser/actions/workflows/ci.yml)
+
 Libera aims to be a de facto standard for laser control, with support for a growing ecosystem of open-protocol hardware:
 - Ether Dream
 - Helios USB
