@@ -53,12 +53,14 @@ public:
     static bool halfXYOutputEnabled(const std::string& controllerId);
     static bool setHalfXYOutput(const std::string& controllerId, bool enabled);
 
-    static inline core::ControllerManagerRegistry registrar{
-        [] { return std::make_unique<AvbManager>(); }
-    };
+    static core::ControllerManagerRegistry registrar;
 
 private:
     static constexpr std::string_view typeName{"AVB"};
+};
+
+inline core::ControllerManagerRegistry AvbManager::registrar{
+    [] { return std::make_unique<AvbManager>(); }
 };
 
 } // namespace libera::avb

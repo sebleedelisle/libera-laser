@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <exception>
 #include <cmath>
 #include <cstring>
 #include <chrono>
@@ -423,6 +424,20 @@ namespace {
 constexpr std::uint32_t rtAudioFramesPerBuffer = 512;
 constexpr std::uint32_t rtAudioBufferCount = 4;
 
+std::vector<unsigned int> getRtAudioDeviceIds(RtAudio& audio) {
+#if RTAUDIO_VERSION_MAJOR >= 6
+    return audio.getDeviceIds();
+#else
+    std::vector<unsigned int> deviceIds;
+    const auto deviceCount = audio.getDeviceCount();
+    deviceIds.reserve(deviceCount);
+    for (unsigned int deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex) {
+        deviceIds.push_back(deviceIndex);
+    }
+    return deviceIds;
+#endif
+}
+
 std::vector<std::uint32_t> normalizeRtAudioPointRates(
     const std::vector<unsigned int>& sampleRates,
     std::uint32_t fallbackRate) {
@@ -529,7 +544,7 @@ public:
 
             running.store(true, std::memory_order_relaxed);
             return true;
-        } catch (const RtAudioError&) {
+        } catch (const std::exception&) {
             stop();
             return false;
         }
@@ -543,14 +558,14 @@ public:
                 if (audio->isStreamRunning()) {
                     audio->abortStream();
                 }
-            } catch (const RtAudioError&) {
+            } catch (const std::exception&) {
             }
 
             try {
                 if (audio->isStreamOpen()) {
                     audio->closeStream();
                 }
-            } catch (const RtAudioError&) {
+            } catch (const std::exception&) {
             }
 
             audio.reset();
@@ -643,18 +658,18 @@ public:
             audio.showWarnings(false);
 
             std::unordered_map<std::string, std::uint32_t> duplicateCountByName;
-            const auto deviceCount = audio.getDeviceCount();
-            devices.reserve(deviceCount);
+            const auto deviceIds = getRtAudioDeviceIds(audio);
+            devices.reserve(deviceIds.size());
 
-            for (unsigned int deviceId = 0; deviceId < deviceCount; ++deviceId) {
+            for (const auto deviceId : deviceIds) {
                 RtAudio::DeviceInfo info;
                 try {
                     info = audio.getDeviceInfo(deviceId);
-                } catch (const RtAudioError&) {
+                } catch (const std::exception&) {
                     continue;
                 }
 
-                if (!info.probed || info.outputChannels == 0) {
+                if (info.outputChannels == 0) {
                     continue;
                 }
 
@@ -676,7 +691,7 @@ public:
                 device.pointRateMutable = device.supportedPointRates.size() > 1;
                 devices.push_back(std::move(device));
             }
-        } catch (const RtAudioError&) {
+        } catch (const std::exception&) {
             return {};
         }
 

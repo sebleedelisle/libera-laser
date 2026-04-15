@@ -22,9 +22,7 @@ public:
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
     void closeAll() override;
 
-    static inline core::ControllerManagerRegistry registrar{
-        [] { return std::make_unique<LaserCubeUsbManager>(); }
-    };
+    static core::ControllerManagerRegistry registrar;
 
 private:
     static constexpr std::string_view typeName{"LaserCubeUSB"};
@@ -33,6 +31,10 @@ private:
 
     std::mutex activeMutex;
     std::unordered_map<std::string, std::weak_ptr<LaserCubeUsbController>> activeControllers;
+};
+
+inline core::ControllerManagerRegistry LaserCubeUsbManager::registrar{
+    [] { return std::make_unique<LaserCubeUsbManager>(); }
 };
 
 } // namespace libera::lasercubeusb

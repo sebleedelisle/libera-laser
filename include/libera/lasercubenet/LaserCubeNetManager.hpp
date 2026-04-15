@@ -28,9 +28,7 @@ public:
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
     void closeAll() override;
 
-    static inline core::ControllerManagerRegistry registrar{
-        [] { return std::make_unique<LaserCubeNetManager>(); }
-    };
+    static core::ControllerManagerRegistry registrar;
 
 private:
     using Clock = std::chrono::steady_clock;
@@ -54,6 +52,10 @@ private:
     std::unordered_map<std::string, ControllerEntry> controllers;
     std::mutex activeMutex;
     std::unordered_map<std::string, std::weak_ptr<LaserCubeNetController>> active;
+};
+
+inline core::ControllerManagerRegistry LaserCubeNetManager::registrar{
+    [] { return std::make_unique<LaserCubeNetManager>(); }
 };
 
 } // namespace libera::lasercubenet

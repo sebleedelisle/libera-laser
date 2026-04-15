@@ -24,9 +24,7 @@ public:
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
     void closeAll() override;
 
-    static inline core::ControllerManagerRegistry registrar{
-        [] { return std::make_unique<HeliosManager>(); }
-    };
+    static core::ControllerManagerRegistry registrar;
 
 private:
     static constexpr std::string_view typeName{"Helios"};
@@ -62,6 +60,10 @@ private:
     // Keep labels stable across transient direct USB name-read failures so a
     // briefly unhealthy control channel doesn't churn device identity.
     std::unordered_map<std::string, std::string> stableLabelByPortPath;
+};
+
+inline core::ControllerManagerRegistry HeliosManager::registrar{
+    [] { return std::make_unique<HeliosManager>(); }
 };
 
 } // namespace libera::helios
