@@ -11,11 +11,29 @@
 
 #include <array>
 #include <cstdio>
+#include <limits>
 
 namespace libera::etherdream {
 namespace {
 
 constexpr std::size_t MIN_DISCOVERY_PACKET_BYTES = 36;
+
+unsigned short discovery_port_from_revisions(std::uint16_t hardwareRevision,
+                                             std::uint16_t softwareRevision) {
+    // Historical compatibility with the old EtherDream emulator:
+    // hardwareRevision == 0 means "virtual EtherDream", and the software
+    // revision field is repurposed to carry the TCP port offset from 7765.
+    if (hardwareRevision != 0) {
+        return config::ETHERDREAM_DAC_PORT_DEFAULT;
+    }
+
+    const auto port = static_cast<unsigned int>(config::ETHERDREAM_DAC_PORT_DEFAULT) +
+                      static_cast<unsigned int>(softwareRevision);
+    if (port > static_cast<unsigned int>(std::numeric_limits<unsigned short>::max())) {
+        return config::ETHERDREAM_DAC_PORT_DEFAULT;
+    }
+    return static_cast<unsigned short>(port);
+}
 
 std::string format_mac_id(std::uint64_t mac) {
     std::array<char, 32> buffer{};
@@ -177,7 +195,6 @@ void EtherDreamManager::threadedFunction() {
         }
 
         std::string ip = sender.address().to_string();
-        unsigned short port = config::ETHERDREAM_DAC_PORT_DEFAULT;
 
         if (received < MIN_DISCOVERY_PACKET_BYTES) {
             continue;
@@ -193,6 +210,7 @@ void EtherDreamManager::threadedFunction() {
         const auto softwareRevision = core::bytes::readLe16(cursor); cursor += 2;
         const auto bufferCapacity = core::bytes::readLe16(cursor); cursor += 2;
         const auto maxPointRate = core::bytes::readLe32(cursor); cursor += 4;
+        const unsigned short port = discovery_port_from_revisions(hardwareRevision, softwareRevision);
         core::ControllerUsageState usageState = core::ControllerUsageState::Unknown;
         switch (static_cast<PlaybackState>(cursor[2])) {
             case PlaybackState::Idle:

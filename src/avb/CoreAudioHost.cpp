@@ -10,7 +10,9 @@
 #include <cctype>
 #include <memory>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 
 #if defined(__APPLE__)
 #include <AudioToolbox/AudioToolbox.h>
@@ -477,6 +479,64 @@ bool hasCompiledAsioApi() {
     return std::find(apis.begin(), apis.end(), RtAudio::WINDOWS_ASIO) != apis.end();
 }
 
+template <typename DeviceInfo, typename = void>
+struct HasRtAudioProbedMember : std::false_type {};
+
+template <typename DeviceInfo>
+struct HasRtAudioProbedMember<DeviceInfo, std::void_t<decltype(std::declval<DeviceInfo>().probed)>>
+    : std::true_type {};
+
+bool rtAudioOpenStreamCompat(RtAudio& audio,
+                             RtAudio::StreamParameters* outputParameters,
+                             RtAudioFormat format,
+                             unsigned int sampleRate,
+                             unsigned int* bufferFrames,
+                             RtAudioCallback callback,
+                             void* userData,
+                             RtAudio::StreamOptions* options) {
+    using OpenStreamResult = decltype(audio.openStream(outputParameters,
+                                                       nullptr,
+                                                       format,
+                                                       sampleRate,
+                                                       bufferFrames,
+                                                       callback,
+                                                       userData,
+                                                       options));
+
+    if constexpr (std::is_void_v<OpenStreamResult>) {
+        audio.openStream(outputParameters,
+                         nullptr,
+                         format,
+                         sampleRate,
+                         bufferFrames,
+                         callback,
+                         userData,
+                         options);
+        return true;
+    } else {
+        return static_cast<int>(audio.openStream(outputParameters,
+                                                 nullptr,
+                                                 format,
+                                                 sampleRate,
+                                                 bufferFrames,
+                                                 callback,
+                                                 userData,
+                                                 options)) == 0;
+    }
+}
+
+template <typename DeviceInfo>
+std::enable_if_t<HasRtAudioProbedMember<DeviceInfo>::value, bool>
+rtAudioDeviceWasProbed(const DeviceInfo& info) {
+    return info.probed;
+}
+
+template <typename DeviceInfo>
+std::enable_if_t<!HasRtAudioProbedMember<DeviceInfo>::value, bool>
+rtAudioDeviceWasProbed(const DeviceInfo&) {
+    return true;
+}
+
 class RtAudioStream final : public AudioOutputStream {
 public:
     RtAudioStream(std::uint32_t deviceId,
@@ -526,15 +586,17 @@ public:
             options.numberOfBuffers = rtAudioBufferCount;
 
             unsigned int bufferFrames = rtAudioFramesPerBuffer;
-            audio->openStream(&outputParameters,
-                              nullptr,
-                              RTAUDIO_FLOAT32,
-                              requestedPointRateValue,
-                              &bufferFrames,
-                              &RtAudioStream::audioCallback,
-                              this,
-                              &options,
-                              nullptr);
+            if (!rtAudioOpenStreamCompat(*audio,
+                                         &outputParameters,
+                                         RTAUDIO_FLOAT32,
+                                         requestedPointRateValue,
+                                         &bufferFrames,
+                                         &RtAudioStream::audioCallback,
+                                         this,
+                                         &options)) {
+                stop();
+                return false;
+            }
             audio->startStream();
             bufferFramesValue = bufferFrames;
             actualPointRateValue = audio->getStreamSampleRate();
@@ -544,7 +606,7 @@ public:
 
             running.store(true, std::memory_order_relaxed);
             return true;
-        } catch (const std::exception&) {
+        } catch (...) {
             stop();
             return false;
         }
@@ -558,14 +620,14 @@ public:
                 if (audio->isStreamRunning()) {
                     audio->abortStream();
                 }
-            } catch (const std::exception&) {
+            } catch (...) {
             }
 
             try {
                 if (audio->isStreamOpen()) {
                     audio->closeStream();
                 }
-            } catch (const std::exception&) {
+            } catch (...) {
             }
 
             audio.reset();
@@ -665,11 +727,11 @@ public:
                 RtAudio::DeviceInfo info;
                 try {
                     info = audio.getDeviceInfo(deviceId);
-                } catch (const std::exception&) {
+                } catch (...) {
                     continue;
                 }
 
-                if (info.outputChannels == 0) {
+                if (!rtAudioDeviceWasProbed(info) || info.outputChannels == 0) {
                     continue;
                 }
 
@@ -691,7 +753,7 @@ public:
                 device.pointRateMutable = device.supportedPointRates.size() > 1;
                 devices.push_back(std::move(device));
             }
-        } catch (const std::exception&) {
+        } catch (...) {
             return {};
         }
 

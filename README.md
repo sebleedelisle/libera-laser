@@ -1,10 +1,11 @@
 # libera - cross-platform laser control
 
+[![CI](https://github.com/sebleedelisle/libera-laser/actions/workflows/ci.yml/badge.svg)](https://github.com/sebleedelisle/libera-laser/actions/workflows/ci.yml)
+
 Libera aims to be a de facto standard for laser control, with support for a growing ecosystem of open-protocol hardware:
 - Ether Dream
 - Helios USB
-- Helios Pro
-- IDN (ILDA Digital Network)
+- IDN (ILDA Digital Network, including Helios-network devices such as Helios Pro)
 - Laser Cube USB (LaserDock)
 - Laser Cube Network (for Wifi laser cubes - wired network strongly recommended!)
 - AVB/Audio (LA Sollinger lasers or any multichannel audio devices) 
@@ -18,6 +19,7 @@ The library discovers laser controllers on the system and provides a list of ava
 ## Documentation
 
 - [Integrating Libera into your laser app](docs/integration.md) — discovery, connecting, arming, the point format, frame mode vs. streaming mode, and health monitoring.
+- [Implementing a Libera controller backend](docs/controller_backends.md) — the content-source model and how point-ingester and frame-ingester backends fit the shared scheduler.
 - [Writing a Libera plugin](docs/plugins.md) — adding support for a new laser controller via a shared-library plugin.
 
 ## Build

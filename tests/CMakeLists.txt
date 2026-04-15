@@ -1,6 +1,8 @@
 set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_buffer_estimator.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_controller_status.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_content_source_switch.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_request.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_timing.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_buffer_target.cpp

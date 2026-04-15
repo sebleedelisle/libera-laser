@@ -75,12 +75,20 @@ LaserControllerStreaming::~LaserControllerStreaming() {
 }
 
 void LaserControllerStreaming::setRequestPointsCallback(const RequestPointsCallback &callback) {
-    // Store the callback (copied into the functor).
+    std::lock_guard<std::mutex> lock(requestPointsCallbackMutex);
+    // Callback swaps can race the worker thread, so copy under a mutex and let
+    // requestPoints() work with a stable local copy for the rest of the call.
     requestPointsCallback = callback;
 }
 
 bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
-    if (!requestPointsCallback) {
+    RequestPointsCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(requestPointsCallbackMutex);
+        callback = requestPointsCallback;
+    }
+
+    if (!callback) {
         // No callback set, so there is no way to produce points.
         return false;
     }
@@ -89,7 +97,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
     pointsToSend.clear();
 
     // Ask the user-supplied callback to append new points.
-    requestPointsCallback(request, pointsToSend);
+    callback(request, pointsToSend);
 
     // Debug-only: enforce the contract that the callback produced at least the requested minimum.
     assert(pointsToSend.size() >= request.minimumPointsRequired &&
@@ -110,15 +118,19 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
     }
 
+    postProcessOutputPoints(pointsToSend);
 
+    return true;
+}
 
+void LaserControllerStreaming::postProcessOutputPoints(std::vector<LaserPoint>& points) {
     // Apply startup blanking (first N points forced to black).
     // X/Y pass through so galvos can travel to content position while dark.
     // The delay line was cleared in resetStartupBlank() so it fills with
     // blank-RGB points, providing additional natural blanking during transition.
     int blankPointsRemaining = startupBlankPointsRemaining.load(std::memory_order_relaxed);
     if (blankPointsRemaining > 0) {
-        for (auto &point : pointsToSend) {
+        for (auto &point : points) {
             if (blankPointsRemaining <= 0) {
                 break;
             }
@@ -134,7 +146,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         // Shutdown blanking: hold at last content position (dark) long enough
         // to flush the scanner sync colour delay line, then move to centre.
         int shutdownRemaining = shutdownBlankPointsRemaining.load(std::memory_order_relaxed);
-        for (auto &point : pointsToSend) {
+        for (auto &point : points) {
             point.r = 0.0f;
             point.g = 0.0f;
             point.b = 0.0f;
@@ -150,8 +162,8 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         shutdownBlankPointsRemaining.store(std::max(shutdownRemaining, 0), std::memory_order_relaxed);
     } else {
         // Track last content position for use during shutdown blanking.
-        if (!pointsToSend.empty()) {
-            const auto& lastPoint = pointsToSend.back();
+        if (!points.empty()) {
+            const auto& lastPoint = points.back();
             lastContentX = lastPoint.x;
             lastContentY = lastPoint.y;
         }
@@ -165,13 +177,13 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         static_cast<std::size_t>(millisToPoints(syncTenThousandths * 0.1));
 
     scannerSyncColourDelayLine.resize(shiftPointCount); 
-    
+
     if(shiftPointCount>0) { 
         // Feed the FIFO with geometry points while reusing the delayed colour sample
         // from `scannerSyncColourDelayLine`. This keeps X/Y data contiguous but shifts
         // RGB by the requested number of points so colour modulation stays aligned
         // with the mirrors even when their propagation times differ.
-        for (auto &point : pointsToSend) {
+        for (auto &point : points) {
             scannerSyncColourDelayLine.push_back(point);
             const LaserPoint colourPoint = scannerSyncColourDelayLine.front();
             scannerSyncColourDelayLine.pop_front();
@@ -180,8 +192,6 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
             point.b = colourPoint.b;
         }
     }
-    
-    return true;
 }
 
 

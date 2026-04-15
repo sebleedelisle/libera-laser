@@ -3,13 +3,10 @@
 #include "libera/core/LaserControllerStreaming.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <cmath>
-#include <deque>
 #include <mutex>
-#include <vector>
 #include <memory>
+#include <vector>
 
 namespace libera::core {
 
@@ -24,8 +21,18 @@ struct Frame {
     std::chrono::steady_clock::time_point firstPlayTime{};
 };
 
+class FrameScheduler;
+
 class LaserController : public LaserControllerStreaming {
 public:
+    enum class ContentSource {
+        None,
+        PointCallback,
+        FrameQueue
+    };
+
+    using PointCallback = RequestPointsCallback;
+
     LaserController();
     virtual ~LaserController();
 
@@ -59,7 +66,37 @@ public:
      */
     static std::chrono::milliseconds maxFrameHoldTime();
 
+    /**
+     * @brief Install or clear the callback that produces point batches on demand.
+     *
+     * Installing a callback switches the controller to the point-callback
+     * content source and clears any queued frames. Queueing a frame later will
+     * switch the active content source back to the frame queue automatically.
+     */
+    void setPointCallback(const PointCallback& callback);
+
+    /**
+     * @brief Clear the currently installed point callback.
+     *
+     * This only switches the content source back to None if the callback was
+     * the active source. Clearing the callback does not tear down frame-queue
+     * state because queued frames are a separate source.
+     */
+    void clearPointCallback();
+
+    /**
+     * @brief Compatibility wrapper around setPointCallback().
+     *
+     * The old name is still kept so existing applications continue to build
+     * while the codebase moves toward the clearer "PointCallback" language.
+     */
+    void setRequestPointsCallback(const RequestPointsCallback& callback);
+
     bool sendFrame(Frame&& frame);
+    void useFrameQueue();
+    void clearFrameQueue();
+    void clearContentSource();
+    ContentSource contentSource() const;
     void startFrameMode();
     void stopFrameMode();
     bool isFrameModeEnabled() const;
@@ -67,36 +104,29 @@ public:
     std::size_t queuedFrameCount() const;
 
 protected:
-    void fillFromFrameQueue(const PointFillRequest& request,
-                           std::vector<LaserPoint>& outputBuffer);
-    void drainPendingFrames();
+    struct FrameFillRequest {
+        std::size_t maximumPointsRequired = 0;
+        // Preferred output size when a frame-ingester backend adapts the point
+        // callback into one transport frame. When left at 0, requestFrame()
+        // falls back to blankFramePointCount, then maximumPointsRequired.
+        std::size_t preferredPointCount = 0;
+        // Idle blank size used when the frame queue has nothing due yet. Frame
+        // backends often set this to their natural frame size so idle output
+        // keeps a stable cadence.
+        std::size_t blankFramePointCount = 0;
+        std::chrono::steady_clock::time_point estimatedFirstPointRenderTime{};
+        std::uint64_t currentPointIndex = 0;
+    };
+
+    bool requestPoints(const PointFillRequest& request);
+    bool requestFrame(const FrameFillRequest& request, Frame& outputFrame);
+    bool isUsingFrameQueueSource() const;
 
 private:
-
-    std::deque<std::unique_ptr<Frame>> pendingFrames;
-    mutable std::mutex pendingFramesMutex;
-    std::deque<std::unique_ptr<Frame>> frameQueue;
-    bool frameModeActive = false;
-    std::atomic<std::size_t> pendingFrameCount{0};
-    std::atomic<std::size_t> pendingPointCount{0};
-    std::atomic<std::size_t> frameQueueCountEstimate{0};
-    std::atomic<std::size_t> frameQueuePointCountEstimate{0};
-    std::atomic<std::size_t> nominalFramePointCount{1};
-
-    void appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count);
-    void updateFrameQueueMetricsUnsafe();
+    mutable std::mutex contentSourceMutex;
+    std::unique_ptr<FrameScheduler> frameScheduler;
+    ContentSource activeSource = ContentSource::None;
     std::size_t queuedPointBudget() const;
-
-    // Automatic blanking for frame transitions / wraps.
-    static constexpr float BLANK_TRANSITION_DISTANCE_THRESHOLD = 0.2f;
-    static constexpr float BLANK_POINTS_PER_UNIT_DISTANCE = 20.0f;
-    static constexpr std::size_t MIN_BLANK_POINTS_PER_END = 2;
-    std::vector<LaserPoint> pendingTransitionPoints;
-
-    void generateTransitionPoints(const LaserPoint& from, const LaserPoint& to,
-                                  std::vector<LaserPoint>& out);
-    void drainPendingTransition(std::vector<LaserPoint>& outputBuffer,
-                                std::size_t maxPoints);
 };
 
 } // namespace libera::core

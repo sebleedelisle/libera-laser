@@ -15,7 +15,7 @@ void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& c
     // Register a callback that continuously feeds a coloured circle to the controller.
     // The lambda keeps all state internally (static precomputed points + cursor)
     // so the outer application only has to install it once.
-    controller->setRequestPointsCallback(
+    controller->setPointCallback(
         [](const core::PointFillRequest& req, std::vector<core::LaserPoint>& out) {
 
             // Precompute the actual circle once and reuse it for every invocation.
@@ -155,6 +155,11 @@ int main() {
     }
     
     installCirclePointsCallback(controller); 
+
+    // Like the frame demos, the streaming example must explicitly arm the
+    // controller once setup is complete or the shared safety blanking path
+    // will keep all output dark.
+    controller->setArmed(true);
 
     const float phaseStep = 0.05f;          // smaller => slower change
     constexpr float scannerSyncBaseUnits = 5.0f; // 0.5 ms expressed in 1/10,000 s units
