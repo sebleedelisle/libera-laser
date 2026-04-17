@@ -1,5 +1,6 @@
 #include "libera/core/LaserController.hpp"
 #include "libera/core/FrameScheduler.hpp"
+#include "libera/core/PointStreamFramer.hpp"
 #include "libera/log/Log.hpp"
 
 #include <cassert>
@@ -70,6 +71,7 @@ void LaserController::clearPointCallback() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     LaserControllerStreaming::setRequestPointsCallback({});
     if (activeSource == ContentSource::PointCallback) {
+        if (pointStreamFramer) pointStreamFramer->reset();
         activeSource = ContentSource::None;
     }
 }
@@ -130,6 +132,7 @@ void LaserController::clearContentSource() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     LaserControllerStreaming::setRequestPointsCallback({});
     frameScheduler->reset();
+    if (pointStreamFramer) pointStreamFramer->reset();
     activeSource = ContentSource::None;
 }
 
@@ -233,22 +236,32 @@ bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outpu
             return false;
         }
 
-        PointFillRequest pointRequest{};
-        // Frame-ingester transports still need a deterministic batch size when
-        // adapting a point callback into one hardware frame, so request an
-        // exact point count here instead of a min/max range.
-        pointRequest.minimumPointsRequired = preferredPointCount;
-        pointRequest.maximumPointsRequired = preferredPointCount;
-        pointRequest.estimatedFirstPointRenderTime = request.estimatedFirstPointRenderTime;
-        pointRequest.currentPointIndex = request.currentPointIndex;
+        if (!pointStreamFramer) {
+            pointStreamFramer = std::make_unique<PointStreamFramer>();
+        }
+        pointStreamFramer->setNominalFrameSize(preferredPointCount);
+        pointStreamFramer->setMaxFrameSize(
+            request.maximumPointsRequired > 0 ? request.maximumPointsRequired : preferredPointCount);
 
-        if (!LaserControllerStreaming::requestPoints(pointRequest)) {
+        RequestPointsCallback callback;
+        {
+            std::lock_guard<std::mutex> lock(requestPointsCallbackMutex);
+            callback = requestPointsCallback;
+        }
+        if (!callback) {
             outputFrame = Frame{};
             return false;
         }
 
-        outputFrame = Frame{};
-        outputFrame.points = pointsToSend;
+        PointFillRequest templateReq{};
+        templateReq.estimatedFirstPointRenderTime = request.estimatedFirstPointRenderTime;
+        templateReq.currentPointIndex = request.currentPointIndex;
+
+        if (!pointStreamFramer->extractFrame(callback, templateReq, outputFrame)) {
+            outputFrame = Frame{};
+            return false;
+        }
+        postProcessOutputPoints(outputFrame.points);
         return true;
     }
 

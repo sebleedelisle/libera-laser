@@ -10,6 +10,8 @@
 
 namespace libera::core {
 
+class PointStreamFramer;
+
 struct Frame {
     std::vector<LaserPoint> points;
     // Desired first-point presentation time. If left as default (epoch), the
@@ -125,6 +127,7 @@ protected:
 private:
     mutable std::mutex contentSourceMutex;
     std::unique_ptr<FrameScheduler> frameScheduler;
+    std::unique_ptr<PointStreamFramer> pointStreamFramer;
     ContentSource activeSource = ContentSource::None;
     std::size_t queuedPointBudget() const;
 };
