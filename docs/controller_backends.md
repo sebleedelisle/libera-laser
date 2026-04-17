@@ -121,7 +121,7 @@ thread. In practice the pattern is:
   `connectController()` will need later
 - make `discover()` enumerate hardware and return lightweight info objects
   without permanently claiming the device
-- make `connectController()` reuse one live controller per stable id
+- let the manager reuse one live controller per stable discovery key
 
 ```cpp
 class MyControllerInfo : public core::ControllerInfo {
@@ -140,7 +140,9 @@ private:
     std::string transportPathValue;
 };
 
-class MyManager : public core::ControllerManagerBase {
+class MyManager
+    : public core::SingleControllerManagerBase<MyControllerInfo,
+                                               MyController> {
 public:
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override {
         std::vector<std::unique_ptr<core::ControllerInfo>> results;
@@ -163,37 +165,33 @@ public:
 
     std::string_view managedType() const override { return typeName; }
 
-    std::shared_ptr<core::LaserController>
-    connectController(const core::ControllerInfo& info) override {
-        const auto* myInfo = dynamic_cast<const MyControllerInfo*>(&info);
-        if (!myInfo) {
+private:
+    std::shared_ptr<MyController>
+    createController(const MyControllerInfo& info) override {
+        if (!sdkReady()) {
             return nullptr;
         }
-
-        if (auto existing = findLiveController(myInfo->idValue())) {
-            return existing;
-        }
-
-        // Connect using the exact path discovered earlier rather than trying
-        // to find the device again by a friendly label.
-        auto controller = std::make_shared<MyController>();
-        if (!controller->connect(myInfo->transportPath())) {
-            return nullptr;
-        }
-
-        rememberLiveController(myInfo->idValue(), controller);
-        controller->startThread();
-        return controller;
+        return std::make_shared<MyController>();
     }
 
-    void closeAll() override {
-        for (auto& controller : allLiveControllers()) {
-            if (!controller) {
-                continue;
-            }
-            controller->stopThread();
-            controller->close();
+    core::SingleControllerManagerBase<MyControllerInfo, MyController>
+        ::NewControllerDisposition
+    prepareNewController(MyController& controller,
+                         const MyControllerInfo& info) override {
+        // Connect using the exact path discovered earlier rather than trying
+        // to find the device again by a friendly label.
+        if (!controller.connect(info.transportPath())) {
+            return NewControllerDisposition::DropController;
         }
+
+        controller.startThread();
+        return NewControllerDisposition::KeepController;
+    }
+
+    void closeController(const std::string& key,
+                         MyController& controller) override {
+        (void)key;
+        controller.close();
     }
 
 private:
@@ -201,10 +199,26 @@ private:
 };
 ```
 
-Real managers often need some synchronization around their live-controller
-cache, but that is just implementation detail. The backend contract is the
-much simpler shape above: discovery returns stable metadata, and connect uses
-that metadata to open the exact controller that was discovered.
+`SingleControllerManagerBase` now owns the repetitive parts:
+
+- typed `ControllerInfo` casting
+- one-live-controller-per-key caching
+- dropping a failed first connection from the cache
+- shutdown snapshots and the default `stopThread()` loop
+
+That means most built-in backends only need to implement:
+
+- `discover()`
+- `createController(...)`
+- `prepareNewController(...)`
+- optionally `prepareExistingController(...)`
+- optionally `controllerKey(...)` if the reconnect key is not `info.idValue()`
+- optionally `closeController(...)` / `beforeCloseControllers()` /
+  `afterCloseControllers()` for backend-specific teardown
+
+If the backend has a more unusual shape such as shared multi-controller device
+runtimes, then deriving directly from `ControllerManagerBase` can still make
+sense. `AVB` is the current example of that.
 
 The important parts are:
 
@@ -214,6 +228,8 @@ The important parts are:
   port path, or another physical identity instead of "device 0" style ordering.
 - `managedType()` must match `ControllerInfo::type()`. `System` uses that
   string to route `connectController(...)` to the right manager.
+- if the live-controller cache should be keyed by something else such as a USB
+  port path or a protocol unit id, override `controllerKey(...)`
 - if discovery learns something needed to reconnect to the exact device later
   such as a USB port path, backend device id, or resolved network port, store
   it on the `ControllerInfo` subtype instead of repeating another fuzzy lookup
