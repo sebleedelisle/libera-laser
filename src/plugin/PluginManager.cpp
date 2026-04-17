@@ -4,6 +4,7 @@
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <vector>
 
@@ -19,6 +20,8 @@ namespace libera::plugin {
 namespace fs = std::filesystem;
 
 namespace {
+
+constexpr std::uint32_t minimumSupportedPluginApiVersion = LIBERA_PLUGIN_API_VERSION_1;
 
 void* openLibrary(const std::string& path) {
 #ifdef _WIN32
@@ -102,11 +105,18 @@ void hostReportErrorCallback(libera_host_ctx_t host_ctx,
 }
 
 const libera_host_services_t kHostServices = {
-    /* abi_version    */ LIBERA_PLUGIN_API_VERSION,
+    /* abi_version    */ LIBERA_PLUGIN_HOST_SERVICES_VERSION,
     /* log            */ &hostLogCallback,
     /* record_latency */ &hostRecordLatencyCallback,
     /* report_error   */ &hostReportErrorCallback,
 };
+
+bool pluginApiSupportsFrameTransport(const libera_plugin_api_t* api) {
+    return api &&
+           api->abi_version >= LIBERA_PLUGIN_API_VERSION_2 &&
+           api->get_frame_requirements &&
+           api->send_frame;
+}
 
 bool isSharedLibrary(const fs::path& path) {
     const auto ext = path.extension().string();
@@ -120,10 +130,14 @@ bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
         return false;
     }
 
-    if (api->abi_version != LIBERA_PLUGIN_API_VERSION) {
+    if (api->abi_version < minimumSupportedPluginApiVersion ||
+        api->abi_version > LIBERA_PLUGIN_API_VERSION) {
         libera::log::logError("Plugin: ", path.string(),
                               " has API version ", api->abi_version,
-                              ", expected ", LIBERA_PLUGIN_API_VERSION);
+                              ", expected ",
+                              minimumSupportedPluginApiVersion,
+                              "-",
+                              LIBERA_PLUGIN_API_VERSION);
         return false;
     }
 
@@ -157,9 +171,27 @@ bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
         return false;
     }
 
-    if (!api->send_points) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " is missing send_points()");
+    const bool hasPointTransport = api->send_points != nullptr;
+
+    bool hasFrameTransport = false;
+    if (api->abi_version >= LIBERA_PLUGIN_API_VERSION_2) {
+        const bool hasFrameRequirements = api->get_frame_requirements != nullptr;
+        const bool hasFrameSender = api->send_frame != nullptr;
+        if (hasFrameRequirements != hasFrameSender) {
+            libera::log::logError(
+                "Plugin: ",
+                path.string(),
+                " must provide both get_frame_requirements() and send_frame()");
+            return false;
+        }
+        hasFrameTransport = hasFrameRequirements && hasFrameSender;
+    }
+
+    if (!hasPointTransport && !hasFrameTransport) {
+        libera::log::logError(
+            "Plugin: ",
+            path.string(),
+            " is missing send_points() or get_frame_requirements()+send_frame()");
         return false;
     }
 
@@ -234,7 +266,13 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
     plugin->initialised = true;
 
     libera::log::logInfo("Plugin: loaded \"", plugin->displayName,
-                         "\" (type=", plugin->typeName, ") from ",
+                         "\" (type=",
+                         plugin->typeName,
+                         ", api=",
+                         api->abi_version,
+                         ", transport=",
+                         pluginApiSupportsFrameTransport(api) ? "frame" : "point",
+                         ") from ",
                          path.filename().string());
     return plugin;
 }

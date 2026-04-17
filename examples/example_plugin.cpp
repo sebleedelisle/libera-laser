@@ -2,15 +2,19 @@
  * example_plugin — minimal Libera controller plugin.
  *
  * This file is a complete, working plugin built against libera_plugin.h.
- * It simulates one controller that accepts and discards every point batch.
+ * It simulates one controller that accepts and discards every submission.
  *
  * The plugin API now mirrors Libera's built-in backend structure:
  *
  * - one plugin-wide backend object
  * - discover() on that backend
  * - connect_controller() returning one controller handle per live connection
- * - controller methods such as send_points(), set_armed(), and
+ * - controller methods such as send_points(), send_frame(), set_armed(), and
  *   get_buffer_state()
+ *
+ * This example exposes both point-ingester and frame-ingester callbacks so
+ * plugin authors can compare the two shapes in one place. Current hosts prefer
+ * the frame callbacks when both are present.
  *
  * Build as a shared library and place the output in one of Libera's plugin
  * directories (configured with System::setPluginDirectory() /
@@ -45,6 +49,27 @@ struct ExampleController {
     std::atomic<uint32_t> pointRate{30000};
     std::atomic<bool> armed{false};
 };
+
+libera_status_t acceptSubmission(ExampleController* controller,
+                                 const libera_point_t* points,
+                                 uint32_t count) {
+    if (!controller || (!points && count > 0)) {
+        return LIBERA_ERR_INVALID_ARGUMENT;
+    }
+
+    // A real plugin would convert and forward the points to hardware here.
+    // The example just accepts the submission and optionally records a tiny
+    // fake latency so plugin authors can see how to call back into the host.
+    if (controller->backend &&
+        controller->backend->host &&
+        controller->backend->host->record_latency) {
+        controller->backend->host->record_latency(controller->hostCtx, 1000);
+    }
+
+    (void)points;
+    (void)count;
+    return LIBERA_OK;
+}
 
 void hostLog(ExampleBackend* backend,
              libera_log_level_t level,
@@ -132,23 +157,31 @@ libera_status_t sendPoints(void* rawController,
                            const libera_point_t* points,
                            uint32_t count) {
     auto* controller = static_cast<ExampleController*>(rawController);
-    if (!controller || (!points && count > 0)) {
+    return acceptSubmission(controller, points, count);
+}
+
+libera_status_t getFrameRequirements(void* rawController,
+                                     libera_frame_requirements_t* out) {
+    auto* controller = static_cast<ExampleController*>(rawController);
+    if (!controller || !out) {
         return LIBERA_ERR_INVALID_ARGUMENT;
     }
 
-    // A real plugin would convert and forward the points to hardware here.
-    // The example just accepts the batch and optionally records a tiny fake
-    // submission latency so plugin authors can see how to call back into the
-    // host with per-controller metrics.
-    if (controller->backend &&
-        controller->backend->host &&
-        controller->backend->host->record_latency) {
-        controller->backend->host->record_latency(controller->hostCtx, 1000);
-    }
-
-    (void)points;
-    (void)count;
+    // Frame-ingester plugins tell the host what one natural hardware frame
+    // looks like. The host then adapts either content source into that shape.
+    libera_frame_requirements_init(out,
+                                   /* maximumPointsRequired */ 300,
+                                   /* preferredPointCount   */ 300,
+                                   /* blankFramePointCount  */ 300);
+    out->estimated_first_point_render_delay_ns = 5ull * 1000ull * 1000ull;
     return LIBERA_OK;
+}
+
+libera_status_t sendFrame(void* rawController,
+                          const libera_point_t* points,
+                          uint32_t count) {
+    auto* controller = static_cast<ExampleController*>(rawController);
+    return acceptSubmission(controller, points, count);
 }
 
 int getBufferState(void* rawController, libera_buffer_state_t* out) {
@@ -213,6 +246,8 @@ const libera_plugin_api_t examplePluginApi = {
     /* properties         */ exampleProperties,
     /* property_count     */ 2,
     /* read_property      */ &readProperty,
+    /* get_frame_requirements */ &getFrameRequirements,
+    /* send_frame             */ &sendFrame,
 };
 
 } // namespace

@@ -131,6 +131,9 @@ Call `setArmed(false)` any time you want output to stop immediately (e.g. when
 the user presses an e-stop button, the window loses focus, or the app is
 closing).
 
+The idea is that you surface the arming mechanism to the user but it can also act 
+as an laser enable / disable for simpler apps. 
+
 ## The point format
 
 Both of the ways you'll send data to the laser (described in the next section)

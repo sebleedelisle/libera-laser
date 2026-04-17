@@ -9,7 +9,7 @@ backend model:
 - one plugin-wide **backend** object
 - `discover()` on that backend
 - `connect_controller()` returning one **controller handle** per live connection
-- controller methods such as `send_points()`, `set_armed()`, and
+- controller methods such as `send_points()`, `send_frame()`, `set_armed()`, and
   `get_buffer_state()`
 
 That keeps translating an in-tree backend into a plugin mostly mechanical.
@@ -68,9 +68,16 @@ These fields in `libera_plugin_api_t` are required:
 - `discover`
 - `connect_controller`
 - `destroy_controller`
-- `send_points`
+- transport callback(s):
+  - ABI v1: `send_points`
+  - ABI v2: `send_points`, or `get_frame_requirements` + `send_frame`
 
 Everything else is optional.
+
+`LIBERA_PLUGIN_API_VERSION` in the header always points at the newest ABI this
+version of Libera understands. If you need to load the same plugin into an
+older host that only knows ABI v1, explicitly set `.abi_version =
+LIBERA_PLUGIN_API_VERSION_1` and only use the v1 fields.
 
 ## Optional callbacks
 
@@ -83,11 +90,16 @@ These can be omitted by setting the field to `NULL`:
 - `set_armed`
 - `get_buffer_state`
 - `read_property`
+- `get_frame_requirements`
+- `send_frame`
 
 If `get_buffer_state` is omitted, the host falls back to a fixed batch size.
 
 If `properties` / `read_property` are omitted, the plugin exposes no
 properties.
+
+If you use the frame-ingester path, `get_frame_requirements` and `send_frame`
+must be provided together.
 
 ## Discovery and connect
 
@@ -121,7 +133,26 @@ The host handles:
 
 That keeps property boilerplate small.
 
+## Choosing a transport shape
+
+Plugins should mirror the same two backend shapes that built-in controllers use:
+
+- `Point-ingester`
+  The transport wants "some more points now". Implement `send_points()`. The
+  host asks Libera's shared scheduler for a point batch, converts it to
+  `libera_point_t`, and forwards it to the plugin.
+- `Frame-ingester`
+  The transport wants one whole frame submission at a time. Implement the ABI
+  v2 pair `get_frame_requirements()` + `send_frame()`. The host asks Libera's
+  shared scheduler for one frame, converts it to `libera_point_t`, and forwards
+  it to the plugin.
+
+If both shapes are present in one ABI v2 plugin, the host prefers the
+frame-ingester path because it most closely matches a built-in frame backend.
+
 ## Minimal example
+
+### Point-ingester
 
 ```c
 typedef struct {
@@ -180,13 +211,59 @@ static const libera_plugin_api_t pluginApi = {
 LIBERA_PLUGIN_EXPORT(pluginApi)
 ```
 
+### Frame-ingester
+
+An ABI v2 frame-ingester plugin replaces `send_points()` with the paired frame
+callbacks:
+
+```c
+static libera_status_t get_frame_requirements(void* rawController,
+                                              libera_frame_requirements_t* out) {
+    MyController* controller = rawController;
+    if (!controller || !out) {
+        return LIBERA_ERR_INVALID_ARGUMENT;
+    }
+
+    libera_frame_requirements_init(out,
+                                   /* maximumPointsRequired */ 1000,
+                                   /* preferredPointCount   */ 1000,
+                                   /* blankFramePointCount  */ 1000);
+    out->estimated_first_point_render_delay_ns = 5ull * 1000ull * 1000ull;
+    return LIBERA_OK;
+}
+
+static libera_status_t send_frame(void* rawController,
+                                  const libera_point_t* points,
+                                  uint32_t count) {
+    MyController* controller = rawController;
+    return vendor_send_frame(controller->device, points, count)
+        ? LIBERA_OK
+        : LIBERA_ERR_INTERNAL;
+}
+```
+
+Then wire those fields into `libera_plugin_api_t`:
+
+```c
+static const libera_plugin_api_t pluginApi = {
+    .abi_version = LIBERA_PLUGIN_API_VERSION_2,
+    .type_name = "MyFrameDac",
+    .display_name = "My Frame DAC",
+    .discover = discover,
+    .connect_controller = connect_controller,
+    .destroy_controller = destroy_controller,
+    .get_frame_requirements = get_frame_requirements,
+    .send_frame = send_frame,
+};
+```
+
 See the full working example here:
 
 - [example_plugin.cpp](../examples/example_plugin.cpp)
 
 ## Lifecycle
 
-For a plugin that supports two devices, the call flow is:
+For a point-ingester plugin that supports two devices, the call flow is:
 
 ```text
 load .dylib
@@ -198,14 +275,32 @@ load .dylib
 ├── connect_controller(backend, dev-A, host_ctx_A) -> controller_A
 │   ├── set_point_rate(controller_A, 30000)         optional
 │   ├── set_armed(controller_A, true)               optional
-│   ├── send_points(controller_A, pts, n)           repeated
 │   ├── get_buffer_state(controller_A, &bs)         optional
+│   ├── send_points(controller_A, pts, n)           repeated
 │   └── destroy_controller(controller_A)
 │
 ├── connect_controller(backend, dev-B, host_ctx_B) -> controller_B
 │   └── ...
 │
 └── destroy_backend(backend)             optional
+```
+
+For an ABI v2 frame-ingester plugin, the per-controller loop becomes:
+
+```text
+load .dylib
+├── libera_plugin_get_api()
+├── create_backend(host)                           optional
+├── discover(backend, emit, ctx)
+│
+├── connect_controller(backend, dev-A, host_ctx_A) -> controller_A
+│   ├── set_point_rate(controller_A, 30000)           optional
+│   ├── set_armed(controller_A, true)                 optional
+│   ├── get_frame_requirements(controller_A, &req)    repeated
+│   ├── send_frame(controller_A, frame_pts, n)        repeated
+│   └── destroy_controller(controller_A)
+│
+└── destroy_backend(backend)                       optional
 ```
 
 `discover()` may be called repeatedly while the app is running.
@@ -219,14 +314,17 @@ The plugin's job is just to:
 
 - discover devices
 - open/close controller connections
-- accept point batches in `send_points()`
-- optionally expose buffer state so the host can pace itself accurately
+- describe what kind of transport payload it wants next
+- accept that payload through `send_points()` or `send_frame()`
+- optionally expose buffer state so the host can pace or report status
 
 Whether the application is using queued frames or a live point callback, the
-host adapts that content source into point batches before calling the plugin.
+host adapts that content source into the payload shape the plugin asked for.
 
-If your vendor SDK is internally frame-based, it is fine for the plugin to
-buffer points and feed the SDK from its own worker thread.
+If your vendor SDK is internally frame-based, prefer the ABI v2
+`get_frame_requirements()` + `send_frame()` path so the plugin stays aligned
+with built-in frame-ingester backends. Only re-buffer point batches inside the
+plugin if you are deliberately targeting the older ABI v1 point-only surface.
 
 ## Building
 

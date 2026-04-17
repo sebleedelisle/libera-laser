@@ -6,7 +6,7 @@
  * - one plugin-wide "backend" object
  * - discover() on that backend
  * - connect_controller() returning one controller handle per live connection
- * - controller methods such as send_points(), set_armed(), and
+ * - controller methods such as send_points(), send_frame(), set_armed(), and
  *   get_buffer_state()
  *
  * Plugins export one function:
@@ -28,7 +28,15 @@
 extern "C" {
 #endif
 
-#define LIBERA_PLUGIN_API_VERSION 1
+#define LIBERA_PLUGIN_API_VERSION_1 1
+#define LIBERA_PLUGIN_API_VERSION_2 2
+#define LIBERA_PLUGIN_API_VERSION LIBERA_PLUGIN_API_VERSION_2
+
+/*
+ * Host services are versioned separately so the plugin ABI can grow without
+ * forcing unrelated create_backend() checks to change.
+ */
+#define LIBERA_PLUGIN_HOST_SERVICES_VERSION 1
 
 #define LIBERA_PLUGIN_MAX_ID 128
 #define LIBERA_PLUGIN_MAX_LABEL 256
@@ -76,6 +84,26 @@ typedef struct {
     int32_t points_in_buffer;
     int32_t total_buffer_points;
 } libera_buffer_state_t;
+
+/*
+ * Frame-ingester requirements reported by ABI v2 plugins.
+ *
+ * The host still owns queueing and scheduling. The plugin just reports the
+ * frame size the transport wants next and the estimated render lead for that
+ * submission opportunity.
+ */
+typedef struct {
+    uint32_t maximum_points_required;
+    uint32_t preferred_point_count;
+    uint32_t blank_frame_point_count;
+
+    /*
+     * Advisory delay from "now" until the first point in the submitted frame
+     * is expected to reach the mirrors. Zero means "treat the frame as due
+     * immediately".
+     */
+    uint64_t estimated_first_point_render_delay_ns;
+} libera_frame_requirements_t;
 
 /*
  * Opaque per-connection token passed by the host when a controller is opened.
@@ -146,7 +174,8 @@ typedef struct {
  * - discover
  * - connect_controller
  * - destroy_controller
- * - send_points
+ * - ABI v1: send_points
+ * - ABI v2: send_points, or get_frame_requirements + send_frame
  *
  * Everything else is optional unless noted.
  */
@@ -225,6 +254,24 @@ typedef struct {
                          uint32_t property_index,
                          char* out,
                          uint32_t out_size);
+
+    /*
+     * Optional ABI v2 frame-ingester callbacks.
+     *
+     * These mirror built-in frame-ingester backends: the plugin tells the host
+     * when one more transport frame can be submitted and what size that frame
+     * should be, then the host adapts the active content source into one frame
+     * and submits it through send_frame().
+     *
+     * If both the point and frame callbacks are present, the host prefers the
+     * frame path because it most closely matches a built-in frame backend.
+     */
+    libera_status_t (*get_frame_requirements)(void* controller,
+                                              libera_frame_requirements_t* out);
+
+    libera_status_t (*send_frame)(void* controller,
+                                  const libera_point_t* points,
+                                  uint32_t count);
 } libera_plugin_api_t;
 
 /*
@@ -294,6 +341,21 @@ static inline void libera_controller_info_set_cookie(libera_controller_info_t* i
 
     memcpy(info->connect_cookie, data, size);
     info->connect_cookie_size = size;
+}
+
+static inline void libera_frame_requirements_init(
+    libera_frame_requirements_t* requirements,
+    uint32_t maximumPointsRequired,
+    uint32_t preferredPointCount,
+    uint32_t blankFramePointCount) {
+    if (!requirements) {
+        return;
+    }
+
+    memset(requirements, 0, sizeof(*requirements));
+    requirements->maximum_points_required = maximumPointsRequired;
+    requirements->preferred_point_count = preferredPointCount;
+    requirements->blank_frame_point_count = blankFramePointCount;
 }
 
 #ifdef __cplusplus

@@ -122,6 +122,7 @@ bool PluginController::open() {
     }
 
     lastSentArmed = !isArmed();
+    currentPointIndex = 0;
     return true;
 }
 
@@ -130,6 +131,46 @@ void PluginController::setPointRate(std::uint32_t pointRateValue) {
     if (pluginHandle && api && api->set_point_rate) {
         api->set_point_rate(pluginHandle, pointRateValue);
     }
+}
+
+bool PluginController::usesFrameTransport() const {
+    return api &&
+           api->abi_version >= LIBERA_PLUGIN_API_VERSION_2 &&
+           api->get_frame_requirements &&
+           api->send_frame;
+}
+
+bool PluginController::updateBufferTelemetry(std::uint32_t rate,
+                                             libera_buffer_state_t& bufferState) {
+    bufferState = {-1, -1};
+    if (!pluginHandle || !api || !api->get_buffer_state ||
+        api->get_buffer_state(pluginHandle, &bufferState) != 0 ||
+        bufferState.total_buffer_points <= 0 ||
+        bufferState.points_in_buffer < 0) {
+        clearEstimatedBufferState();
+        return false;
+    }
+
+    setEstimatedBufferCapacity(bufferState.total_buffer_points);
+    updateEstimatedBufferSnapshotNow(bufferState.points_in_buffer, rate);
+    return true;
+}
+
+void PluginController::handlePluginFailure(libera_status_t status,
+                                           const char* action,
+                                           const char* errorPrefix) {
+    libera::log::logError("Plugin: ", action, " failed (",
+                          describeStatus(status), ")");
+
+    std::string code = errorPrefix ? std::string(errorPrefix) : std::string("plugin.");
+    code += describeStatus(status);
+    if (status == LIBERA_ERR_DISCONNECTED) {
+        recordConnectionError(code);
+        connected.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    recordIntermittentError(code);
 }
 
 void PluginController::recordLatencyFromPlugin(std::uint64_t nanoseconds) {
@@ -210,6 +251,8 @@ void PluginController::run() {
     pluginPoints.reserve(FALLBACK_MAX_BATCH_POINTS);
 
     constexpr auto reconnectRetryDelay = 1s;
+    constexpr auto workerIdleDelay = 2ms;
+    const bool frameTransport = usesFrameTransport();
 
     while (running.load()) {
         if (!connected.load(std::memory_order_relaxed)) {
@@ -234,6 +277,7 @@ void PluginController::run() {
             }
 
             lastSentArmed = !isArmed();
+            currentPointIndex = 0;
             resetStartupBlank();
             connected.store(true, std::memory_order_relaxed);
         }
@@ -251,14 +295,72 @@ void PluginController::run() {
         const auto rate = getPointRate();
 
         libera_buffer_state_t bufferState{-1, -1};
-        bool haveBuffer = false;
-        if (api->get_buffer_state &&
-            api->get_buffer_state(pluginHandle, &bufferState) == 0 &&
-            bufferState.total_buffer_points > 0 &&
-            bufferState.points_in_buffer >= 0) {
-            setEstimatedBufferCapacity(bufferState.total_buffer_points);
-            updateEstimatedBufferSnapshotNow(bufferState.points_in_buffer, rate);
-            haveBuffer = true;
+        const bool haveBuffer = updateBufferTelemetry(rate, bufferState);
+
+        if (frameTransport) {
+            libera_frame_requirements_t requirements{};
+            const auto status = api->get_frame_requirements(pluginHandle, &requirements);
+            if (status == LIBERA_ERR_BUSY) {
+                std::this_thread::sleep_for(workerIdleDelay);
+                continue;
+            }
+            if (status != LIBERA_OK) {
+                handlePluginFailure(status,
+                                    "get_frame_requirements",
+                                    "plugin.frame_requirements.");
+                std::this_thread::sleep_for(workerIdleDelay);
+                continue;
+            }
+            if (requirements.maximum_points_required == 0) {
+                handlePluginFailure(LIBERA_ERR_INVALID_ARGUMENT,
+                                    "get_frame_requirements",
+                                    "plugin.frame_requirements.");
+                std::this_thread::sleep_for(workerIdleDelay);
+                continue;
+            }
+
+            FrameFillRequest request;
+            request.maximumPointsRequired = requirements.maximum_points_required;
+            request.preferredPointCount = requirements.preferred_point_count;
+            if (request.preferredPointCount == 0) {
+                request.preferredPointCount = request.maximumPointsRequired;
+            }
+
+            // Frame-ingester plugins should usually keep blank frames at the
+            // same natural size as content frames so transport cadence stays
+            // stable while the queue is waiting for the next frame to become due.
+            request.blankFramePointCount = requirements.blank_frame_point_count;
+            if (request.blankFramePointCount == 0) {
+                request.blankFramePointCount = request.preferredPointCount;
+            }
+
+            if (requirements.estimated_first_point_render_delay_ns > 0) {
+                request.estimatedFirstPointRenderTime =
+                    std::chrono::steady_clock::now() +
+                    std::chrono::nanoseconds(
+                        requirements.estimated_first_point_render_delay_ns);
+            }
+            request.currentPointIndex = currentPointIndex;
+
+            core::Frame frameToSend;
+            if (!requestFrame(request, frameToSend) || frameToSend.points.empty()) {
+                std::this_thread::sleep_for(workerIdleDelay);
+                continue;
+            }
+
+            convertPoints(frameToSend.points, pluginPoints);
+            const std::size_t sentPointCount = frameToSend.points.size();
+            const auto sendStatus = api->send_frame(
+                pluginHandle,
+                pluginPoints.data(),
+                static_cast<uint32_t>(pluginPoints.size()));
+            if (sendStatus != LIBERA_OK) {
+                handlePluginFailure(sendStatus, "send_frame", "plugin.send.");
+                continue;
+            }
+
+            currentPointIndex += sentPointCount;
+            continue;
         }
 
         std::size_t minPoints = 0;
@@ -301,13 +403,15 @@ void PluginController::run() {
         request.maximumPointsRequired = maxPoints;
         request.estimatedFirstPointRenderTime =
             std::chrono::steady_clock::now() + renderTimeLead;
+        request.currentPointIndex = currentPointIndex;
 
         if (!requestPoints(request) || pointsToSend.empty()) {
-            std::this_thread::sleep_for(2ms);
+            std::this_thread::sleep_for(workerIdleDelay);
             continue;
         }
 
         convertPoints(pointsToSend, pluginPoints);
+        const std::size_t sentPointCount = pluginPoints.size();
 
         const auto status = api->send_points(pluginHandle,
                                              pluginPoints.data(),
@@ -315,17 +419,11 @@ void PluginController::run() {
         pointsToSend.clear();
 
         if (status != LIBERA_OK) {
-            libera::log::logError("Plugin: send_points failed (",
-                                  describeStatus(status), ")");
-            std::string code = "plugin.send.";
-            code += describeStatus(status);
-            if (status == LIBERA_ERR_DISCONNECTED) {
-                recordConnectionError(code);
-                connected.store(false, std::memory_order_relaxed);
-            } else {
-                recordIntermittentError(code);
-            }
+            handlePluginFailure(status, "send_points", "plugin.send.");
+            continue;
         }
+
+        currentPointIndex += sentPointCount;
     }
 
     if (pluginHandle && api->set_armed) {

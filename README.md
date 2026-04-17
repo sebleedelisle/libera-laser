@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/sebleedelisle/libera-laser/actions/workflows/ci.yml/badge.svg)](https://github.com/sebleedelisle/libera-laser/actions/workflows/ci.yml)
 
-Libera aims to be a de facto standard for laser control, with support for a growing ecosystem of open-protocol hardware:
+Libera aims to become a de facto standard for laser control, with support for a growing ecosystem of open-protocol hardware:
 - Ether Dream
 - Helios USB
 - IDN (ILDA Digital Network, including Helios-network devices such as Helios Pro)
@@ -10,11 +10,15 @@ Libera aims to be a de facto standard for laser control, with support for a grow
 - Laser Cube Network (for Wifi laser cubes - wired network strongly recommended!)
 - AVB/Audio (LA Sollinger lasers or any multichannel audio devices) 
 
+It also has a real-time plugin system so that hardware vendors can implement support for their own protocols without exposing the underlying details. Plugins can be developed and distributed by the vendors themselves, creating a bridge between open interoperability and proprietary systems, allowing both to coexist without compromise.
+
+This also enables developers of new protocols and controllers to add support for their hardware across libera-enabled applications without waiting for a new release or changes to the core system.
+
 The project uses a permissive license and is intended for broad adoption in laser control software.
 
 ## Overview
 
-The library discovers laser controllers on the system and provides a list of available controllers. You can then instantiate one or more controllers and stream points in either streaming or frame mode.
+The library discovers laser controllers on the system and provides a list of available controllers. You can then instantiate one or more controllers and stream laser content either directly as a point stream or in frame mode with libera's frame queuing and scheduling system.
 
 ## Documentation
 
@@ -64,7 +68,7 @@ ctest --preset debug
 
 Throughout this library (and in Liberation) I generally avoid the term **“DAC”** (Digital-to-Analogue Converter), which is the traditional name for a laser control interface.
 
-Today, most laser controllers do indeed perform digital-to-analogue conversion in order to drive the analogue ILDA interface used by scanning lasers. However, the role of these devices is broader than simply converting signals - they also implement protocols, manage streaming, and translate data between software and hardware.
+Today, most laser controllers do indeed perform digital-to-analogue conversion in order to drive the analogue ILDA interface used by scanning lasers. However, the role of these devices is broader than simple signal conversion - they also implement protocols, manage streaming, and translate data between software and hardware.
 
 Looking forward, this distinction will become even more relevant as laser systems increasingly move towards fully digital communication between controllers and drivers. In those cases there may be no analogue conversion at all, and the device functions purely as a controller and protocol bridge.
 
