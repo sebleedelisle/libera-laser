@@ -4,7 +4,7 @@
 #include "AvbDeviceRuntime.hpp"
 #include "libera/avb/AvbController.hpp"
 #include "libera/avb/AvbControllerInfo.hpp"
-#include "libera/core/ActiveControllerMap.hpp"
+#include "libera/core/ControllerCache.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -22,7 +22,9 @@ struct SharedState {
     std::mutex mutex;
     std::unordered_map<std::string, AvbDeviceConfiguration> configuredDevicesByUid;
     std::unordered_map<std::string, bool> halfXYOutputByControllerId;
-    std::unordered_map<std::string, std::weak_ptr<AvbController>> activeControllers;
+    // One logical AVB controller exists per configured 8-channel bank, but
+    // several of those controllers can still share the same device runtime.
+    core::ControllerCache<std::string, AvbController> activeControllers;
     std::unordered_map<std::string, std::shared_ptr<detail::AvbDeviceRuntime>> runtimesByDeviceUid;
 };
 
@@ -190,17 +192,11 @@ std::vector<AvbControllerInfo> buildConfiguredControllers(
 }
 
 void applyHalfXYOutputSettingsLocked(SharedState& state) {
-    for (auto it = state.activeControllers.begin(); it != state.activeControllers.end();) {
-        auto controller = it->second.lock();
-        if (!controller) {
-            it = state.activeControllers.erase(it);
-            continue;
-        }
-
+    const auto activeControllers = state.activeControllers.snapshot();
+    for (const auto& [controllerId, controller] : activeControllers) {
         const bool halfXYOutput =
-            state.halfXYOutputByControllerId.find(it->first) != state.halfXYOutputByControllerId.end();
+            state.halfXYOutputByControllerId.find(controllerId) != state.halfXYOutputByControllerId.end();
         controller->setHalfXYOutputEnabled(halfXYOutput);
-        ++it;
     }
 }
 
@@ -271,8 +267,7 @@ AvbManager::connectController(const core::ControllerInfo& info) {
             state.runtimesByDeviceUid.insert_or_assign(avbInfo->deviceUid(), runtime);
         }
 
-        controller = core::getOrCreateActiveController(
-            state.activeControllers,
+        controller = state.activeControllers.getOrCreate(
             avbInfo->idValue(),
             [avbInfo] {
                 return std::make_shared<AvbController>(
@@ -280,7 +275,7 @@ AvbManager::connectController(const core::ControllerInfo& info) {
                     avbInfo->deviceUid(),
                     avbInfo->channelOffset(),
                     avbInfo->channelCount());
-            });
+            }).controller;
     }
 
     if (!runtime || !controller) {
@@ -304,7 +299,7 @@ void AvbManager::closeAll() {
     {
         auto& state = sharedState();
         std::lock_guard lock(state.mutex);
-        controllers = core::snapshotActiveControllersAndClear(state.activeControllers);
+        controllers = state.activeControllers.snapshotAndClear();
         runtimes.reserve(state.runtimesByDeviceUid.size());
         for (auto& [deviceUid, runtime] : state.runtimesByDeviceUid) {
             (void)deviceUid;

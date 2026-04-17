@@ -31,7 +31,7 @@ public:
     ~AvbManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
-    std::string_view managedType() const override { return typeName; }
+    std::string_view managedType() const override { return AvbControllerInfo::controllerType(); }
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
     void closeAll() override;
 
@@ -54,9 +54,6 @@ public:
     static bool setHalfXYOutput(const std::string& controllerId, bool enabled);
 
     static core::ControllerManagerRegistry registrar;
-
-private:
-    static constexpr std::string_view typeName{"AVB"};
 };
 
 inline core::ControllerManagerRegistry AvbManager::registrar{

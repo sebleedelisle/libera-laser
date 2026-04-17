@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -12,6 +13,10 @@ namespace libera::avb {
 
 class AvbControllerInfo : public core::ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "AVB";
+    }
+
     struct PointRateCapabilities {
         bool pointRateMutable = false;
         std::uint32_t defaultPointRate = 0;
@@ -27,7 +32,7 @@ public:
                       std::uint32_t channelOffset,
                       std::uint32_t channelCount,
                       PointRateCapabilities pointRates)
-    : core::ControllerInfo("AVB",
+    : core::ControllerInfo(controllerType(),
                            std::move(id),
                            std::move(label),
                            std::max(pointRates.maxPointRate, pointRates.defaultPointRate))
