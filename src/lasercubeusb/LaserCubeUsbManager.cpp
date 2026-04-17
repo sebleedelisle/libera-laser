@@ -150,7 +150,7 @@ std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeUsbManager::discover
     }
 
     std::unordered_set<std::string> connectedSerials;
-    const auto activeSnapshot = activeControllers.snapshot();
+    const auto activeSnapshot = liveControllers();
     for (const auto& [serial, controller] : activeSnapshot) {
         if (controller && controller->getStatus() != core::ControllerStatus::Error) {
             connectedSerials.insert(serial);
@@ -182,46 +182,31 @@ std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeUsbManager::discover
     return results;
 }
 
-std::shared_ptr<core::LaserController>
-LaserCubeUsbManager::connectController(const core::ControllerInfo& info) {
-    const auto* usbInfo = dynamic_cast<const LaserCubeUsbControllerInfo*>(&info);
-    if (!usbInfo || !usbContext) {
+std::shared_ptr<LaserCubeUsbController>
+LaserCubeUsbManager::createController(const LaserCubeUsbControllerInfo& info) {
+    (void)info;
+    if (!usbContext) {
         return nullptr;
     }
-
-    const auto acquisition = activeControllers.getOrCreate(
-        usbInfo->idValue(),
-        [this] { return std::make_shared<LaserCubeUsbController>(usbContext); });
-    auto controller = acquisition.controller;
-
-    if (!controller) {
-        return nullptr;
-    }
-    // If a live controller already exists, reuse it and avoid reconnecting USB.
-    if (!acquisition.created) {
-        return controller;
-    }
-
-    const auto result = controller->connect(*usbInfo);
-    if (!result) {
-        logError("[LaserCubeUsbManager] connect failed", result.error().message());
-        activeControllers.erase(usbInfo->idValue());
-        return nullptr;
-    }
-    controller->startThread();
-
-    return controller;
+    return std::make_shared<LaserCubeUsbController>(usbContext);
 }
 
-void LaserCubeUsbManager::closeAll() {
-    auto snapshot = activeControllers.snapshotAndClear();
-
-    for (auto& [id, controller] : snapshot) {
-        if (controller) {
-            controller->stopThread();
-            controller->close();
-        }
+LaserCubeUsbManager::NewControllerDisposition
+LaserCubeUsbManager::prepareNewController(LaserCubeUsbController& controller,
+                                          const LaserCubeUsbControllerInfo& info) {
+    const auto result = controller.connect(info);
+    if (!result) {
+        logError("[LaserCubeUsbManager] connect failed", result.error().message());
+        return NewControllerDisposition::DropController;
     }
+    controller.startThread();
+    return NewControllerDisposition::KeepController;
+}
+
+void LaserCubeUsbManager::closeController(const std::string& key,
+                                          LaserCubeUsbController& controller) {
+    (void)key;
+    controller.close();
 }
 
 } // namespace libera::lasercubeusb

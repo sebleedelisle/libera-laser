@@ -1,7 +1,6 @@
 #pragma once
 
-#include "libera/System.hpp"
-#include "libera/core/ControllerCache.hpp"
+#include "libera/core/SingleControllerManagerBase.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosController.hpp"
 
@@ -14,15 +13,15 @@ struct libusb_context;
 
 namespace libera::helios {
 
-class HeliosManager : public core::ControllerManagerBase {
+class HeliosManager
+    : public core::SingleControllerManagerBase<HeliosControllerInfo,
+                                               HeliosController> {
 public:
     HeliosManager();
     ~HeliosManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
-    void closeAll() override;
 
     static core::ControllerManagerRegistry registrar;
 
@@ -52,13 +51,20 @@ private:
     // the process and let the OS reclaim it on exit.
     std::shared_ptr<libusb_context> usbContext;
 
-    // Active controller wrappers are keyed by the USB port path so one process
-    // only ever claims the selected DAC.
-    core::ControllerCache<std::string, HeliosController> activeControllers;
-
     // Keep labels stable across transient direct USB name-read failures so a
     // briefly unhealthy control channel doesn't churn device identity.
     std::unordered_map<std::string, std::string> stableLabelByPortPath;
+
+    std::string controllerKey(const HeliosControllerInfo& info) const override;
+    ControllerPtr createController(const HeliosControllerInfo& info) override;
+    bool shouldReuseController(const HeliosController& controller,
+                               const HeliosControllerInfo& info) const override;
+    NewControllerDisposition prepareNewController(HeliosController& controller,
+                                                  const HeliosControllerInfo& info) override;
+    void prepareExistingController(HeliosController& controller,
+                                   const HeliosControllerInfo& info) override;
+    void closeController(const std::string& key, HeliosController& controller) override;
+    void afterCloseControllers() override;
 };
 
 inline core::ControllerManagerRegistry HeliosManager::registrar{

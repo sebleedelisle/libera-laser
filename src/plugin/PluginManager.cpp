@@ -318,7 +318,7 @@ PluginDelegateManager::discover() {
 
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
     results.reserve(ctx.infos.size());
-    const auto activeSnapshot = activeControllers.snapshot();
+    const auto activeSnapshot = liveControllers();
 
     for (const auto& pluginInfo : ctx.infos) {
         auto info = std::make_unique<PluginControllerInfo>(
@@ -336,52 +336,27 @@ PluginDelegateManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserController>
-PluginDelegateManager::connectController(const core::ControllerInfo& info) {
-    const auto* pluginInfo = dynamic_cast<const PluginControllerInfo*>(&info);
-    if (!pluginInfo) {
-        return nullptr;
-    }
-
-    const auto acquisition = activeControllers.getOrCreate(
-        info.idValue(),
-        [this, pluginInfo] {
-            auto controller = std::make_shared<PluginController>(
-                plugin->api,
-                plugin->backendHandle,
-                pluginInfo->pluginInfo());
-
-            if (!controller->open()) {
-                return std::shared_ptr<PluginController>{};
-            }
-
-            return controller;
-        });
-
-    if (!acquisition.controller) {
-        return nullptr;
-    }
-    if (!acquisition.created) {
-        return acquisition.controller;
-    }
-
-    acquisition.controller->useFrameQueue();
-    acquisition.controller->startThread();
-
-    return acquisition.controller;
+std::shared_ptr<PluginController>
+PluginDelegateManager::createController(const PluginControllerInfo& info) {
+    return std::make_shared<PluginController>(
+        plugin->api,
+        plugin->backendHandle,
+        info.pluginInfo());
 }
 
-void PluginDelegateManager::closeAll() {
-    {
-        auto snapshot = activeControllers.snapshotAndClear();
-        for (auto& [id, controller] : snapshot) {
-            (void)id;
-            if (controller) {
-                controller->stopThread();
-            }
-        }
+PluginDelegateManager::NewControllerDisposition
+PluginDelegateManager::prepareNewController(PluginController& controller,
+                                            const PluginControllerInfo& info) {
+    (void)info;
+    if (!controller.open()) {
+        return NewControllerDisposition::DropController;
     }
+    controller.useFrameQueue();
+    controller.startThread();
+    return NewControllerDisposition::KeepController;
+}
 
+void PluginDelegateManager::afterCloseControllers() {
     if (plugin && plugin->initialised) {
         if (plugin->api->destroy_backend) {
             plugin->api->destroy_backend(plugin->backendHandle);

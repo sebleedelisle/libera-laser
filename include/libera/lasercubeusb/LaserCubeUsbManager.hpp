@@ -1,7 +1,6 @@
 #pragma once
 
-#include "libera/System.hpp"
-#include "libera/core/ControllerCache.hpp"
+#include "libera/core/SingleControllerManagerBase.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbController.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbControllerInfo.hpp"
 
@@ -11,15 +10,15 @@ struct libusb_context;
 
 namespace libera::lasercubeusb {
 
-class LaserCubeUsbManager : public core::ControllerManagerBase {
+class LaserCubeUsbManager
+    : public core::SingleControllerManagerBase<LaserCubeUsbControllerInfo,
+                                               LaserCubeUsbController> {
 public:
     LaserCubeUsbManager();
     ~LaserCubeUsbManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
-    void closeAll() override;
 
     static core::ControllerManagerRegistry registrar;
 
@@ -28,7 +27,10 @@ private:
 
     std::shared_ptr<libusb_context> usbContext;
 
-    core::ControllerCache<std::string, LaserCubeUsbController> activeControllers;
+    ControllerPtr createController(const LaserCubeUsbControllerInfo& info) override;
+    NewControllerDisposition prepareNewController(LaserCubeUsbController& controller,
+                                                  const LaserCubeUsbControllerInfo& info) override;
+    void closeController(const std::string& key, LaserCubeUsbController& controller) override;
 };
 
 inline core::ControllerManagerRegistry LaserCubeUsbManager::registrar{

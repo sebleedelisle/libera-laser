@@ -197,7 +197,7 @@ std::size_t IdnManager::refreshControllerCount(bool allowRescan) {
 std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
 
-    const auto activeSnapshot = activeControllers.snapshot();
+    const auto activeSnapshot = liveControllers();
     const bool hasActive = !activeSnapshot.empty();
     bool hasDisconnectedActive = false;
     for (const auto& [unitId, controller] : activeSnapshot) {
@@ -325,34 +325,38 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserController>
-IdnManager::connectController(const core::ControllerInfo& info) {
-    const auto* idnInfo = dynamic_cast<const IdnControllerInfo*>(&info);
-    if (!idnInfo) {
-        return nullptr;
-    }
-
-    auto controller = activeControllers.getOrCreate(
-        idnInfo->unitId(),
-        [this, idnInfo] { return std::make_shared<IdnController>(sdk, idnInfo->index()); }).controller;
-
-    if (controller) {
-        // Keep existing behavior: calling connectController can re-start a controller.
-        controller->startThread();
-    }
-
-    return controller;
+std::string
+IdnManager::controllerKey(const IdnControllerInfo& info) const {
+    return info.unitId();
 }
 
-void IdnManager::closeAll() {
-    auto snapshot = activeControllers.snapshotAndClear();
+std::shared_ptr<IdnController>
+IdnManager::createController(const IdnControllerInfo& info) {
+    return std::make_shared<IdnController>(sdk, info.index());
+}
 
-    for (auto& [index, dev] : snapshot) {
-        if (!dev) continue;
-        dev->stopThread();
-        dev->close();
-    }
+IdnManager::NewControllerDisposition
+IdnManager::prepareNewController(IdnController& controller,
+                                 const IdnControllerInfo& info) {
+    (void)info;
+    // Keep existing behavior: calling connectController can re-start a controller.
+    controller.startThread();
+    return NewControllerDisposition::KeepController;
+}
 
+void IdnManager::prepareExistingController(IdnController& controller,
+                                           const IdnControllerInfo& info) {
+    (void)info;
+    controller.startThread();
+}
+
+void IdnManager::closeController(const std::string& key,
+                                 IdnController& controller) {
+    (void)key;
+    controller.close();
+}
+
+void IdnManager::afterCloseControllers() {
     if (sdk) {
         sdk->CloseDevices();
     }

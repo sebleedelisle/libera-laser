@@ -104,32 +104,24 @@ EtherDreamManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserController>
-EtherDreamManager::connectController(const core::ControllerInfo& info) {
-    const auto* etherInfo = dynamic_cast<const EtherDreamControllerInfo*>(&info);
-    if (!etherInfo) {
-        return nullptr;
-    }
-
-    // Keep one shared controller instance per discovered device id.
-    const auto acquisition = activeControllers.getOrCreate(
-        etherInfo->idValue(),
-        [etherInfo] { return std::make_shared<EtherDreamController>(*etherInfo); });
-    auto controller = acquisition.controller;
-
-    if (controller && acquisition.created) {
-        // Connect/start only once for a new instance. Existing instances keep
-        // their own reconnect loop in the controller thread.
-        if (auto result = controller->connect(*etherInfo); !result) {
-            logError("[EtherDreamManager] initial connect failed", result.error().message());
-        }
-        controller->startThread();
-    }
-
-    return controller;
+std::shared_ptr<EtherDreamController>
+EtherDreamManager::createController(const EtherDreamControllerInfo& info) {
+    return std::make_shared<EtherDreamController>(info);
 }
 
-void EtherDreamManager::closeAll() {
+EtherDreamManager::NewControllerDisposition
+EtherDreamManager::prepareNewController(EtherDreamController& controller,
+                                        const EtherDreamControllerInfo& info) {
+    // Connect/start only once for a new instance. Existing instances keep
+    // their own reconnect loop in the controller thread.
+    if (auto result = controller.connect(info); !result) {
+        logError("[EtherDreamManager] initial connect failed", result.error().message());
+    }
+    controller.startThread();
+    return NewControllerDisposition::KeepController;
+}
+
+void EtherDreamManager::beforeCloseControllers() {
     running.store(false);
     if (socket) {
         socket->close();
@@ -137,19 +129,17 @@ void EtherDreamManager::closeAll() {
     }
     core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
                     "EtherDreamManager::listener");
+}
 
-    auto snapshot = activeControllers.snapshotAndClear();
+void EtherDreamManager::afterCloseControllers() {
+    std::lock_guard lock(controllersMutex);
+    controllers.clear();
+}
 
-    for (auto& [id, dev] : snapshot) {
-        if (!dev) continue;
-        dev->stopThread();
-        dev->close();
-    }
-
-    {
-        std::lock_guard lock(controllersMutex);
-        controllers.clear();
-    }
+void EtherDreamManager::closeController(const std::string& key,
+                                        EtherDreamController& controller) {
+    (void)key;
+    controller.close();
 }
 
 void EtherDreamManager::threadedFunction() {

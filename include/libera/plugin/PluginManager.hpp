@@ -1,8 +1,8 @@
 #pragma once
 
-#include "libera/System.hpp"
-#include "libera/core/ControllerCache.hpp"
+#include "libera/core/SingleControllerManagerBase.hpp"
 #include "libera/plugin/PluginController.hpp"
+#include "libera/plugin/PluginControllerInfo.hpp"
 
 #include <memory>
 #include <string>
@@ -27,19 +27,23 @@ struct LoadedPlugin {
  * plugin.  One PluginDelegateManager is created per successfully loaded plugin
  * library and registered with the System.
  */
-class PluginDelegateManager : public core::ControllerManagerBase {
+class PluginDelegateManager
+    : public core::SingleControllerManagerBase<PluginControllerInfo,
+                                               PluginController> {
 public:
     explicit PluginDelegateManager(std::shared_ptr<LoadedPlugin> plugin);
     ~PluginDelegateManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override;
-    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
-    void closeAll() override;
 
 private:
     std::shared_ptr<LoadedPlugin> plugin;
-    core::ControllerCache<std::string, PluginController> activeControllers;
+
+    ControllerPtr createController(const PluginControllerInfo& info) override;
+    NewControllerDisposition prepareNewController(PluginController& controller,
+                                                  const PluginControllerInfo& info) override;
+    void afterCloseControllers() override;
 };
 
 /*

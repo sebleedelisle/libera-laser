@@ -1,7 +1,6 @@
 #pragma once
 
-#include "libera/System.hpp"
-#include "libera/core/ControllerCache.hpp"
+#include "libera/core/SingleControllerManagerBase.hpp"
 #include "libera/etherdream/EtherDreamControllerInfo.hpp"
 #include "libera/etherdream/EtherDreamController.hpp"
 #include "libera/net/NetService.hpp"
@@ -19,15 +18,15 @@
 
 namespace libera::etherdream {
 
-class EtherDreamManager : public core::ControllerManagerBase {
+class EtherDreamManager
+    : public core::SingleControllerManagerBase<EtherDreamControllerInfo,
+                                               EtherDreamController> {
 public:
     EtherDreamManager();
     ~EtherDreamManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
-    void closeAll() override;
 
     static core::ControllerManagerRegistry registrar;
 
@@ -51,7 +50,13 @@ private:
 
     std::mutex controllersMutex;
     std::unordered_map<std::string, ControllerEntry> controllers;
-    core::ControllerCache<std::string, EtherDreamController> activeControllers;
+
+    ControllerPtr createController(const EtherDreamControllerInfo& info) override;
+    NewControllerDisposition prepareNewController(EtherDreamController& controller,
+                                                  const EtherDreamControllerInfo& info) override;
+    void beforeCloseControllers() override;
+    void afterCloseControllers() override;
+    void closeController(const std::string& key, EtherDreamController& controller) override;
 };
 
 inline core::ControllerManagerRegistry EtherDreamManager::registrar{

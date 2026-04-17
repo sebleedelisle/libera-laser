@@ -417,7 +417,7 @@ HeliosManager::~HeliosManager() {
 
 HeliosManager::ActiveControllerSnapshot HeliosManager::snapshotActiveControllers() {
     ActiveControllerSnapshot snapshot;
-    const auto activeControllerSnapshot = activeControllers.snapshot();
+    const auto activeControllerSnapshot = liveControllers();
     snapshot.hasActive = !activeControllerSnapshot.empty();
     if (!snapshot.hasActive) {
         return snapshot;
@@ -632,56 +632,62 @@ std::vector<std::unique_ptr<core::ControllerInfo>> HeliosManager::discover() {
     return results;
 }
 
-std::shared_ptr<core::LaserController>
-HeliosManager::connectController(const core::ControllerInfo& info) {
-    const auto* heliosInfo = dynamic_cast<const HeliosControllerInfo*>(&info);
-    if (!heliosInfo || !heliosInfo->isUsbController() || heliosInfo->portPath().empty() || !usbContext) {
+std::string
+HeliosManager::controllerKey(const HeliosControllerInfo& info) const {
+    return info.portPath();
+}
+
+std::shared_ptr<HeliosController>
+HeliosManager::createController(const HeliosControllerInfo& info) {
+    if (!info.isUsbController() || info.portPath().empty() || !usbContext) {
         return nullptr;
     }
 
+    // Direct USB connect claims only the selected DAC, leaving other
+    // Helios DACs visible and connectable from other processes.
+    return HeliosController::connectUsb(usbContext, info.portPath());
+}
+
+bool HeliosManager::shouldReuseController(const HeliosController& controller,
+                                          const HeliosControllerInfo& info) const {
+    (void)info;
+    return controller.isConnected();
+}
+
+HeliosManager::NewControllerDisposition
+HeliosManager::prepareNewController(HeliosController& controller,
+                                    const HeliosControllerInfo& info) {
+    (void)info;
     // Connection policy:
     // connect exactly one physical Helios DAC, identified by port path.
     //
     // This is the main behavioral fix. The old SDK-backed path opened every
     // Helios USB DAC up front, which made all of them look "in use" to any
     // second process even if we had only assigned one.
-    const std::string& controllerPortPath = heliosInfo->portPath();
-    const auto acquisition = activeControllers.getOrCreateIf(
-        controllerPortPath,
-        [](const std::shared_ptr<HeliosController>& controller) {
-            return controller->isConnected();
-        },
-        [this, &controllerPortPath] {
-            // Direct USB connect claims only the selected DAC, leaving other
-            // Helios DACs visible and connectable from other processes.
-            return HeliosController::connectUsb(usbContext, controllerPortPath);
-        });
-    auto controller = acquisition.controller;
-
-    if (controller) {
-        // Keep existing behavior: calling connectController can re-start a controller.
-        controller->startThread();
-    }
-
-    return controller;
+    controller.startThread();
+    return NewControllerDisposition::KeepController;
 }
 
-void HeliosManager::closeAll() {
-    auto snapshot = activeControllers.snapshotAndClear();
+void HeliosManager::prepareExistingController(HeliosController& controller,
+                                              const HeliosControllerInfo& info) {
+    (void)info;
+    // Keep existing behavior: calling connectController can re-start a controller.
+    controller.startThread();
+}
 
-    for (auto& [name, dev] : snapshot) {
-        (void)name;
-        if (!dev) continue;
-        dev->stopThread();
-        // Shutdown-only escape hatch:
-        // the direct Helios USB path has shown libusb_close() crashes during
-        // app teardown on macOS. After the worker thread is joined there is no
-        // more live I/O in this process, so ask the controller to abandon its
-        // raw libusb handle instead of performing the final close call.
-        dev->prepareForShutdown();
-        dev->close();
-    }
+void HeliosManager::closeController(const std::string& key,
+                                    HeliosController& controller) {
+    (void)key;
+    // Shutdown-only escape hatch:
+    // the direct Helios USB path has shown libusb_close() crashes during
+    // app teardown on macOS. After the worker thread is joined there is no
+    // more live I/O in this process, so ask the controller to abandon its
+    // raw libusb handle instead of performing the final close call.
+    controller.prepareForShutdown();
+    controller.close();
+}
 
+void HeliosManager::afterCloseControllers() {
     // Intentionally do not destroy or explicitly tear down the shared libusb
     // context here. Process-lifetime ownership is the safer tradeoff for the
     // shutdown crashes we were seeing.

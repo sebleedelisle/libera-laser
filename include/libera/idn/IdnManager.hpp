@@ -1,7 +1,6 @@
 #pragma once
 
-#include "libera/System.hpp"
-#include "libera/core/ControllerCache.hpp"
+#include "libera/core/SingleControllerManagerBase.hpp"
 #include "libera/idn/IdnControllerInfo.hpp"
 #include "libera/idn/IdnController.hpp"
 
@@ -10,15 +9,15 @@
 
 namespace libera::idn {
 
-class IdnManager : public core::ControllerManagerBase {
+class IdnManager
+    : public core::SingleControllerManagerBase<IdnControllerInfo,
+                                               IdnController> {
 public:
     IdnManager();
     ~IdnManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return typeName; }
-    std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
-    void closeAll() override;
 
     static core::ControllerManagerRegistry registrar;
 
@@ -33,7 +32,14 @@ private:
     std::size_t controllerCount = 0;
     std::unordered_map<unsigned int, std::string> stableUnitIdByIndex;
 
-    core::ControllerCache<std::string, IdnController> activeControllers;
+    std::string controllerKey(const IdnControllerInfo& info) const override;
+    ControllerPtr createController(const IdnControllerInfo& info) override;
+    NewControllerDisposition prepareNewController(IdnController& controller,
+                                                  const IdnControllerInfo& info) override;
+    void prepareExistingController(IdnController& controller,
+                                   const IdnControllerInfo& info) override;
+    void closeController(const std::string& key, IdnController& controller) override;
+    void afterCloseControllers() override;
 };
 
 inline core::ControllerManagerRegistry IdnManager::registrar{
