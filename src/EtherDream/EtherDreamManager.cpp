@@ -1,6 +1,5 @@
 #include "libera/etherdream/EtherDreamManager.hpp"
 
-#include "libera/core/ActiveControllerMap.hpp"
 #include "libera/core/ByteRead.hpp"
 #include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/etherdream/EtherDreamResponse.hpp"
@@ -113,18 +112,12 @@ EtherDreamManager::connectController(const core::ControllerInfo& info) {
     }
 
     // Keep one shared controller instance per discovered device id.
-    std::shared_ptr<EtherDreamController> controller;
-    bool newlyCreated = false;
-    {
-        std::lock_guard lock(activeMutex);
-        controller = core::getOrCreateActiveController(
-            activeControllers,
-            etherInfo->idValue(),
-            [etherInfo] { return std::make_shared<EtherDreamController>(*etherInfo); },
-            &newlyCreated);
-    }
+    const auto acquisition = activeControllers.getOrCreate(
+        etherInfo->idValue(),
+        [etherInfo] { return std::make_shared<EtherDreamController>(*etherInfo); });
+    auto controller = acquisition.controller;
 
-    if (controller && newlyCreated) {
+    if (controller && acquisition.created) {
         // Connect/start only once for a new instance. Existing instances keep
         // their own reconnect loop in the controller thread.
         if (auto result = controller->connect(*etherInfo); !result) {
@@ -145,11 +138,7 @@ void EtherDreamManager::closeAll() {
     core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
                     "EtherDreamManager::listener");
 
-    std::unordered_map<std::string, std::shared_ptr<EtherDreamController>> snapshot;
-    {
-        std::lock_guard lock(activeMutex);
-        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
-    }
+    auto snapshot = activeControllers.snapshotAndClear();
 
     for (auto& [id, dev] : snapshot) {
         if (!dev) continue;

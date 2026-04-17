@@ -1,6 +1,5 @@
 #include "libera/helios/HeliosManager.hpp"
 
-#include "libera/core/ActiveControllerMap.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -418,18 +417,14 @@ HeliosManager::~HeliosManager() {
 
 HeliosManager::ActiveControllerSnapshot HeliosManager::snapshotActiveControllers() {
     ActiveControllerSnapshot snapshot;
-    std::lock_guard lock(activeMutex);
-    snapshot.hasActive = core::pruneExpiredActiveControllers(activeControllers);
+    const auto activeControllerSnapshot = activeControllers.snapshot();
+    snapshot.hasActive = !activeControllerSnapshot.empty();
     if (!snapshot.hasActive) {
         return snapshot;
     }
 
-    for (const auto& [portPath, weakController] : activeControllers) {
-        const auto controller = weakController.lock();
-        if (!controller) {
-            continue;
-        }
-        if (controller->isConnected()) {
+    for (const auto& [portPath, controller] : activeControllerSnapshot) {
+        if (controller && controller->isConnected()) {
             // Record the exact DAC this process owns so discovery does not mark
             // our own connected device as "(in use)" by mistake.
             snapshot.connectedPortPaths.insert(portPath);
@@ -651,30 +646,17 @@ HeliosManager::connectController(const core::ControllerInfo& info) {
     // Helios USB DAC up front, which made all of them look "in use" to any
     // second process even if we had only assigned one.
     const std::string& controllerPortPath = heliosInfo->portPath();
-    std::shared_ptr<HeliosController> controller;
-    {
-        std::lock_guard lock(activeMutex);
-        auto it = activeControllers.find(controllerPortPath);
-        if (it != activeControllers.end()) {
-            controller = it->second.lock();
-            if (!controller) {
-                activeControllers.erase(it);
-            } else if (!controller->isConnected()) {
-                activeControllers.erase(it);
-                controller.reset();
-            }
-        }
-
-        if (!controller) {
+    const auto acquisition = activeControllers.getOrCreateIf(
+        controllerPortPath,
+        [](const std::shared_ptr<HeliosController>& controller) {
+            return controller->isConnected();
+        },
+        [this, &controllerPortPath] {
             // Direct USB connect claims only the selected DAC, leaving other
             // Helios DACs visible and connectable from other processes.
-            controller = HeliosController::connectUsb(usbContext, controllerPortPath);
-            if (!controller) {
-                return nullptr;
-            }
-            activeControllers.insert_or_assign(controllerPortPath, controller);
-        }
-    }
+            return HeliosController::connectUsb(usbContext, controllerPortPath);
+        });
+    auto controller = acquisition.controller;
 
     if (controller) {
         // Keep existing behavior: calling connectController can re-start a controller.
@@ -685,11 +667,7 @@ HeliosManager::connectController(const core::ControllerInfo& info) {
 }
 
 void HeliosManager::closeAll() {
-    std::unordered_map<std::string, std::shared_ptr<HeliosController>> snapshot;
-    {
-        std::lock_guard lock(activeMutex);
-        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
-    }
+    auto snapshot = activeControllers.snapshotAndClear();
 
     for (auto& [name, dev] : snapshot) {
         (void)name;

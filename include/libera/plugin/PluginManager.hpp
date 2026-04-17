@@ -1,12 +1,11 @@
 #pragma once
 
 #include "libera/System.hpp"
+#include "libera/core/ControllerCache.hpp"
 #include "libera/plugin/PluginController.hpp"
 
 #include <memory>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace libera::plugin {
@@ -40,8 +39,7 @@ public:
 
 private:
     std::shared_ptr<LoadedPlugin> plugin;
-    std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<PluginController>> activeControllers;
+    core::ControllerCache<std::string, PluginController> activeControllers;
 };
 
 /*

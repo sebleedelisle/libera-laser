@@ -1,7 +1,6 @@
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/lasercubenet/LaserCubeNetController.hpp"
 
-#include "libera/core/ActiveControllerMap.hpp"
 #include "libera/log/Log.hpp"
 
 #include <array>
@@ -37,11 +36,7 @@ void LaserCubeNetManager::closeAll() {
     core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
                     "LaserCubeNetManager::listener");
 
-    std::unordered_map<std::string, std::shared_ptr<LaserCubeNetController>> snapshot;
-    {
-        std::lock_guard lock(activeMutex);
-        snapshot = core::snapshotActiveControllersAndClear(active);
-    }
+    auto snapshot = activeControllers.snapshotAndClear();
 
     for (auto& [id, dev] : snapshot) {
         if (dev) {
@@ -90,14 +85,7 @@ void LaserCubeNetManager::discoveryThread() {
                     controllers[status->serialNumber] = ControllerEntry{*status, status->lastSeen};
                 }
                 {
-                    std::lock_guard lock(activeMutex);
-                    auto activeIt = active.find(status->serialNumber);
-                    if (activeIt != active.end()) {
-                        activeController = activeIt->second.lock();
-                        if (!activeController) {
-                            active.erase(activeIt);
-                        }
-                    }
+                    activeController = activeControllers.findLive(status->serialNumber);
                 }
                 if (activeController) {
                     activeController->updateDiscoveredStatus(*status);
@@ -165,22 +153,16 @@ LaserCubeNetManager::connectController(const core::ControllerInfo& info) {
         return nullptr;
     }
 
-    std::shared_ptr<LaserCubeNetController> controller;
-    bool newlyCreated = false;
-    {
-        std::lock_guard lock(activeMutex);
-        controller = core::getOrCreateActiveController(
-            active,
-            lcInfo->idValue(),
-            [lcInfo] { return std::make_shared<LaserCubeNetController>(*lcInfo); },
-            &newlyCreated);
-    }
+    const auto acquisition = activeControllers.getOrCreate(
+        lcInfo->idValue(),
+        [lcInfo] { return std::make_shared<LaserCubeNetController>(*lcInfo); });
+    auto controller = acquisition.controller;
 
     if (controller) {
         controller->updateDiscoveredStatus(lcInfo->status());
     }
 
-    if (controller && newlyCreated) {
+    if (controller && acquisition.created) {
         // Connect and start the controller thread on first acquisition.
         if (auto result = controller->connect(*lcInfo); !result) {
             logError("[LaserCubeNetManager] initial connect failed", result.error().message());

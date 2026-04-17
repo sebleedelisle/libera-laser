@@ -1,11 +1,11 @@
 #pragma once
 
 #include "libera/System.hpp"
+#include "libera/core/ControllerCache.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosController.hpp"
 
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -52,10 +52,9 @@ private:
     // the process and let the OS reclaim it on exit.
     std::shared_ptr<libusb_context> usbContext;
 
-    std::mutex activeMutex;
     // Active controller wrappers are keyed by the USB port path so one process
     // only ever claims the selected DAC.
-    std::unordered_map<std::string, std::weak_ptr<HeliosController>> activeControllers;
+    core::ControllerCache<std::string, HeliosController> activeControllers;
 
     // Keep labels stable across transient direct USB name-read failures so a
     // briefly unhealthy control channel doesn't churn device identity.

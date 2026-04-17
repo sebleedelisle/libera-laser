@@ -1,12 +1,11 @@
 #pragma once
 
 #include "libera/System.hpp"
+#include "libera/core/ControllerCache.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbController.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbControllerInfo.hpp"
 
 #include <memory>
-#include <mutex>
-#include <unordered_map>
 
 struct libusb_context;
 
@@ -29,8 +28,7 @@ private:
 
     std::shared_ptr<libusb_context> usbContext;
 
-    std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<LaserCubeUsbController>> activeControllers;
+    core::ControllerCache<std::string, LaserCubeUsbController> activeControllers;
 };
 
 inline core::ControllerManagerRegistry LaserCubeUsbManager::registrar{

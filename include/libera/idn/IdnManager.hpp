@@ -1,11 +1,11 @@
 #pragma once
 
 #include "libera/System.hpp"
+#include "libera/core/ControllerCache.hpp"
 #include "libera/idn/IdnControllerInfo.hpp"
 #include "libera/idn/IdnController.hpp"
 
 #include <memory>
-#include <mutex>
 #include <unordered_map>
 
 namespace libera::idn {
@@ -33,8 +33,7 @@ private:
     std::size_t controllerCount = 0;
     std::unordered_map<unsigned int, std::string> stableUnitIdByIndex;
 
-    std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<IdnController>> activeControllers;
+    core::ControllerCache<std::string, IdnController> activeControllers;
 };
 
 inline core::ControllerManagerRegistry IdnManager::registrar{

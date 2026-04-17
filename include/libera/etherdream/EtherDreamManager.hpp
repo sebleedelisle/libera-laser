@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libera/System.hpp"
+#include "libera/core/ControllerCache.hpp"
 #include "libera/etherdream/EtherDreamControllerInfo.hpp"
 #include "libera/etherdream/EtherDreamController.hpp"
 #include "libera/net/NetService.hpp"
@@ -50,8 +51,7 @@ private:
 
     std::mutex controllersMutex;
     std::unordered_map<std::string, ControllerEntry> controllers;
-    std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<EtherDreamController>> activeControllers;
+    core::ControllerCache<std::string, EtherDreamController> activeControllers;
 };
 
 inline core::ControllerManagerRegistry EtherDreamManager::registrar{

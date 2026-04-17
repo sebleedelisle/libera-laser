@@ -1,6 +1,7 @@
 #pragma once
 
 #include "libera/System.hpp"
+#include "libera/core/ControllerCache.hpp"
 #include "libera/lasercubenet/LaserCubeNetControllerInfo.hpp"
 #include "libera/lasercubenet/LaserCubeNetConfig.hpp"
 #include "libera/lasercubenet/LaserCubeNetStatus.hpp"
@@ -50,8 +51,7 @@ private:
 
     std::mutex controllersMutex;
     std::unordered_map<std::string, ControllerEntry> controllers;
-    std::mutex activeMutex;
-    std::unordered_map<std::string, std::weak_ptr<LaserCubeNetController>> active;
+    core::ControllerCache<std::string, LaserCubeNetController> activeControllers;
 };
 
 inline core::ControllerManagerRegistry LaserCubeNetManager::registrar{

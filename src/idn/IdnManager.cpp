@@ -1,7 +1,5 @@
 #include "libera/idn/IdnManager.hpp"
 
-#include "libera/core/ActiveControllerMap.hpp"
-
 #include <algorithm>
 #include <cstdint>
 #include <unordered_map>
@@ -199,24 +197,14 @@ std::size_t IdnManager::refreshControllerCount(bool allowRescan) {
 std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
 
-    bool hasActive = false;
+    const auto activeSnapshot = activeControllers.snapshot();
+    const bool hasActive = !activeSnapshot.empty();
     bool hasDisconnectedActive = false;
-    std::unordered_map<std::string, std::shared_ptr<IdnController>> activeSnapshot;
-    {
-        std::lock_guard lock(activeMutex);
-        for (auto it = activeControllers.begin(); it != activeControllers.end();) {
-            auto controller = it->second.lock();
-            if (!controller) {
-                it = activeControllers.erase(it);
-                continue;
-            }
-
-            hasActive = true;
-            if (!controller->isConnected()) {
-                hasDisconnectedActive = true;
-            }
-            activeSnapshot.emplace(it->first, std::move(controller));
-            ++it;
+    for (const auto& [unitId, controller] : activeSnapshot) {
+        (void)unitId;
+        if (controller && !controller->isConnected()) {
+            hasDisconnectedActive = true;
+            break;
         }
     }
 
@@ -344,14 +332,9 @@ IdnManager::connectController(const core::ControllerInfo& info) {
         return nullptr;
     }
 
-    std::shared_ptr<IdnController> controller;
-    {
-        std::lock_guard lock(activeMutex);
-        controller = core::getOrCreateActiveController(
-            activeControllers,
-            idnInfo->unitId(),
-            [this, idnInfo] { return std::make_shared<IdnController>(sdk, idnInfo->index()); });
-    }
+    auto controller = activeControllers.getOrCreate(
+        idnInfo->unitId(),
+        [this, idnInfo] { return std::make_shared<IdnController>(sdk, idnInfo->index()); }).controller;
 
     if (controller) {
         // Keep existing behavior: calling connectController can re-start a controller.
@@ -362,11 +345,7 @@ IdnManager::connectController(const core::ControllerInfo& info) {
 }
 
 void IdnManager::closeAll() {
-    std::unordered_map<std::string, std::shared_ptr<IdnController>> snapshot;
-    {
-        std::lock_guard lock(activeMutex);
-        snapshot = core::snapshotActiveControllersAndClear(activeControllers);
-    }
+    auto snapshot = activeControllers.snapshotAndClear();
 
     for (auto& [index, dev] : snapshot) {
         if (!dev) continue;

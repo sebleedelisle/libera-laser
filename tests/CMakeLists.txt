@@ -1,5 +1,6 @@
 set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_buffer_estimator.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_controller_cache.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_controller_status.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_content_source_switch.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_request.cpp

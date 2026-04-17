@@ -318,8 +318,7 @@ PluginDelegateManager::discover() {
 
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
     results.reserve(ctx.infos.size());
-
-    std::lock_guard lock(activeMutex);
+    const auto activeSnapshot = activeControllers.snapshot();
 
     for (const auto& pluginInfo : ctx.infos) {
         auto info = std::make_unique<PluginControllerInfo>(
@@ -328,8 +327,7 @@ PluginDelegateManager::discover() {
 
         // If we already own this controller in-process, report it as active
         // rather than whatever discovery saw externally.
-        auto it = activeControllers.find(info->idValue());
-        if (it != activeControllers.end() && !it->second.expired()) {
+        if (activeSnapshot.find(info->idValue()) != activeSnapshot.end()) {
             info->setUsageState(core::ControllerUsageState::Active);
         }
 
@@ -345,41 +343,44 @@ PluginDelegateManager::connectController(const core::ControllerInfo& info) {
         return nullptr;
     }
 
-    std::lock_guard lock(activeMutex);
+    const auto acquisition = activeControllers.getOrCreate(
+        info.idValue(),
+        [this, pluginInfo] {
+            auto controller = std::make_shared<PluginController>(
+                plugin->api,
+                plugin->backendHandle,
+                pluginInfo->pluginInfo());
 
-    auto it = activeControllers.find(info.idValue());
-    if (it != activeControllers.end()) {
-        if (auto existing = it->second.lock()) {
-            return existing;
-        }
-        activeControllers.erase(it);
-    }
+            if (!controller->open()) {
+                return std::shared_ptr<PluginController>{};
+            }
 
-    auto controller = std::make_shared<PluginController>(
-        plugin->api,
-        plugin->backendHandle,
-        pluginInfo->pluginInfo());
+            return controller;
+        });
 
-    if (!controller->open()) {
+    if (!acquisition.controller) {
         return nullptr;
     }
+    if (!acquisition.created) {
+        return acquisition.controller;
+    }
 
-    activeControllers[info.idValue()] = controller;
+    acquisition.controller->useFrameQueue();
+    acquisition.controller->startThread();
 
-    controller->useFrameQueue();
-    controller->startThread();
-
-    return controller;
+    return acquisition.controller;
 }
 
 void PluginDelegateManager::closeAll() {
-    std::lock_guard lock(activeMutex);
-    for (auto& [id, weak] : activeControllers) {
-        if (auto ctrl = weak.lock()) {
-            ctrl->stopThread();
+    {
+        auto snapshot = activeControllers.snapshotAndClear();
+        for (auto& [id, controller] : snapshot) {
+            (void)id;
+            if (controller) {
+                controller->stopThread();
+            }
         }
     }
-    activeControllers.clear();
 
     if (plugin && plugin->initialised) {
         if (plugin->api->destroy_backend) {
