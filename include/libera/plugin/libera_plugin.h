@@ -29,8 +29,7 @@ extern "C" {
 #endif
 
 #define LIBERA_PLUGIN_API_VERSION_1 1
-#define LIBERA_PLUGIN_API_VERSION_2 2
-#define LIBERA_PLUGIN_API_VERSION LIBERA_PLUGIN_API_VERSION_2
+#define LIBERA_PLUGIN_API_VERSION LIBERA_PLUGIN_API_VERSION_1
 
 /*
  * Host services are versioned separately so the plugin ABI can grow without
@@ -86,7 +85,7 @@ typedef struct {
 } libera_buffer_state_t;
 
 /*
- * Frame-ingester requirements reported by ABI v2 plugins.
+ * Frame-ingester requirements reported by plugins that ingest whole frames.
  *
  * The host still owns queueing and scheduling. The plugin just reports the
  * frame size the transport wants next and the estimated render lead for that
@@ -174,8 +173,7 @@ typedef struct {
  * - discover
  * - connect_controller
  * - destroy_controller
- * - ABI v1: send_points
- * - ABI v2: send_points, or get_frame_requirements + send_frame
+ * - send_points, or get_frame_requirements + send_frame
  *
  * Everything else is optional unless noted.
  */
@@ -229,6 +227,14 @@ typedef struct {
 
     /*
      * Optional controller operations.
+     *
+     * get_buffer_state() is the point-ingester backpressure signal. The host
+     * uses the reported buffer fill to decide whether to send more points now
+     * or wait, which lets it maintain a target device-side buffer level.
+     *
+     * If this callback is omitted, the host cannot maintain a specific buffer
+     * level. It instead falls back to a fixed batch size derived from the
+     * current point rate and submits on its own cadence.
      */
     void (*set_point_rate)(void* controller, uint32_t point_rate);
     void (*set_armed)(void* controller, bool armed);
@@ -256,12 +262,17 @@ typedef struct {
                          uint32_t out_size);
 
     /*
-     * Optional ABI v2 frame-ingester callbacks.
+     * Optional frame-ingester callbacks.
      *
      * These mirror built-in frame-ingester backends: the plugin tells the host
      * when one more transport frame can be submitted and what size that frame
      * should be, then the host adapts the active content source into one frame
      * and submits it through send_frame().
+     *
+     * Return LIBERA_ERR_BUSY from get_frame_requirements() when the transport
+     * is not ready for another frame yet. The host treats send_frame() as the
+     * actual submission call, so non-OK returns from send_frame() are treated
+     * as send failures rather than normal backpressure.
      *
      * If both the point and frame callbacks are present, the host prefers the
      * frame path because it most closely matches a built-in frame backend.

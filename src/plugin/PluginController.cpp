@@ -135,7 +135,6 @@ void PluginController::setPointRate(std::uint32_t pointRateValue) {
 
 bool PluginController::usesFrameTransport() const {
     return api &&
-           api->abi_version >= LIBERA_PLUGIN_API_VERSION_2 &&
            api->get_frame_requirements &&
            api->send_frame;
 }

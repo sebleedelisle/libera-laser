@@ -21,8 +21,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr std::uint32_t minimumSupportedPluginApiVersion = LIBERA_PLUGIN_API_VERSION_1;
-
 void* openLibrary(const std::string& path) {
 #ifdef _WIN32
     return static_cast<void*>(LoadLibraryA(path.c_str()));
@@ -113,7 +111,6 @@ const libera_host_services_t kHostServices = {
 
 bool pluginApiSupportsFrameTransport(const libera_plugin_api_t* api) {
     return api &&
-           api->abi_version >= LIBERA_PLUGIN_API_VERSION_2 &&
            api->get_frame_requirements &&
            api->send_frame;
 }
@@ -130,13 +127,10 @@ bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
         return false;
     }
 
-    if (api->abi_version < minimumSupportedPluginApiVersion ||
-        api->abi_version > LIBERA_PLUGIN_API_VERSION) {
+    if (api->abi_version != LIBERA_PLUGIN_API_VERSION) {
         libera::log::logError("Plugin: ", path.string(),
                               " has API version ", api->abi_version,
                               ", expected ",
-                              minimumSupportedPluginApiVersion,
-                              "-",
                               LIBERA_PLUGIN_API_VERSION);
         return false;
     }
@@ -173,19 +167,16 @@ bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
 
     const bool hasPointTransport = api->send_points != nullptr;
 
-    bool hasFrameTransport = false;
-    if (api->abi_version >= LIBERA_PLUGIN_API_VERSION_2) {
-        const bool hasFrameRequirements = api->get_frame_requirements != nullptr;
-        const bool hasFrameSender = api->send_frame != nullptr;
-        if (hasFrameRequirements != hasFrameSender) {
-            libera::log::logError(
-                "Plugin: ",
-                path.string(),
-                " must provide both get_frame_requirements() and send_frame()");
-            return false;
-        }
-        hasFrameTransport = hasFrameRequirements && hasFrameSender;
+    const bool hasFrameRequirements = api->get_frame_requirements != nullptr;
+    const bool hasFrameSender = api->send_frame != nullptr;
+    if (hasFrameRequirements != hasFrameSender) {
+        libera::log::logError(
+            "Plugin: ",
+            path.string(),
+            " must provide both get_frame_requirements() and send_frame()");
+        return false;
     }
+    const bool hasFrameTransport = hasFrameRequirements && hasFrameSender;
 
     if (!hasPointTransport && !hasFrameTransport) {
         libera::log::logError(

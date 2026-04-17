@@ -69,6 +69,9 @@ libera::System::addPluginDirectory("/absolute/path/to/more/plugins");
 libera::System liberaSystem;
 ```
 
+Passing an empty string to `setPluginDirectory("")` disables plugin loading
+entirely for that process.
+
 If you never call `setPluginDirectory()`, Libera uses `LIBERA_PLUGIN_DIR` when
 that environment variable is set. `LIBERA_PLUGIN_DIR` can contain more than one
 directory, separated by `:` on POSIX and `;` on Windows.
@@ -86,16 +89,12 @@ These fields in `libera_plugin_api_t` are required:
 - `discover`
 - `connect_controller`
 - `destroy_controller`
-- transport callback(s):
-  - ABI v1: `send_points`
-  - ABI v2: `send_points`, or `get_frame_requirements` + `send_frame`
+- transport callback(s): `send_points`, or `get_frame_requirements` + `send_frame`
 
 Everything else is optional.
 
-`LIBERA_PLUGIN_API_VERSION` in the header always points at the newest ABI this
-version of Libera understands. If you need to load the same plugin into an
-older host that only knows ABI v1, explicitly set `.abi_version =
-LIBERA_PLUGIN_API_VERSION_1` and only use the v1 fields.
+Set `.abi_version = LIBERA_PLUGIN_API_VERSION`. The current unreleased plugin
+API version is `1`.
 
 ## Optional callbacks
 
@@ -111,13 +110,34 @@ These can be omitted by setting the field to `NULL`:
 - `get_frame_requirements`
 - `send_frame`
 
-If `get_buffer_state` is omitted, the host falls back to a fixed batch size.
+If `get_buffer_state` is provided, the host can pace point submissions against
+the device's reported fill level.
+
+If `get_buffer_state` is omitted, the host cannot maintain a specific
+device-side buffer target. In that case it falls back to an automatic
+point-ingester cadence derived from the current point rate and submits fixed
+batches on that schedule.
 
 If `properties` / `read_property` are omitted, the plugin exposes no
 properties.
 
 If you use the frame-ingester path, `get_frame_requirements` and `send_frame`
 must be provided together.
+
+## Host services
+
+If you implement `create_backend()`, Libera passes a
+`const libera_host_services_t*` into it. That host table is versioned
+separately from the main plugin ABI and currently exposes:
+
+- `log(level, message)`
+- `record_latency(host_ctx, nanoseconds)`
+- `report_error(host_ctx, code, label)`
+
+`host_ctx` is the opaque token Libera passes into `connect_controller()`. Keep
+that token on the controller side if you want to report transport latency or
+device-specific errors back into the host later from `send_points()` or
+`send_frame()`.
 
 ## Discovery and connect
 
@@ -133,6 +153,9 @@ must be provided together.
 The `connect_cookie` is important: the host copies it back into
 `connect_controller()`, so a plugin can keep a tiny transport-specific token
 from discovery time instead of re-looking everything up by string id.
+
+If the plugin provides `rescan()`, Libera calls it before each `discover()`
+pass so network or USB plugins can refresh cached state.
 
 ## Properties
 
@@ -159,14 +182,58 @@ Plugins should mirror the same two backend shapes that built-in controllers use:
   The transport wants "some more points now". Implement `send_points()`. The
   host asks Libera's shared scheduler for a point batch, converts it to
   `libera_point_t`, and forwards it to the plugin.
+  Point-ingester plugins can run in two modes:
+  with `get_buffer_state()`, the host tries to maintain a target buffer level;
+  without it, the host just keeps points flowing automatically based on point
+  rate.
 - `Frame-ingester`
-  The transport wants one whole frame submission at a time. Implement the ABI
-  v2 pair `get_frame_requirements()` + `send_frame()`. The host asks Libera's
+  The transport wants one whole frame submission at a time. Implement the
+  paired `get_frame_requirements()` + `send_frame()` callbacks. The host asks Libera's
   shared scheduler for one frame, converts it to `libera_point_t`, and forwards
   it to the plugin.
 
-If both shapes are present in one ABI v2 plugin, the host prefers the
+If both shapes are present in one plugin, the host prefers the
 frame-ingester path because it most closely matches a built-in frame backend.
+
+## Readiness and backpressure
+
+There is no separate generic `is_ready()` callback in the plugin ABI. The host
+uses different readiness signals depending on the transport shape:
+
+- `Point-ingester`
+  Backpressure is reported indirectly through `get_buffer_state()`. The plugin
+  reports `points_in_buffer` and `total_buffer_points`, and the host uses that
+  telemetry to decide whether to submit more points now or wait a little longer.
+  That is the mode to use when the host should actively maintain a device-side
+  buffer level.
+- `Frame-ingester`
+  Readiness is reported explicitly through `get_frame_requirements()`. Return
+  `LIBERA_OK` and fill out the requirements when the transport can accept one
+  more frame now. Return `LIBERA_ERR_BUSY` when the transport is not ready yet;
+  the host waits briefly and asks again.
+
+Two details are important:
+
+- `send_points()` / `send_frame()` are submission calls, not readiness polls.
+  A non-`LIBERA_OK` return from those callbacks is treated as a send failure,
+  not as normal backpressure.
+- If a point-ingester plugin omits `get_buffer_state()`, the host falls back to
+  automatic point-rate-based feeding. In that mode the host does not try to
+  maintain a specific device-side buffer level; it derives a fixed batch size
+  from the current point rate and keeps submitting on its own cadence.
+
+## Helper utilities
+
+`libera_plugin.h` also ships a few small helpers so plugins do not need to
+rebuild the same safety boilerplate:
+
+- `libera_controller_info_init()` to zero and populate discovery records
+- `libera_controller_info_set_network()` to attach IP/port metadata
+- `libera_controller_info_set_cookie()` to copy a small discovery token into
+  `connect_cookie`
+- `libera_frame_requirements_init()` to populate frame requirements
+- `libera_copy_string()` for fixed-size string fields and property output
+- `LIBERA_PLUGIN_EXPORT(pluginApi)` to export `libera_plugin_get_api()`
 
 ## Minimal example
 
@@ -231,7 +298,7 @@ LIBERA_PLUGIN_EXPORT(pluginApi)
 
 ### Frame-ingester
 
-An ABI v2 frame-ingester plugin replaces `send_points()` with the paired frame
+A frame-ingester plugin replaces `send_points()` with the paired frame
 callbacks:
 
 ```c
@@ -264,7 +331,7 @@ Then wire those fields into `libera_plugin_api_t`:
 
 ```c
 static const libera_plugin_api_t pluginApi = {
-    .abi_version = LIBERA_PLUGIN_API_VERSION_2,
+    .abi_version = LIBERA_PLUGIN_API_VERSION,
     .type_name = "MyFrameDac",
     .display_name = "My Frame DAC",
     .discover = discover,
@@ -303,7 +370,7 @@ load .dylib
 └── destroy_backend(backend)             optional
 ```
 
-For an ABI v2 frame-ingester plugin, the per-controller loop becomes:
+For a frame-ingester plugin, the per-controller loop becomes:
 
 ```text
 load .dylib
@@ -339,10 +406,10 @@ The plugin's job is just to:
 Whether the application is using queued frames or a live point callback, the
 host adapts that content source into the payload shape the plugin asked for.
 
-If your vendor SDK is internally frame-based, prefer the ABI v2
+If your vendor SDK is internally frame-based, prefer the
 `get_frame_requirements()` + `send_frame()` path so the plugin stays aligned
 with built-in frame-ingester backends. Only re-buffer point batches inside the
-plugin if you are deliberately targeting the older ABI v1 point-only surface.
+plugin if you deliberately want the transport to behave like a point-ingester.
 
 ## Building
 
