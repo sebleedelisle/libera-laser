@@ -192,11 +192,93 @@ void testInjectedAudioHostPreservesSharedRuntimeReuse() {
               "shared runtime stops its output stream once during shutdown");
 }
 
+void testSetConfiguredDevicesReopensLiveRuntimeWhenPointRateChanges() {
+    auto host = installFakeAudioHost();
+    host->devices = {
+        detail::AudioOutputDeviceInfo{1, "reopen-dev", "Reopen Device", 8, 48000, true, {48000, 96000}},
+    };
+
+    AvbManager::setConfiguredDevices({
+        AvbDeviceConfiguration{"reopen-dev", 48000},
+    });
+
+    AvbManager manager;
+    const auto controllers = AvbManager::configuredControllers();
+    auto controller = std::dynamic_pointer_cast<AvbController>(
+        manager.connectController(controllers[0]));
+
+    ASSERT_TRUE(controller != nullptr, "AVB controller connects before reopen");
+    ASSERT_EQ(host->openCount, 1, "initial connect opens one runtime stream");
+    ASSERT_EQ(host->startCount, 1, "initial connect starts one runtime stream");
+    ASSERT_EQ(host->stopCount, 0, "runtime has not been stopped yet");
+
+    AvbManager::setConfiguredDevices({
+        AvbDeviceConfiguration{"reopen-dev", 96000},
+    });
+
+    ASSERT_TRUE(controller->isConnected(),
+                "controller remains connected after runtime reopen");
+    ASSERT_EQ(host->openCount, 2,
+              "changing the configured point rate reopens the live runtime");
+    ASSERT_EQ(host->startCount, 2,
+              "runtime reopen starts a fresh output stream");
+    ASSERT_EQ(host->stopCount, 1,
+              "runtime reopen stops the previous stream first");
+    ASSERT_EQ(host->openedPointRates.size(), static_cast<std::size_t>(2),
+              "fake host records both open attempts");
+    ASSERT_EQ(host->openedPointRates[0], 48000u,
+              "first open uses the original configured point rate");
+    ASSERT_EQ(host->openedPointRates[1], 96000u,
+              "second open uses the updated configured point rate");
+
+    manager.closeAll();
+    ASSERT_EQ(host->stopCount, 2,
+              "shutdown stops the reopened runtime stream once");
+}
+
+void testSetConfiguredDevicesSkipsReopenWhenPointRateStaysTheSame() {
+    auto host = installFakeAudioHost();
+    host->devices = {
+        detail::AudioOutputDeviceInfo{1, "steady-dev", "Steady Device", 8, 48000, true, {48000, 96000}},
+    };
+
+    AvbManager::setConfiguredDevices({
+        AvbDeviceConfiguration{"steady-dev", 48000},
+    });
+
+    AvbManager manager;
+    const auto controllers = AvbManager::configuredControllers();
+    auto controller = std::dynamic_pointer_cast<AvbController>(
+        manager.connectController(controllers[0]));
+
+    ASSERT_TRUE(controller != nullptr, "AVB controller connects before no-op config update");
+    ASSERT_EQ(host->openCount, 1, "initial connect opens one runtime stream");
+
+    AvbManager::setConfiguredDevices({
+        AvbDeviceConfiguration{"steady-dev", 48000},
+    });
+
+    ASSERT_TRUE(controller->isConnected(),
+                "controller stays connected when point rate does not change");
+    ASSERT_EQ(host->openCount, 1,
+              "same configured point rate does not reopen the runtime");
+    ASSERT_EQ(host->startCount, 1,
+              "same configured point rate does not start another stream");
+    ASSERT_EQ(host->stopCount, 0,
+              "same configured point rate does not stop the live stream");
+
+    manager.closeAll();
+    ASSERT_EQ(host->stopCount, 1,
+              "shutdown still stops the original runtime stream");
+}
+
 } // namespace
 
 int main() {
     testInjectedAudioHostControlsDiscoveryAndConfiguration();
     testInjectedAudioHostPreservesSharedRuntimeReuse();
+    testSetConfiguredDevicesReopensLiveRuntimeWhenPointRateChanges();
+    testSetConfiguredDevicesSkipsReopenWhenPointRateStaysTheSame();
 
     detail::AvbBackendState::setAudioHostFactoryForTesting({});
 
