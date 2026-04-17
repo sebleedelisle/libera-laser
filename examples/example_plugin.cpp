@@ -16,9 +16,10 @@
  * plugin authors can compare the two shapes in one place. Current hosts prefer
  * the frame callbacks when both are present.
  *
- * Build as a shared library and place the output in one of Libera's plugin
- * directories (configured with System::setPluginDirectory() /
- * System::addPluginDirectory()):
+ * Build as a shared library and place the output in one of Libera's default
+ * plugin directories, such as plugins/ next to the executable. Hosts can still
+ * override or extend the search path with System::setPluginDirectory() /
+ * System::addPluginDirectory() when they want custom locations:
  *
  *   # macOS
  *   c++ -shared -fPIC -std=c++17 -o example-plugin.dylib example_plugin.cpp \
