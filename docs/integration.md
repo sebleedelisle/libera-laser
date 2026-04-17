@@ -60,8 +60,15 @@ If you like, you can instead include just the controllers you want to support:
 
 Only the built-in controller types you include will be discovered.
 
-Plugins are loaded separately from the directories configured before you
-construct `System`:
+Plugins are loaded separately from a few default search locations, so in the
+normal case you can just construct `System` and drop plugin libraries into a
+`plugins/` folder next to your app:
+
+```cpp
+libera::System liberaSystem;
+```
+
+Only configure plugin search paths if you want to override those defaults:
 
 ```cpp
 libera::System::setPluginDirectory("plugins");

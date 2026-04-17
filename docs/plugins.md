@@ -46,7 +46,21 @@ That maps directly onto Libera's built-in structure:
 
 ## Loading plugin libraries
 
-Configure plugin search paths before you construct `libera::System`:
+In the normal case you do not need to configure plugin directories at all.
+Libera already searches:
+
+- `plugins/` next to the executable
+- `../plugins/` relative to the executable, which suits `bin/` + `plugins/`
+  layouts
+- the same relative paths from the current working directory
+
+So the simplest setup is just:
+
+```cpp
+libera::System liberaSystem;
+```
+
+Only configure plugin search paths if you want to override those defaults:
 
 ```cpp
 libera::System::setPluginDirectory("plugins");
@@ -56,8 +70,12 @@ libera::System liberaSystem;
 ```
 
 If you never call `setPluginDirectory()`, Libera uses `LIBERA_PLUGIN_DIR` when
-that environment variable is set, otherwise it looks for a `plugins/`
-directory.
+that environment variable is set. `LIBERA_PLUGIN_DIR` can contain more than one
+directory, separated by `:` on POSIX and `;` on Windows.
+
+There is not a first-class "plugin installer" in Libera itself today. Installing
+a plugin currently just means placing the shared library in one of those
+searched directories.
 
 ## Required callbacks
 
