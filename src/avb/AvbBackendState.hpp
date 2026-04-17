@@ -7,6 +7,7 @@
 #include "libera/core/ControllerCache.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -23,7 +24,15 @@ namespace libera::avb::detail {
 // singleton state container.
 class AvbBackendState {
 public:
+    using AudioHostFactory = std::function<std::shared_ptr<AudioHost>()>;
+
     static AvbBackendState& instance();
+
+    // Tests can swap in a fake audio host so AVB discovery, configuration,
+    // and shared-runtime behavior can be exercised without CoreAudio/RtAudio.
+    // Passing an empty factory restores the default createAudioHost() path.
+    static void setAudioHostFactoryForTesting(AudioHostFactory factory);
+    static void resetForTesting();
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<AvbController> connectController(const AvbControllerInfo& info);
@@ -44,6 +53,7 @@ public:
 
 private:
     AvbBackendState();
+    void resetStateForTesting();
 
     std::unordered_map<std::string, AvbAudioDeviceInfo> availableDeviceMap();
     void applyHalfXYOutputSettingsLocked();

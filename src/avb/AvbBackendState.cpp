@@ -11,6 +11,18 @@ namespace {
 
 constexpr std::uint32_t controllerChannelCount = 8;
 
+AvbBackendState* & backendStateStorage() {
+    static AvbBackendState* state = nullptr;
+    return state;
+}
+
+AvbBackendState::AudioHostFactory& audioHostFactoryStorage() {
+    static AvbBackendState::AudioHostFactory factory = [] {
+        return createAudioHost();
+    };
+    return factory;
+}
+
 std::string makeControllerId(const std::string& deviceUid,
                              std::uint32_t channelOffset) {
     return deviceUid + "::ch-" + std::to_string(channelOffset);
@@ -165,15 +177,41 @@ std::vector<AvbControllerInfo> buildConfiguredControllers(
 } // namespace
 
 AvbBackendState::AvbBackendState()
-: audioHost(createAudioHost()) {}
+: audioHost(audioHostFactoryStorage()()) {}
 
 AvbBackendState& AvbBackendState::instance() {
-    // Discovery can still be running very late in process shutdown if the
-    // owning app singleton is intentionally leaked. Keep AVB shared state
-    // alive until process exit instead of participating in static teardown
-    // order, which avoids use-after-destruction crashes on shutdown.
-    static AvbBackendState& state = *new AvbBackendState();
-    return state;
+    auto*& state = backendStateStorage();
+    if (state == nullptr) {
+        // Discovery can still be running very late in process shutdown if the
+        // owning app singleton is intentionally leaked. Keep AVB shared state
+        // alive until process exit instead of participating in static teardown
+        // order, which avoids use-after-destruction crashes on shutdown.
+        state = new AvbBackendState();
+    }
+    return *state;
+}
+
+void AvbBackendState::setAudioHostFactoryForTesting(AudioHostFactory factory) {
+    auto& factoryStorage = audioHostFactoryStorage();
+    if (factory) {
+        factoryStorage = std::move(factory);
+    } else {
+        factoryStorage = [] {
+            return createAudioHost();
+        };
+    }
+
+    auto* state = backendStateStorage();
+    if (state != nullptr) {
+        state->resetStateForTesting();
+    }
+}
+
+void AvbBackendState::resetForTesting() {
+    auto* state = backendStateStorage();
+    if (state != nullptr) {
+        state->resetStateForTesting();
+    }
 }
 
 std::vector<std::unique_ptr<core::ControllerInfo>>
@@ -541,6 +579,43 @@ std::shared_ptr<AvbDeviceRuntime> AvbBackendState::getOrCreateRuntimeLocked(
                                                       std::move(runtimeDeviceInfo));
     runtimesByDeviceUid.insert_or_assign(info.deviceUid(), runtime);
     return runtime;
+}
+
+void AvbBackendState::resetStateForTesting() {
+    std::unordered_map<std::string, std::shared_ptr<AvbController>> controllers;
+    std::vector<std::shared_ptr<AvbDeviceRuntime>> runtimes;
+
+    {
+        std::lock_guard lock(mutex);
+        controllers = activeControllers.snapshotAndClear();
+        runtimes.reserve(runtimesByDeviceUid.size());
+        for (auto& [deviceUid, runtime] : runtimesByDeviceUid) {
+            (void)deviceUid;
+            if (runtime) {
+                runtimes.push_back(std::move(runtime));
+            }
+        }
+        runtimesByDeviceUid.clear();
+        configuredDevicesByUid.clear();
+        halfXYOutputByControllerId.clear();
+        audioHost.reset();
+    }
+
+    for (auto& runtime : runtimes) {
+        runtime->close();
+    }
+
+    for (auto& [controllerId, controller] : controllers) {
+        (void)controllerId;
+        if (!controller) {
+            continue;
+        }
+        controller->stopThread();
+        controller->close();
+    }
+
+    std::lock_guard lock(mutex);
+    audioHost = audioHostFactoryStorage()();
 }
 
 } // namespace libera::avb::detail
