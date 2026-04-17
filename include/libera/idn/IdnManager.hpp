@@ -17,13 +17,10 @@ public:
     ~IdnManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
-    std::string_view managedType() const override { return typeName; }
 
     static core::ControllerManagerRegistry registrar;
 
 private:
-    static constexpr std::string_view typeName{"IDN"};
-
     void openIfNeeded();
     std::size_t refreshControllerCount(bool allowRescan);
 

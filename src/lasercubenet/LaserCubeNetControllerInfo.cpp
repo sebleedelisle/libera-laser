@@ -4,7 +4,7 @@
 namespace libera::lasercubenet {
 
 LaserCubeNetControllerInfo::LaserCubeNetControllerInfo(const LaserCubeNetStatus& status)
-    : core::ControllerInfo("LaserCubeNet",
+    : core::ControllerInfo(LaserCubeNetControllerInfo::controllerType(),
                            status.serialNumber,
                            status.modelName.empty() ? status.serialNumber : status.modelName,
                            status.pointRateMax,

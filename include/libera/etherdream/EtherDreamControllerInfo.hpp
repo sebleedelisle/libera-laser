@@ -8,6 +8,10 @@ namespace libera::etherdream {
 
 class EtherDreamControllerInfo : public core::ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "EtherDream";
+    }
+
     EtherDreamControllerInfo(std::string id,
                              std::string label,
                              std::string ip,
@@ -15,7 +19,7 @@ public:
                              int bufferSizePoints = 0,
                              std::string hardwareVersion = {},
                              std::uint32_t maxPointRateValue = 0)
-    : ControllerInfo("EtherDream",
+    : ControllerInfo(controllerType(),
                      std::move(id),
                      std::move(label),
                      maxPointRateValue,

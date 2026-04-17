@@ -280,14 +280,12 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
 } // namespace
 
 PluginDelegateManager::PluginDelegateManager(std::shared_ptr<LoadedPlugin> plugin)
-: plugin(std::move(plugin)) {}
+: core::ControllerManagerBase<PluginControllerInfo,
+                              PluginController>(plugin ? plugin->typeName : std::string{})
+, plugin(std::move(plugin)) {}
 
 PluginDelegateManager::~PluginDelegateManager() {
     closeAll();
-}
-
-std::string_view PluginDelegateManager::managedType() const {
-    return plugin->typeName;
 }
 
 std::vector<std::unique_ptr<core::ControllerInfo>>

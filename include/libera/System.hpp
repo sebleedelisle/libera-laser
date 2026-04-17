@@ -31,12 +31,12 @@ public:
     // The base owns the backend type string so discovery records and manager
     // routing stay aligned without every ControllerInfo subclass repeating the
     // same trivial type() override.
-    ControllerInfo(std::string typeValue,
+    ControllerInfo(std::string_view typeValue,
                    std::string id,
                    std::string label,
                    std::uint32_t maxPointRateValue = 0,
                    std::optional<NetworkInfo> networkInfo = std::nullopt)
-    : typeString(std::move(typeValue))
+    : typeString(typeValue)
     , id(std::move(id))
     , label(std::move(label))
     , maxPointRateValue(maxPointRateValue)

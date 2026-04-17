@@ -8,6 +8,10 @@ namespace libera::idn {
 
 class IdnControllerInfo : public core::ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "IDN";
+    }
+
     IdnControllerInfo(std::string id,
                       std::string unitIdValue,
                       std::string label,
@@ -15,7 +19,7 @@ public:
                       unsigned int controllerIndexValue,
                       int firmwareVersionValue,
                       std::optional<core::ControllerInfo::NetworkInfo> networkInfo = std::nullopt)
-    : ControllerInfo("IDN",
+    : ControllerInfo(controllerType(),
                      std::move(id),
                      std::move(label),
                      maxPointRateValue,

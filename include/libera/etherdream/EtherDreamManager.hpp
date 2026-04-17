@@ -26,14 +26,11 @@ public:
     ~EtherDreamManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
-    std::string_view managedType() const override { return typeName; }
 
     static core::ControllerManagerRegistry registrar;
 
 private:
     using Clock = std::chrono::steady_clock;
-    static constexpr std::string_view typeName{"EtherDream"};
-
     struct ControllerEntry {
         EtherDreamControllerInfo info;
         Clock::time_point lastSeen;

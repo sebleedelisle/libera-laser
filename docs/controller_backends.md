@@ -126,10 +126,14 @@ thread. In practice the pattern is:
 ```cpp
 class MyControllerInfo : public core::ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "MyDac";
+    }
+
     MyControllerInfo(std::string id,
                      std::string label,
                      std::string transportPath)
-    : ControllerInfo("MyDac", std::move(id), std::move(label))
+    : ControllerInfo(controllerType(), std::move(id), std::move(label))
     , transportPathValue(std::move(transportPath)) {}
 
     const std::string& transportPath() const { return transportPathValue; }
@@ -160,10 +164,6 @@ public:
 
         return results;
     }
-
-    std::string_view managedType() const override { return typeName; }
-
-private:
     std::shared_ptr<MyController>
     createController(const MyControllerInfo& info) override {
         if (!sdkReady()) {
@@ -191,15 +191,13 @@ private:
         (void)key;
         controller.close();
     }
-
-private:
-    static constexpr std::string_view typeName{"MyDac"};
 };
 ```
 
 `ControllerManagerBase` now owns the repetitive parts:
 
 - typed `ControllerInfo` casting
+- `managedType()` routing for fixed-type backends
 - one-live-controller-per-key caching
 - dropping a failed first connection from the cache
 - shutdown snapshots and the default `stopThread()` loop
@@ -224,9 +222,9 @@ The important parts are:
   so `System` will construct it and call `discover()`
 - `id` should be stable across rescans. Prefer a serial number, MAC address,
   port path, or another physical identity instead of "device 0" style ordering.
-- pass the same backend type string into `ControllerInfo(...)` that
-  `managedType()` returns. `System` uses that shared value to route
-  `connectController(...)` to the right manager.
+- fixed-type backends should expose one `Info::controllerType()` helper and
+  pass that into `ControllerInfo(...)`. `ControllerManagerBase` reuses the same
+  value for `managedType()` automatically.
 - if the live-controller cache should be keyed by something else such as a USB
   port path or a protocol unit id, override `controllerKey(...)`
 - if discovery learns something needed to reconnect to the exact device later

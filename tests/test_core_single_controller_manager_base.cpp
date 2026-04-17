@@ -24,8 +24,12 @@ namespace {
 
 class DummyInfo : public ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "Dummy";
+    }
+
     DummyInfo(std::string id, std::string label, std::string reconnectKey)
-    : ControllerInfo("Dummy", std::move(id), std::move(label))
+    : ControllerInfo(controllerType(), std::move(id), std::move(label))
     , reconnectKeyValue(std::move(reconnectKey)) {}
     const std::string& reconnectKey() const { return reconnectKeyValue; }
 
@@ -53,10 +57,6 @@ class DummyManager : public ControllerManagerBase<DummyInfo, DummyController> {
 public:
     std::vector<std::unique_ptr<ControllerInfo>> discover() override {
         return {};
-    }
-
-    std::string_view managedType() const override {
-        return "Dummy";
     }
 
     int createCount = 0;
@@ -116,6 +116,29 @@ protected:
     }
 };
 
+class DynamicTypeManager : public ControllerManagerBase<DummyInfo, DummyController> {
+public:
+    DynamicTypeManager()
+    : ControllerManagerBase("DynamicDummy") {}
+
+    std::vector<std::unique_ptr<ControllerInfo>> discover() override {
+        return {};
+    }
+
+protected:
+    ControllerPtr createController(const DummyInfo& info) override {
+        (void)info;
+        return std::make_shared<DummyController>(1);
+    }
+
+    NewControllerDisposition prepareNewController(DummyController& controller,
+                                                  const DummyInfo& info) override {
+        (void)controller;
+        (void)info;
+        return NewControllerDisposition::KeepController;
+    }
+};
+
 std::shared_ptr<DummyController> asDummy(const std::shared_ptr<LaserController>& controller) {
     return std::dynamic_pointer_cast<DummyController>(controller);
 }
@@ -147,6 +170,18 @@ void testCustomControllerKeyOverridesIdValue() {
     ASSERT_TRUE(second != nullptr, "second custom-key controller created");
     ASSERT_TRUE(second != first, "different reconnect keys create different controllers");
     ASSERT_EQ(manager.createCount, 2, "factory runs once per unique reconnect key");
+}
+
+void testManagedTypeDefaultsFromControllerInfo() {
+    DummyManager manager;
+    ASSERT_TRUE(manager.managedType() == DummyInfo::controllerType(),
+                "fixed-type managers inherit managedType from their info type");
+}
+
+void testManagedTypeCanStillBeProvidedAtRuntime() {
+    DynamicTypeManager manager;
+    ASSERT_TRUE(manager.managedType() == "DynamicDummy",
+                "dynamic backends can still provide a runtime managedType");
 }
 
 void testDroppedNewControllerIsRemovedFromCache() {
@@ -208,6 +243,8 @@ void testCloseAllStopsAndClosesLiveControllers() {
 int main() {
     testConnectReusesExistingControllerForSameKey();
     testCustomControllerKeyOverridesIdValue();
+    testManagedTypeDefaultsFromControllerInfo();
+    testManagedTypeCanStillBeProvidedAtRuntime();
     testDroppedNewControllerIsRemovedFromCache();
     testRejectedReuseCreatesReplacementController();
     testCloseAllStopsAndClosesLiveControllers();

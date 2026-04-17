@@ -26,7 +26,6 @@ public:
     ~LaserCubeNetManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
-    std::string_view managedType() const override { return typeName; }
 
     static core::ControllerManagerRegistry registrar;
 
@@ -39,8 +38,6 @@ private:
 
     void discoveryThread();
     void sendProbe();
-
-    static constexpr std::string_view typeName{"LaserCubeNet"};
 
     std::shared_ptr<asio::io_context> io;
     std::unique_ptr<net::UdpSocket> socket;

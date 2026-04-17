@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace libera::core {
@@ -14,12 +15,12 @@ namespace libera::core {
 //
 // The derived manager still owns:
 // - discovery
-// - the manager type name
 // - the controller factory
 // - transport-specific first-connect behavior
 //
 // This base owns the repeated lifecycle glue:
 // - dynamic_cast from ControllerInfo to the typed info object
+// - manager type routing for fixed-type backends
 // - "reuse existing or create new" cache logic
 // - erase-on-failed-first-connect behavior
 // - snapshot-and-close shutdown plumbing
@@ -33,6 +34,10 @@ public:
 
     using ControllerPtr = std::shared_ptr<Controller>;
     using LiveControllerSnapshot = typename ControllerCache<Key, Controller>::Snapshot;
+
+    std::string_view managedType() const final {
+        return managedTypeValue;
+    }
 
     std::shared_ptr<LaserController> connectController(const ControllerInfo& info) final {
         const auto* typedInfo = dynamic_cast<const Info*>(&info);
@@ -89,6 +94,15 @@ public:
     }
 
 protected:
+    // Fixed-type built-in backends expose one Info::controllerType() helper,
+    // and the manager reuses that same value for System routing.
+    ControllerManagerBase()
+    : managedTypeValue(Info::controllerType()) {}
+
+    // Dynamic backends such as plugins can still provide the type at runtime.
+    explicit ControllerManagerBase(std::string managedTypeValue)
+    : managedTypeValue(std::move(managedTypeValue)) {}
+
     virtual ~ControllerManagerBase() = default;
 
     // Most managers key their live-controller cache by ControllerInfo::idValue().
@@ -141,6 +155,7 @@ protected:
     }
 
 private:
+    std::string managedTypeValue;
     ControllerCache<Key, Controller> liveControllerCache;
 };
 

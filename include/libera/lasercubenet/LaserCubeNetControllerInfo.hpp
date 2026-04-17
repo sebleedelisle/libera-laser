@@ -7,6 +7,10 @@ namespace libera::lasercubenet {
 
 class LaserCubeNetControllerInfo : public core::ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "LaserCubeNet";
+    }
+
     LaserCubeNetControllerInfo(const LaserCubeNetStatus& status);
 
     const std::string& ipAddress() const { return ip; }

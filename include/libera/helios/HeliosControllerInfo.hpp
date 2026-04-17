@@ -8,13 +8,17 @@ namespace libera::helios {
 
 class HeliosControllerInfo : public core::ControllerInfo {
 public:
+    static constexpr std::string_view controllerType() {
+        return "Helios";
+    }
+
     HeliosControllerInfo(std::string id,
                          std::string label,
                          std::uint32_t maxPointRateValue,
                          std::string usbPortPathValue,
                          bool usbController,
                          int firmwareVersionValue)
-    : ControllerInfo("Helios",
+    : ControllerInfo(controllerType(),
                      std::move(id),
                      std::move(label),
                      maxPointRateValue)

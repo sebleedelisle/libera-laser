@@ -35,7 +35,6 @@ public:
     ~PluginDelegateManager() override;
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
-    std::string_view managedType() const override;
 
 private:
     std::shared_ptr<LoadedPlugin> plugin;
