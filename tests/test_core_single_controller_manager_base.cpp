@@ -1,4 +1,4 @@
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/log/Log.hpp"
 
 #include <memory>
@@ -52,7 +52,7 @@ protected:
     void run() override {}
 };
 
-class DummyManager : public SingleControllerManagerBase<DummyInfo, DummyController> {
+class DummyManager : public ControllerManagerBase<DummyInfo, DummyController> {
 public:
     std::vector<std::unique_ptr<ControllerInfo>> discover() override {
         return {};

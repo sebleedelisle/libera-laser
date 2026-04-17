@@ -41,7 +41,7 @@ Think of the plugin as two layers:
 
 That maps directly onto Libera's built-in structure:
 
-- built-in `ControllerManagerBase` ~= plugin backend callbacks
+- built-in `AbstractControllerManager` / `ControllerManagerBase` ~= plugin backend callbacks
 - built-in `LaserController` ~= plugin controller handle plus controller callbacks
 
 ## Loading plugin libraries

@@ -24,7 +24,7 @@ namespace libera::core {
 // - erase-on-failed-first-connect behavior
 // - snapshot-and-close shutdown plumbing
 template <typename Info, typename Controller, typename Key = std::string>
-class SingleControllerManagerBase : public ControllerManagerBase {
+class ControllerManagerBase : public AbstractControllerManager {
 public:
     enum class NewControllerDisposition {
         KeepController,
@@ -89,7 +89,7 @@ public:
     }
 
 protected:
-    virtual ~SingleControllerManagerBase() = default;
+    virtual ~ControllerManagerBase() = default;
 
     // Most managers key their live-controller cache by ControllerInfo::idValue().
     // Backends with a different reconnect identity such as a USB port path or

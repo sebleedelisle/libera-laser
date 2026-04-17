@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbController.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbControllerInfo.hpp"
 
@@ -11,8 +11,8 @@ struct libusb_context;
 namespace libera::lasercubeusb {
 
 class LaserCubeUsbManager
-    : public core::SingleControllerManagerBase<LaserCubeUsbControllerInfo,
-                                               LaserCubeUsbController> {
+    : public core::ControllerManagerBase<LaserCubeUsbControllerInfo,
+                                         LaserCubeUsbController> {
 public:
     LaserCubeUsbManager();
     ~LaserCubeUsbManager() override;

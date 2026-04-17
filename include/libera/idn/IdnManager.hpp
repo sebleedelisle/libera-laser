@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/idn/IdnControllerInfo.hpp"
 #include "libera/idn/IdnController.hpp"
 
@@ -10,8 +10,8 @@
 namespace libera::idn {
 
 class IdnManager
-    : public core::SingleControllerManagerBase<IdnControllerInfo,
-                                               IdnController> {
+    : public core::ControllerManagerBase<IdnControllerInfo,
+                                         IdnController> {
 public:
     IdnManager();
     ~IdnManager() override;

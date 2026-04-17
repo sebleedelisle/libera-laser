@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/plugin/PluginController.hpp"
 #include "libera/plugin/PluginControllerInfo.hpp"
 
@@ -28,8 +28,8 @@ struct LoadedPlugin {
  * library and registered with the System.
  */
 class PluginDelegateManager
-    : public core::SingleControllerManagerBase<PluginControllerInfo,
-                                               PluginController> {
+    : public core::ControllerManagerBase<PluginControllerInfo,
+                                         PluginController> {
 public:
     explicit PluginDelegateManager(std::shared_ptr<LoadedPlugin> plugin);
     ~PluginDelegateManager() override;

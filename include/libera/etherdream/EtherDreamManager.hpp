@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/etherdream/EtherDreamControllerInfo.hpp"
 #include "libera/etherdream/EtherDreamController.hpp"
 #include "libera/net/NetService.hpp"
@@ -19,8 +19,8 @@
 namespace libera::etherdream {
 
 class EtherDreamManager
-    : public core::SingleControllerManagerBase<EtherDreamControllerInfo,
-                                               EtherDreamController> {
+    : public core::ControllerManagerBase<EtherDreamControllerInfo,
+                                         EtherDreamController> {
 public:
     EtherDreamManager();
     ~EtherDreamManager() override;

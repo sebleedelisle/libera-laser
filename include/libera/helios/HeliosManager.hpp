@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/helios/HeliosControllerInfo.hpp"
 #include "libera/helios/HeliosController.hpp"
 
@@ -14,8 +14,8 @@ struct libusb_context;
 namespace libera::helios {
 
 class HeliosManager
-    : public core::SingleControllerManagerBase<HeliosControllerInfo,
-                                               HeliosController> {
+    : public core::ControllerManagerBase<HeliosControllerInfo,
+                                         HeliosController> {
 public:
     HeliosManager();
     ~HeliosManager() override;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libera/core/SingleControllerManagerBase.hpp"
+#include "libera/core/ControllerManagerBase.hpp"
 #include "libera/lasercubenet/LaserCubeNetControllerInfo.hpp"
 #include "libera/lasercubenet/LaserCubeNetConfig.hpp"
 #include "libera/lasercubenet/LaserCubeNetStatus.hpp"
@@ -19,8 +19,8 @@ namespace libera::lasercubenet {
 class LaserCubeNetController;
 
 class LaserCubeNetManager
-    : public core::SingleControllerManagerBase<LaserCubeNetControllerInfo,
-                                               LaserCubeNetController> {
+    : public core::ControllerManagerBase<LaserCubeNetControllerInfo,
+                                         LaserCubeNetController> {
 public:
     LaserCubeNetManager();
     ~LaserCubeNetManager() override;

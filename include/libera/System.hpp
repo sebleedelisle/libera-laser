@@ -56,9 +56,9 @@ protected:
     ControllerUsageState usageStateValue = ControllerUsageState::Unknown;
 };
 
-class ControllerManagerBase {
+class AbstractControllerManager {
 public:
-    virtual ~ControllerManagerBase() = default;
+    virtual ~AbstractControllerManager() = default;
 
     virtual std::vector<std::unique_ptr<ControllerInfo>> discover() = 0;
     virtual std::string_view managedType() const = 0;
@@ -66,7 +66,7 @@ public:
     virtual void closeAll() = 0;
 };
 
-using ControllerManagerFactory = std::function<std::unique_ptr<ControllerManagerBase>()>;
+using ControllerManagerFactory = std::function<std::unique_ptr<AbstractControllerManager>()>;
 
 std::vector<ControllerManagerFactory>& getControllerManagerFactories();
 
@@ -105,8 +105,8 @@ public:
     void shutdown();
 
 private:
-    std::vector<std::unique_ptr<core::ControllerManagerBase>> managers;
-    std::unordered_map<std::string, core::ControllerManagerBase*> managerByType;
+    std::vector<std::unique_ptr<core::AbstractControllerManager>> managers;
+    std::unordered_map<std::string, core::AbstractControllerManager*> managerByType;
     bool shutdownComplete = false;
 };
 

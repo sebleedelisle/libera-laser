@@ -141,8 +141,8 @@ private:
 };
 
 class MyManager
-    : public core::SingleControllerManagerBase<MyControllerInfo,
-                                               MyController> {
+    : public core::ControllerManagerBase<MyControllerInfo,
+                                         MyController> {
 public:
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override {
         std::vector<std::unique_ptr<core::ControllerInfo>> results;
@@ -174,7 +174,7 @@ private:
         return std::make_shared<MyController>();
     }
 
-    core::SingleControllerManagerBase<MyControllerInfo, MyController>
+    core::ControllerManagerBase<MyControllerInfo, MyController>
         ::NewControllerDisposition
     prepareNewController(MyController& controller,
                          const MyControllerInfo& info) override {
@@ -199,7 +199,7 @@ private:
 };
 ```
 
-`SingleControllerManagerBase` now owns the repetitive parts:
+`ControllerManagerBase` now owns the repetitive parts:
 
 - typed `ControllerInfo` casting
 - one-live-controller-per-key caching
@@ -217,7 +217,7 @@ That means most built-in backends only need to implement:
   `afterCloseControllers()` for backend-specific teardown
 
 If the backend has a more unusual shape such as shared multi-controller device
-runtimes, then deriving directly from `ControllerManagerBase` can still make
+runtimes, then deriving directly from `AbstractControllerManager` can still make
 sense. `AVB` is the current example of that.
 
 The important parts are:

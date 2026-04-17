@@ -25,7 +25,7 @@ struct AvbDeviceConfiguration {
     std::uint32_t preferredPointRate = 0;
 };
 
-class AvbManager : public core::ControllerManagerBase {
+class AvbManager : public core::AbstractControllerManager {
 public:
     AvbManager();
     ~AvbManager() override;
