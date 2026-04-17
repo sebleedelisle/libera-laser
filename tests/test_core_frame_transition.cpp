@@ -115,9 +115,16 @@ void testTransitionBlankingInsertedForDistantFrames() {
     ASSERT_TRUE(frame2Start > transitionStart, "frame2 should come after transition");
 
     // All transition points should have i=0.
+    bool foundIntermediatePoint = false;
     for (std::size_t i = transitionStart; i < frame2Start; ++i) {
         ASSERT_EQ(batch[i].i, 0.0f, "transition point should have i=0");
+        if (batch[i].x > 0.0f && batch[i].x < 1.0f &&
+            batch[i].y > 0.0f && batch[i].y < 1.0f) {
+            foundIntermediatePoint = true;
+        }
     }
+    ASSERT_TRUE(foundIntermediatePoint,
+                "transition should include interpolated blank points between frames");
 }
 
 void testNoTransitionForCloseFrames() {
@@ -166,7 +173,7 @@ void testNoTransitionForCloseFrames() {
                 "close frames should not insert transition blanks");
 }
 
-void testTransitionPointsDwellAtBothEnds() {
+void testTransitionPointsUseCubicEaseInOutPath() {
     TransitionTestController controller;
     controller.setPointRate(1000);
     LaserController::setTargetLatency(std::chrono::milliseconds(500));
@@ -198,15 +205,36 @@ void testTransitionPointsDwellAtBothEnds() {
     ASSERT_TRUE(controller.requestPoints(request), "requestPoints succeeds");
     const auto& batch = controller.lastBatch();
 
-    // Verify transition contains dwells at source (x=0) and destination (x=1).
-    bool foundSourceDwell = false;
-    bool foundDestDwell = false;
+    std::size_t transitionStart = batch.size();
+    std::size_t frame2Start = batch.size();
     for (std::size_t i = 0; i < batch.size(); ++i) {
-        if (batch[i].i == 0.0f && batch[i].x == 0.0f) foundSourceDwell = true;
-        if (batch[i].i == 0.0f && batch[i].x == 1.0f) foundDestDwell = true;
+        if (transitionStart == batch.size() && batch[i].i == 0.0f) {
+            transitionStart = i;
+        }
+        if (transitionStart != batch.size() &&
+            batch[i].i == 1.0f &&
+            batch[i].x == 1.0f) {
+            frame2Start = i;
+            break;
+        }
     }
-    ASSERT_TRUE(foundSourceDwell, "transition should dwell at source position");
-    ASSERT_TRUE(foundDestDwell, "transition should dwell at destination position");
+
+    ASSERT_TRUE(transitionStart < frame2Start, "transition should precede the next frame");
+    ASSERT_TRUE(frame2Start - transitionStart >= 5,
+                "transition should contain enough points to express easing");
+
+    ASSERT_EQ(batch[transitionStart].x, 0.0f, "transition should start at the source");
+    ASSERT_EQ(batch[frame2Start - 1].x, 1.0f, "transition should end at the destination");
+
+    const float firstDelta = batch[transitionStart + 1].x - batch[transitionStart].x;
+    const std::size_t midIndex = transitionStart + ((frame2Start - transitionStart) / 2);
+    const float midDelta = batch[midIndex].x - batch[midIndex - 1].x;
+    const float lastDelta = batch[frame2Start - 1].x - batch[frame2Start - 2].x;
+
+    ASSERT_TRUE(midDelta > firstDelta,
+                "cubic ease-in-out should move faster in the middle than at the start");
+    ASSERT_TRUE(midDelta > lastDelta,
+                "cubic ease-in-out should move faster in the middle than at the end");
 }
 
 void testHoldLastFrameOnExhaustion() {
@@ -253,7 +281,7 @@ void testEmptyFrameRejected() {
 int main() {
     testTransitionBlankingInsertedForDistantFrames();
     testNoTransitionForCloseFrames();
-    testTransitionPointsDwellAtBothEnds();
+    testTransitionPointsUseCubicEaseInOutPath();
     testHoldLastFrameOnExhaustion();
     testEmptyFrameRejected();
 

@@ -37,6 +37,16 @@ double pointsToMillis(std::size_t pointCount, std::uint32_t pointRateValue) {
     return std::max(millis, 0.0);
 }
 
+float cubicEaseInOut(float t) {
+    const float clamped = std::clamp(t, 0.0f, 1.0f);
+    if (clamped < 0.5f) {
+        return 4.0f * clamped * clamped * clamped;
+    }
+
+    const float inv = -2.0f * clamped + 2.0f;
+    return 1.0f - ((inv * inv * inv) / 2.0f);
+}
+
 template <typename... Args>
 void logSchedulerVerbose(bool verbose, Args&&... args) {
     if (verbose) {
@@ -273,11 +283,13 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
     };
 
     // Transition blanking is chunked just like oversized content frames. If a
-    // previous call could not fit the entire transition, finish draining it
-    // before returning any more content.
+    // previous call could not fit the entire transition, keep draining it and
+    // then continue into content when there is space left in this submission.
     if (!state->pendingTransitionPoints.empty()) {
         drainPendingTransitionUnsafe(outputFrame.points, maximumPointsRequired);
-        return;
+        if (outputFrame.points.size() == maximumPointsRequired) {
+            return;
+        }
     }
 
     if (state->frameQueue.empty()) {
@@ -340,7 +352,9 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
                 if (distance > blankTransitionDistanceThreshold) {
                     generateTransitionPoints(lastPoint, firstPoint, state->pendingTransitionPoints);
                     drainPendingTransitionUnsafe(outputFrame.points, maximumPointsRequired);
-                    return;
+                    if (outputFrame.points.size() == maximumPointsRequired) {
+                        return;
+                    }
                 }
 
                 continue;
@@ -389,8 +403,9 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
                                 maximumPointsRequired);
         }
 
-        outputFrame = Frame{};
-        outputFrame.time = currentFrame->time;
+        if (outputFrame.points.empty()) {
+            outputFrame.time = currentFrame->time;
+        }
         outputFrame.points.insert(outputFrame.points.end(),
                                   currentFrame->points.begin() +
                                       static_cast<std::ptrdiff_t>(currentFrame->nextPoint),
@@ -446,29 +461,27 @@ void FrameScheduler::generateTransitionPoints(const LaserPoint& from,
     const float dx = to.x - from.x;
     const float dy = to.y - from.y;
     const float distance = std::sqrt(dx * dx + dy * dy);
-    const auto count = std::max(
+    const auto countPerEnd = std::max(
         minBlankPointsPerEnd,
         static_cast<std::size_t>(distance * blankPointsPerUnitDistance));
+    const auto totalCount = std::max<std::size_t>(countPerEnd * 2, 2);
 
     out.clear();
-    out.reserve(count * 2);
+    out.reserve(totalCount);
 
-    LaserPoint blankFrom = from;
-    blankFrom.r = 0.0f;
-    blankFrom.g = 0.0f;
-    blankFrom.b = 0.0f;
-    blankFrom.i = 0.0f;
-    for (std::size_t i = 0; i < count; ++i) {
-        out.push_back(blankFrom);
-    }
+    for (std::size_t i = 0; i < totalCount; ++i) {
+        const float t = static_cast<float>(i) /
+                        static_cast<float>(std::max<std::size_t>(totalCount - 1, 1));
+        const float eased = cubicEaseInOut(t);
 
-    LaserPoint blankTo = to;
-    blankTo.r = 0.0f;
-    blankTo.g = 0.0f;
-    blankTo.b = 0.0f;
-    blankTo.i = 0.0f;
-    for (std::size_t i = 0; i < count; ++i) {
-        out.push_back(blankTo);
+        LaserPoint blankPoint = from;
+        blankPoint.x = from.x + (dx * eased);
+        blankPoint.y = from.y + (dy * eased);
+        blankPoint.r = 0.0f;
+        blankPoint.g = 0.0f;
+        blankPoint.b = 0.0f;
+        blankPoint.i = 0.0f;
+        out.push_back(blankPoint);
     }
 }
 

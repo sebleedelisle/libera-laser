@@ -142,7 +142,7 @@ void testHoldLastFrameRepeatsPreviousContent() {
     ASSERT_EQ(secondOutput.points.back().x, 23.0f, "held frame repeats the last point");
 }
 
-void testTransitionBlankFramePrecedesNextDistantFrame() {
+void testTransitionBlankingIsPrependedToNextDistantFrame() {
     FrameRequestTestController controller;
     LaserController::setTargetLatency(std::chrono::milliseconds(500));
     LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
@@ -160,19 +160,35 @@ void testTransitionBlankFramePrecedesNextDistantFrame() {
     second.time = now;
     ASSERT_TRUE(controller.sendFrame(std::move(second)), "second frame queued");
 
-    Frame transition;
-    ASSERT_TRUE(controller.requestFrameNow(64, 6, now, transition), "transition frame requested");
-    ASSERT_TRUE(!transition.points.empty(), "transition frame should contain blanks");
-    ASSERT_EQ(transition.points.front().i, 0.0f, "transition starts dark");
-    ASSERT_EQ(transition.points.back().i, 0.0f, "transition ends dark");
-    ASSERT_EQ(transition.points.front().x, 0.0f, "transition dwells at the old endpoint first");
-    ASSERT_EQ(transition.points.back().x, 1.0f, "transition finishes at the new endpoint");
-
     Frame secondOutput;
-    ASSERT_TRUE(controller.requestFrameNow(64, 6, now, secondOutput), "next content frame requested");
-    ASSERT_EQ(secondOutput.points.size(), static_cast<std::size_t>(3), "next frame size preserved");
-    ASSERT_EQ(secondOutput.points.front().x, 1.0f, "next frame starts at new position");
-    ASSERT_EQ(secondOutput.points.front().i, 1.0f, "next frame restores content intensity");
+    ASSERT_TRUE(controller.requestFrameNow(64, 6, now, secondOutput), "next frame requested");
+    ASSERT_TRUE(secondOutput.points.size() > static_cast<std::size_t>(3),
+                "next submission should include transition blanks before content");
+    ASSERT_EQ(secondOutput.points.front().i, 0.0f, "prepended transition starts dark");
+
+    bool foundInterpolatedPoint = false;
+    std::size_t contentStart = secondOutput.points.size();
+    for (std::size_t i = 0; i < secondOutput.points.size(); ++i) {
+        const auto& point = secondOutput.points[i];
+        if (!foundInterpolatedPoint &&
+            point.x > 0.0f && point.x < 1.0f &&
+            point.y > 0.0f && point.y < 1.0f &&
+            point.i == 0.0f) {
+            foundInterpolatedPoint = true;
+        }
+        if (point.i == 1.0f && point.x == 1.0f) {
+            contentStart = i;
+            break;
+        }
+    }
+
+    ASSERT_TRUE(foundInterpolatedPoint,
+                "prepended transition should interpolate between endpoints while blanked");
+    ASSERT_TRUE(contentStart < secondOutput.points.size(),
+                "content should follow the prepended transition");
+    ASSERT_EQ(secondOutput.points[contentStart].x, 1.0f, "content starts at new position");
+    ASSERT_EQ(secondOutput.points[contentStart].i, 1.0f, "content restores intensity");
+    ASSERT_EQ(secondOutput.points.back().x, 1.0f, "frame ends on the new frame content");
 }
 
 void testOversizedFrameIsDeliveredAcrossMultipleTransportFrames() {
@@ -312,7 +328,7 @@ int main() {
     testDueQueuedFramePassesThroughUnchanged();
     testFutureFrameReturnsIdleBlankFrame();
     testHoldLastFrameRepeatsPreviousContent();
-    testTransitionBlankFramePrecedesNextDistantFrame();
+    testTransitionBlankingIsPrependedToNextDistantFrame();
     testOversizedFrameIsDeliveredAcrossMultipleTransportFrames();
     testOversizedFrameFinishesItsLoopBeforeSwitchingFrames();
     testPointCallbackCanFillOneTransportFrame();
