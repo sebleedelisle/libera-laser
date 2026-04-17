@@ -129,14 +129,12 @@ public:
     MyControllerInfo(std::string id,
                      std::string label,
                      std::string transportPath)
-    : ControllerInfo(std::move(id), std::move(label))
+    : ControllerInfo("MyDac", std::move(id), std::move(label))
     , transportPathValue(std::move(transportPath)) {}
 
-    const std::string& type() const override { return typeName; }
     const std::string& transportPath() const { return transportPathValue; }
 
 private:
-    static inline const std::string typeName{"MyDac"};
     std::string transportPathValue;
 };
 
@@ -226,8 +224,9 @@ The important parts are:
   so `System` will construct it and call `discover()`
 - `id` should be stable across rescans. Prefer a serial number, MAC address,
   port path, or another physical identity instead of "device 0" style ordering.
-- `managedType()` must match `ControllerInfo::type()`. `System` uses that
-  string to route `connectController(...)` to the right manager.
+- pass the same backend type string into `ControllerInfo(...)` that
+  `managedType()` returns. `System` uses that shared value to route
+  `connectController(...)` to the right manager.
 - if the live-controller cache should be keyed by something else such as a USB
   port path or a protocol unit id, override `controllerKey(...)`
 - if discovery learns something needed to reconnect to the exact device later

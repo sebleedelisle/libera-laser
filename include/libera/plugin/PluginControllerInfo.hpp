@@ -12,14 +12,12 @@ class PluginControllerInfo : public core::ControllerInfo {
 public:
     PluginControllerInfo(const libera_controller_info_t& pluginInfo,
                          std::string pluginTypeName)
-    : ControllerInfo(pluginInfo.id,
+    : ControllerInfo(std::move(pluginTypeName),
+                     pluginInfo.id,
                      pluginInfo.label,
                      pluginInfo.max_point_rate,
                      makeNetworkInfo(pluginInfo))
-    , info(pluginInfo)
-    , pluginType(std::move(pluginTypeName)) {}
-
-    const std::string& type() const override { return pluginType; }
+    , info(pluginInfo) {}
 
     const libera_controller_info_t& pluginInfo() const { return info; }
 
@@ -37,7 +35,6 @@ private:
     }
 
     libera_controller_info_t info{};
-    std::string pluginType;
 };
 
 } // namespace libera::plugin

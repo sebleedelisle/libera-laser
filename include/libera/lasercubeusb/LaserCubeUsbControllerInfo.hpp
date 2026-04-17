@@ -9,17 +9,17 @@ namespace libera::lasercubeusb {
 class LaserCubeUsbControllerInfo : public core::ControllerInfo {
 public:
     LaserCubeUsbControllerInfo(std::string serial,
-                           std::string label,
-                           std::uint32_t maxPointRateValue = 0)
-    : ControllerInfo(std::move(serial), std::move(label), maxPointRateValue)
+                               std::string label,
+                               std::uint32_t maxPointRateValue = 0)
+    : ControllerInfo("LaserCubeUSB",
+                     std::move(serial),
+                     std::move(label),
+                     maxPointRateValue)
     , serialNumber(idValue()) {}
-
-    const std::string& type() const override { return typeName; }
 
     const std::string& serial() const { return serialNumber; }
 
 private:
-    static inline const std::string typeName{"LaserCubeUSB"};
     std::string serialNumber;
 };
 

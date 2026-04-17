@@ -28,17 +28,23 @@ public:
         std::uint16_t port = 0;
     };
 
-    ControllerInfo(std::string id,
+    // The base owns the backend type string so discovery records and manager
+    // routing stay aligned without every ControllerInfo subclass repeating the
+    // same trivial type() override.
+    ControllerInfo(std::string typeValue,
+                   std::string id,
                    std::string label,
                    std::uint32_t maxPointRateValue = 0,
                    std::optional<NetworkInfo> networkInfo = std::nullopt)
-    : id(std::move(id))
+    : typeString(std::move(typeValue))
+    , id(std::move(id))
     , label(std::move(label))
     , maxPointRateValue(maxPointRateValue)
     , networkInfoValue(std::move(networkInfo)) {}
 
     virtual ~ControllerInfo() = default;
 
+    const std::string& type() const { return typeString; }
     const std::string& idValue() const { return id; }
     const std::string& labelValue() const { return label; }
     std::uint32_t maxPointRate() const { return maxPointRateValue; }
@@ -46,9 +52,9 @@ public:
     const std::optional<NetworkInfo>& networkInfo() const { return networkInfoValue; }
     ControllerUsageState usageState() const { return usageStateValue; }
     void setUsageState(ControllerUsageState value) { usageStateValue = value; }
-    virtual const std::string& type() const = 0;
 
 protected:
+    std::string typeString;
     std::string id;
     std::string label;
     std::uint32_t maxPointRateValue = 0;

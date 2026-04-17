@@ -25,14 +25,11 @@ namespace {
 class DummyInfo : public ControllerInfo {
 public:
     DummyInfo(std::string id, std::string label, std::string reconnectKey)
-    : ControllerInfo(std::move(id), std::move(label))
+    : ControllerInfo("Dummy", std::move(id), std::move(label))
     , reconnectKeyValue(std::move(reconnectKey)) {}
-
-    const std::string& type() const override { return typeName; }
     const std::string& reconnectKey() const { return reconnectKeyValue; }
 
 private:
-    static inline const std::string typeName{"Dummy"};
     std::string reconnectKeyValue;
 };
 

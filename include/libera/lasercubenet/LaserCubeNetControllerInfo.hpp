@@ -13,10 +13,7 @@ public:
     const std::string& serial() const { return serialNumber; }
     const LaserCubeNetStatus& status() const { return cachedStatus; }
 
-    const std::string& type() const override { return typeName; }
-
 private:
-    static const std::string typeName;
     std::string ip;
     std::string serialNumber;
     LaserCubeNetStatus cachedStatus;

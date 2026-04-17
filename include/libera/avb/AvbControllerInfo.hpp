@@ -27,7 +27,8 @@ public:
                       std::uint32_t channelOffset,
                       std::uint32_t channelCount,
                       PointRateCapabilities pointRates)
-    : core::ControllerInfo(std::move(id),
+    : core::ControllerInfo("AVB",
+                           std::move(id),
                            std::move(label),
                            std::max(pointRates.maxPointRate, pointRates.defaultPointRate))
     , deviceUidValue(std::move(deviceUid))
@@ -36,8 +37,6 @@ public:
     , channelCountValue(channelCount)
     , pointRateCapabilities(std::move(pointRates)) {}
 
-    const std::string& type() const override { return typeName; }
-
     const std::string& deviceUid() const { return deviceUidValue; }
     const std::string& deviceName() const { return deviceNameValue; }
     std::uint32_t channelOffset() const { return channelOffsetValue; }
@@ -45,8 +44,6 @@ public:
     const PointRateCapabilities& pointRates() const { return pointRateCapabilities; }
 
 private:
-    static inline const std::string typeName{"AVB"};
-
     std::string deviceUidValue;
     std::string deviceNameValue;
     std::uint32_t channelOffsetValue = 0;

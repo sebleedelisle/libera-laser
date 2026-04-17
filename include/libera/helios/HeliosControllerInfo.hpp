@@ -14,12 +14,13 @@ public:
                          std::string usbPortPathValue,
                          bool usbController,
                          int firmwareVersionValue)
-    : ControllerInfo(std::move(id), std::move(label), maxPointRateValue)
+    : ControllerInfo("Helios",
+                     std::move(id),
+                     std::move(label),
+                     maxPointRateValue)
     , usbPortPath(std::move(usbPortPathValue))
     , isUsb(usbController)
     , firmwareVersion(firmwareVersionValue) {}
-
-    const std::string& type() const override { return typeName; }
 
     // For Helios USB we intentionally identify the physical device by USB port
     // path rather than a vendor-SDK index.
@@ -36,8 +37,6 @@ public:
     int firmwareVersionValue() const { return firmwareVersion; }
 
 private:
-    static inline const std::string typeName{"Helios"};
-
     std::string usbPortPath;
     bool isUsb = false;
     int firmwareVersion = 0;
