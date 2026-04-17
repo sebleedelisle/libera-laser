@@ -214,7 +214,8 @@ That means most built-in backends only need to implement:
 
 If the backend has a more unusual shape such as shared multi-controller device
 runtimes, then deriving directly from `AbstractControllerManager` can still make
-sense. `AVB` is the current example of that, and it still reuses
+sense. `AVB` is the current example of that. It keeps its shared
+runtime/configuration state in a dedicated backend helper and still reuses
 `ControllerCache` directly for one-live-controller-per-id bookkeeping.
 
 The important parts are:
