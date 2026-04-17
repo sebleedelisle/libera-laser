@@ -2,6 +2,10 @@
 
 #include "libera/core/ControllerManagerBase.hpp"
 #include "libera/lasercubenet/LaserCubeNetControllerInfo.hpp"
+// ControllerManagerBase has inline lifecycle code that calls controller methods,
+// so this manager header needs the full controller type for stricter compilers
+// such as MSVC.
+#include "libera/lasercubenet/LaserCubeNetController.hpp"
 #include "libera/lasercubenet/LaserCubeNetConfig.hpp"
 #include "libera/lasercubenet/LaserCubeNetStatus.hpp"
 #include "libera/net/UdpSocket.hpp"
@@ -15,8 +19,6 @@
 #include <unordered_map>
 
 namespace libera::lasercubenet {
-
-class LaserCubeNetController;
 
 class LaserCubeNetManager
     : public core::ControllerManagerBase<LaserCubeNetControllerInfo,
