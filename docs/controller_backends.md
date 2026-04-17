@@ -146,8 +146,13 @@ class MyManager
     : public core::ControllerManagerBase<MyControllerInfo,
                                          MyController> {
 public:
-    std::vector<std::unique_ptr<core::ControllerInfo>> discover() override {
-        std::vector<std::unique_ptr<core::ControllerInfo>> results;
+    using Base = core::ControllerManagerBase<MyControllerInfo, MyController>;
+    using DiscoveredControllers =
+        std::vector<std::unique_ptr<core::ControllerInfo>>;
+    using NewControllerDisposition = Base::NewControllerDisposition;
+
+    DiscoveredControllers discover() override {
+        DiscoveredControllers results;
 
         for (const VendorDeviceSummary& device : vendorEnumerateDevices()) {
             auto info = std::make_unique<MyControllerInfo>(
@@ -164,16 +169,15 @@ public:
 
         return results;
     }
-    std::shared_ptr<MyController>
-    createController(const MyControllerInfo& info) override {
+
+    ControllerPtr createController(const MyControllerInfo& info) override {
         if (!sdkReady()) {
             return nullptr;
         }
         return std::make_shared<MyController>();
     }
 
-    core::ControllerManagerBase<MyControllerInfo, MyController>
-        ::NewControllerDisposition
+    NewControllerDisposition
     prepareNewController(MyController& controller,
                          const MyControllerInfo& info) override {
         // Connect using the exact path discovered earlier rather than trying
