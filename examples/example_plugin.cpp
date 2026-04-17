@@ -83,7 +83,7 @@ void hostLog(ExampleBackend* backend,
 void* createBackend(const libera_host_services_t* host) {
     auto* backend = new ExampleBackend;
     backend->host = host;
-    hostLog(backend, LIBERA_LOG_INFO, "Example plugin backend created");
+    hostLog(backend, LIBERA_LOG_INFO, "Acme example plugin backend created");
     return backend;
 }
 
@@ -93,7 +93,7 @@ void destroyBackend(void* rawBackend) {
         return;
     }
 
-    hostLog(backend, LIBERA_LOG_INFO, "Example plugin backend destroyed");
+    hostLog(backend, LIBERA_LOG_INFO, "Acme example plugin backend destroyed");
     delete backend;
 }
 
@@ -106,7 +106,13 @@ void discover(void* rawBackend,
     }
 
     libera_controller_info_t info;
-    libera_controller_info_init(&info, "example-dac-1", "Example DAC", 30000);
+    // Use one naming scheme consistently:
+    // - type_name / display_name describe the Acme DAC family
+    // - id / label describe this one discovered controller instance
+    libera_controller_info_init(&info,
+                                "acme-usb-001",
+                                "Acme USB DAC #1",
+                                30000);
     info.usage_state = LIBERA_CONTROLLER_USAGE_IDLE;
 
     // The cookie is copied back into connect_controller(). For real hardware
@@ -116,14 +122,14 @@ void discover(void* rawBackend,
 
     emit(ctx, &info);
 
-    hostLog(backend, LIBERA_LOG_INFO, "Example plugin discover() emitted one controller");
+    hostLog(backend, LIBERA_LOG_INFO, "Acme example plugin discover() emitted one controller");
 }
 
 void* connectController(void* rawBackend,
                         const libera_controller_info_t* info,
                         libera_host_ctx_t hostCtx) {
     auto* backend = static_cast<ExampleBackend*>(rawBackend);
-    if (!info || std::strcmp(info->id, "example-dac-1") != 0) {
+    if (!info || std::strcmp(info->id, "acme-usb-001") != 0) {
         return nullptr;
     }
 
@@ -214,7 +220,7 @@ int readProperty(void* rawController,
     const char* value = nullptr;
     switch (propertyIndex) {
         case 0:
-            value = "example-dac-1";
+            value = "acme-usb-001";
             break;
         case 1:
             value = "simulated";
@@ -232,8 +238,8 @@ int readProperty(void* rawController,
 
 const libera_plugin_api_t examplePluginApi = {
     /* abi_version        */ LIBERA_PLUGIN_API_VERSION,
-    /* type_name          */ "Example",
-    /* display_name       */ "Example Plugin",
+    /* type_name          */ "AcmeUsbDac",
+    /* display_name       */ "Acme USB DAC",
     /* create_backend     */ &createBackend,
     /* destroy_backend    */ &destroyBackend,
     /* rescan             */ nullptr,

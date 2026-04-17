@@ -237,6 +237,13 @@ rebuild the same safety boilerplate:
 
 ## Minimal example
 
+In the examples below:
+
+- `type_name` identifies the controller family or backend type
+- `display_name` is the human-readable family name
+- `id` is the stable identifier for one discovered device
+- `label` is the human-readable per-device name
+
 ### Point-ingester
 
 ```c
@@ -253,7 +260,10 @@ static void discover(void* rawBackend,
                      libera_emit_controller_fn emit,
                      void* ctx) {
     libera_controller_info_t info;
-    libera_controller_info_init(&info, "dac-1", "My DAC", 30000);
+    libera_controller_info_init(&info,
+                                "acme-usb-001",
+                                "Acme USB DAC #1",
+                                30000);
     emit(ctx, &info);
 }
 
@@ -285,8 +295,8 @@ static libera_status_t send_points(void* rawController,
 
 static const libera_plugin_api_t pluginApi = {
     .abi_version = LIBERA_PLUGIN_API_VERSION,
-    .type_name = "MyDac",
-    .display_name = "My DAC",
+    .type_name = "AcmeUsbDac",
+    .display_name = "Acme USB DAC",
     .discover = discover,
     .connect_controller = connect_controller,
     .destroy_controller = destroy_controller,
@@ -332,8 +342,8 @@ Then wire those fields into `libera_plugin_api_t`:
 ```c
 static const libera_plugin_api_t pluginApi = {
     .abi_version = LIBERA_PLUGIN_API_VERSION,
-    .type_name = "MyFrameDac",
-    .display_name = "My Frame DAC",
+    .type_name = "AcmeFrameDac",
+    .display_name = "Acme Frame DAC",
     .discover = discover,
     .connect_controller = connect_controller,
     .destroy_controller = destroy_controller,
