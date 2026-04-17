@@ -123,6 +123,12 @@ thread. In practice the pattern is:
   without permanently claiming the device
 - let the manager reuse one live controller per stable discovery key
 
+Read the example below in this order:
+
+1. `MyControllerInfo` stores the exact reconnect metadata.
+2. `discover()` builds lightweight info objects from a hardware scan.
+3. `prepareNewController()` uses the stored metadata to open the device.
+
 ```cpp
 class MyControllerInfo : public core::ControllerInfo {
 public:
@@ -147,29 +153,34 @@ class MyManager
                                          MyController> {
 public:
     using Base = core::ControllerManagerBase<MyControllerInfo, MyController>;
+    using ControllerPtr = Base::ControllerPtr;
     using DiscoveredControllers =
         std::vector<std::unique_ptr<core::ControllerInfo>>;
     using NewControllerDisposition = Base::NewControllerDisposition;
 
+    // Step 1: discovery should only describe what exists right now.
+    // It should not keep a long-lived claim on the hardware.
     DiscoveredControllers discover() override {
         DiscoveredControllers results;
 
         for (const VendorDeviceSummary& device : vendorEnumerateDevices()) {
-            auto info = std::make_unique<MyControllerInfo>(
+            auto controllerInfo = std::make_unique<MyControllerInfo>(
                 device.stableId,
                 device.friendlyName,
                 device.transportPath);
 
-            // Discovery should describe the device and then get out of the way.
-            info->setMaxPointRate(device.maxPointRate);
-            info->setUsageState(probeUsageState(device));
+            controllerInfo->setMaxPointRate(device.maxPointRate);
+            controllerInfo->setUsageState(probeUsageState(device));
 
-            results.emplace_back(std::move(info));
+            results.emplace_back(std::move(controllerInfo));
         }
 
         return results;
     }
 
+protected:
+    // Step 2: create the controller object.
+    // This is just allocation/setup, not the device-specific connect step.
     ControllerPtr createController(const MyControllerInfo& info) override {
         if (!sdkReady()) {
             return nullptr;
@@ -177,11 +188,10 @@ public:
         return std::make_shared<MyController>();
     }
 
+    // Step 3: connect using the exact reconnect metadata discovered earlier.
     NewControllerDisposition
     prepareNewController(MyController& controller,
                          const MyControllerInfo& info) override {
-        // Connect using the exact path discovered earlier rather than trying
-        // to find the device again by a friendly label.
         if (!controller.connect(info.transportPath())) {
             return NewControllerDisposition::DropController;
         }
@@ -190,6 +200,7 @@ public:
         return NewControllerDisposition::KeepController;
     }
 
+    // Optional: only override this if shutdown needs backend-specific cleanup.
     void closeController(const std::string& key,
                          MyController& controller) override {
         (void)key;
