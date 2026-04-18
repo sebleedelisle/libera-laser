@@ -1,8 +1,8 @@
 # Integrating Libera into your laser app
 
-This guide walks through adding Libera to an application that needs to send points
-to a laser. If you have never worked with laser control software before, don't
-worry — the terms are explained as they come up.
+This guide walks through adding Libera to an application in order to send content
+to display lasers. If you have never worked with laser control software before, don't
+worry - the terms are explained as they come up.
 
 ## What Libera does for you
 
@@ -12,17 +12,17 @@ the hardware boxes (or network devices) that take point data from your computer
 and turn it into the signals that drive a display laser's colours, brightness and
 scanning mirrors. Libera gives you:
 
-- **Discovery** — a single call that finds every supported controller currently
+- **Discovery** - a single call that finds every supported controller currently
   visible on your machine and network, regardless of brand.
-- **A common API** — once you've connected to a controller, the rest of your
+- **A common API** - once you've connected to a controller, the rest of your
   code looks the same whether you're talking to an Ether Dream, a Helios, a
   LaserCube, or anything else Libera supports.
-- **Streaming and frame buffering** — it handles the timing-sensitive work of
+- **Streaming and frame buffering** - it handles the timing-sensitive work of
   keeping each controller's buffer topped up so the laser output stays smooth.
 
 > **A note on terminology.** You may have heard these devices called *DACs*
 > (digital-to-analogue converters) elsewhere. Libera calls them **controllers**,
-> because modern devices do more than just convert signals — and some newer
+> because modern devices do more than just convert signals - and some newer
 > ones don't convert to analogue at all. Similarly, the scanning show laser
 > itself is just called a **laser**, not a "projector".
 
@@ -77,7 +77,7 @@ libera::System::addPluginDirectory("/absolute/path/to/more/plugins");
 libera::System liberaSystem;
 ```
 
-## Step 1 — discover controllers
+## Step 1 - discover controllers
 
 `discoverControllers()` returns a list of `ControllerInfo` objects describing
 what Libera can currently see:
@@ -95,10 +95,10 @@ Discovery is cheap to call repeatedly. In a real app you'd typically call it on
 a timer (once per second or so) or while the user is on a "select device" screen,
 because USB devices come and go and network devices take a moment to appear.
 
-Each `ControllerInfo` is just a description — no hardware connection has been
+Each `ControllerInfo` is just a description - no hardware connection has been
 opened yet.
 
-## Step 2 — connect to a controller
+## Step 2 - connect to a controller
 
 Pass the `ControllerInfo` you want to `connectController()`:
 
@@ -107,7 +107,7 @@ std::shared_ptr<core::LaserController> controller =
     liberaSystem.connectController(*discovered.front());
 
 if (!controller) {
-    // Connection failed — log and move on.
+    // Connection failed - log and move on.
     return;
 }
 ```
@@ -125,7 +125,7 @@ std::cout << controller->getName() << "\n";  // e.g. "Ether Dream 1234"
 std::cout << controller->getID()   << "\n";  // stable unique identifier
 ```
 
-## Step 3 — arm the controller
+## Step 3 - arm the controller
 
 Controllers start in an **unarmed** state and will not emit any light until you
 explicitly arm them. This is a deliberate safety step:
@@ -145,7 +145,7 @@ as an laser enable / disable for simpler apps.
 
 Both of the ways you'll send data to the laser (described in the next section)
 are built on the same building block: the `LaserPoint`. One `LaserPoint` is a
-single sample — a single position with a single colour — that the scanner will
+single sample - a single position with a single colour - that the scanner will
 visit for a tiny fraction of a second.
 
 ```cpp
@@ -162,14 +162,14 @@ struct LaserPoint {
 ```
 
 - **`x`, `y`** use **normalised coordinates**: `-1..+1` spans the full scan
-  area, with `0, 0` at the centre. This is independent of the hardware — you
+  area, with `0, 0` at the centre. This is independent of the hardware - you
   never need to know the device's native resolution.
 - **`r`, `g`, `b`** are colour channels in the range `0..1`. `0, 0, 0` is a
   **blanked** point (the laser is dark but the scanner still moves to that
   position), which is how you draw separate shapes without a line between them.
 - **`i`** is a legacy master-intensity channel kept around for controllers
   that still require it. Leave it at `1.0` unless you know you need it.
-- **`u1`, `u2`** are user fields reserved for extensions — things like
+- **`u1`, `u2`** are user fields reserved for extensions - things like
   waveform synthesis or per-point safety masks. Ignore them for normal use.
 
 A couple of example points:
@@ -184,7 +184,7 @@ core::LaserPoint green{-0.5f, -0.5f, 0.0f, 1.0f, 0.0f };   // bottom-left, green
 > developing, keep your colour values low (say `0.1`–`0.2`) until you're
 > confident your geometry is doing what you expect.
 
-## Step 4 — send points
+## Step 4 - send points
 
 Libera gives you two ways to feed points to a controller. Both are supported on
 every controller type; pick whichever suits your app.
@@ -195,7 +195,7 @@ shared frame queue automatically.
 
 ### Frame mode (easier)
 
-A **frame** is simply a list of points that make up one drawing — one circle,
+A **frame** is simply a list of points that make up one drawing - one circle,
 one line of text, one animated shape at one instant in time. In frame mode you
 build a whole frame, hand it to Libera, and Libera worries about how fast to
 stream it to the hardware.
@@ -229,7 +229,7 @@ to the hardware at the right pace.
 
 **Hold time and auto-blanking.** By default, if no new frame arrives within
 100 ms the last frame stops looping and output goes blank automatically. This
-means your laser turns off cleanly if your app pauses or stops sending — no
+means your laser turns off cleanly if your app pauses or stops sending - no
 extra code required. You can adjust the window with `setMaxFrameHoldTime()`,
 or set it to zero to loop the last frame indefinitely:
 
@@ -263,7 +263,7 @@ The callback runs on a Libera-owned thread, so keep it quick and don't block.
 If you share state between the callback and your main thread, protect it with a
 lock or a lock-free structure.
 
-## Step 5 — shut down cleanly
+## Step 5 - shut down cleanly
 
 When you're done:
 
@@ -325,5 +325,5 @@ int main() {
 }
 ```
 
-For fuller examples — including a streaming-callback demo and a multi-device
-selector — see the `examples/` directory in this repository.
+For fuller examples - including a streaming-callback demo and a multi-device
+selector - see the `examples/` directory in this repository.
