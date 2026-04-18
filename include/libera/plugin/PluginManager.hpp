@@ -19,6 +19,7 @@ struct LoadedPlugin {
     void* backendHandle = nullptr;
     std::string typeName;
     std::string displayName;
+    std::string path;
     bool initialised = false;
 };
 

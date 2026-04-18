@@ -28,7 +28,8 @@ class PluginController : public core::LaserController {
 public:
     PluginController(const libera_plugin_api_t* api,
                      void* backendHandle,
-                     const libera_controller_info_t& controllerInfo);
+                     const libera_controller_info_t& controllerInfo,
+                     std::string pluginPath = {});
     ~PluginController() override;
 
     bool open();
@@ -55,6 +56,7 @@ private:
     const libera_plugin_api_t* api = nullptr;
     void* backendHandle = nullptr;
     libera_controller_info_t controllerInfo{};
+    std::string pluginPath;
     void* pluginHandle = nullptr;
     std::atomic<bool> connected{false};
 

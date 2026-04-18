@@ -2,6 +2,7 @@
 
 #include "libera/core/BufferEstimator.hpp"
 #include "libera/log/Log.hpp"
+#include "libera/plugin/PluginRegistry.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -87,10 +88,12 @@ std::optional<std::uint32_t> propertyIndexForKey(const libera_plugin_api_t* api,
 
 PluginController::PluginController(const libera_plugin_api_t* api,
                                    void* backendHandle,
-                                   const libera_controller_info_t& controllerInfo)
+                                   const libera_controller_info_t& controllerInfo,
+                                   std::string pluginPath)
 : api(api)
 , backendHandle(backendHandle)
-, controllerInfo(controllerInfo) {}
+, controllerInfo(controllerInfo)
+, pluginPath(std::move(pluginPath)) {}
 
 PluginController::~PluginController() {
     stopThread();
@@ -111,6 +114,12 @@ bool PluginController::open() {
         static_cast<libera_host_ctx_t>(this));
     if (!pluginHandle) {
         libera::log::logError("Plugin: failed to connect to ", controllerInfo.id);
+        if (!pluginPath.empty()) {
+            PluginRegistry::instance().pushRuntimeError(
+                pluginPath,
+                "connect.failed",
+                std::string("connect_controller failed for ") + controllerInfo.id);
+        }
         return false;
     }
 
@@ -232,13 +241,16 @@ std::optional<std::string> PluginController::getProperty(const std::string& key)
     return big;
 }
 
-void PluginController::reportErrorFromPlugin(const char* code, const char* /*label*/) {
-    if (!code || !*code) {
-        recordIntermittentError("plugin.error");
-        return;
-    }
+void PluginController::reportErrorFromPlugin(const char* code, const char* label) {
+    const std::string codeString = (code && *code) ? code : "plugin.error";
+    recordIntermittentError(codeString);
 
-    recordIntermittentError(code);
+    if (!pluginPath.empty()) {
+        PluginRegistry::instance().pushRuntimeError(
+            pluginPath,
+            codeString,
+            label ? label : std::string{});
+    }
 }
 
 void PluginController::run() {

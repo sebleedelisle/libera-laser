@@ -1,6 +1,7 @@
 #include "libera/plugin/PluginManager.hpp"
 
 #include "libera/plugin/PluginControllerInfo.hpp"
+#include "libera/plugin/PluginRegistry.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -120,49 +121,35 @@ bool isSharedLibrary(const fs::path& path) {
     return ext == ".dylib" || ext == ".so" || ext == ".dll";
 }
 
-bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
+std::string validatePluginApi(const libera_plugin_api_t* api) {
     if (!api) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " returned a null API table");
-        return false;
+        return "returned a null API table";
     }
 
     if (api->abi_version != LIBERA_PLUGIN_API_VERSION) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " has API version ", api->abi_version,
-                              ", expected ",
-                              LIBERA_PLUGIN_API_VERSION);
-        return false;
+        return "ABI version mismatch (plugin=" +
+               std::to_string(api->abi_version) +
+               ", host=" + std::to_string(LIBERA_PLUGIN_API_VERSION) + ")";
     }
 
     if (!api->type_name || !*api->type_name) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " did not provide a type_name");
-        return false;
+        return "missing type_name";
     }
 
     if (!api->display_name || !*api->display_name) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " did not provide a display_name");
-        return false;
+        return "missing display_name";
     }
 
     if (!api->discover) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " is missing discover()");
-        return false;
+        return "missing discover()";
     }
 
     if (!api->connect_controller) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " is missing connect_controller()");
-        return false;
+        return "missing connect_controller()";
     }
 
     if (!api->destroy_controller) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " is missing destroy_controller()");
-        return false;
+        return "missing destroy_controller()";
     }
 
     const bool hasPointTransport = api->send_points != nullptr;
@@ -170,35 +157,23 @@ bool validatePluginApi(const libera_plugin_api_t* api, const fs::path& path) {
     const bool hasFrameRequirements = api->get_frame_requirements != nullptr;
     const bool hasFrameSender = api->send_frame != nullptr;
     if (hasFrameRequirements != hasFrameSender) {
-        libera::log::logError(
-            "Plugin: ",
-            path.string(),
-            " must provide both get_frame_requirements() and send_frame()");
-        return false;
+        return "must provide both get_frame_requirements() and send_frame()";
     }
     const bool hasFrameTransport = hasFrameRequirements && hasFrameSender;
 
     if (!hasPointTransport && !hasFrameTransport) {
-        libera::log::logError(
-            "Plugin: ",
-            path.string(),
-            " is missing send_points() or get_frame_requirements()+send_frame()");
-        return false;
+        return "missing send_points() or get_frame_requirements()+send_frame()";
     }
 
     if (api->property_count > 0 && !api->properties) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " declared properties without a property table");
-        return false;
+        return "declared properties without a property table";
     }
 
     if (api->property_count > 0 && !api->read_property) {
-        libera::log::logError("Plugin: ", path.string(),
-                              " declared properties without read_property()");
-        return false;
+        return "declared properties without read_property()";
     }
 
-    return true;
+    return {};
 }
 
 core::ControllerUsageState toUsageState(libera_controller_usage_state_t usageState) {
@@ -216,24 +191,42 @@ core::ControllerUsageState toUsageState(libera_controller_usage_state_t usageSta
 }
 
 std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
-    void* handle = openLibrary(path.string());
+    auto& registry = PluginRegistry::instance();
+    const std::string pathString = path.string();
+
+    void* handle = openLibrary(pathString);
     if (!handle) {
-        libera::log::logError("Plugin: failed to load ", path.string(),
-                              ": ", libraryError());
+        const std::string error = libraryError();
+        libera::log::logError("Plugin: failed to load ", pathString,
+                              ": ", error);
+        registry.recordFailure(pathString, PluginState::FailedLoad, error);
         return nullptr;
     }
 
     auto getApi = resolveSymbol<decltype(&libera_plugin_get_api)>(
         handle, "libera_plugin_get_api");
     if (!getApi) {
-        // Not a Libera plugin — silently skip things like vendor SDKs.
         closeLibrary(handle);
+        registry.recordFailure(pathString,
+                               PluginState::NotAPlugin,
+                               "Missing libera_plugin_get_api symbol");
         return nullptr;
     }
 
     const libera_plugin_api_t* api = getApi();
-    if (!validatePluginApi(api, path)) {
+    const std::string validationError = validatePluginApi(api);
+    if (!validationError.empty()) {
+        const std::string typeName =
+            (api && api->type_name) ? api->type_name : "";
+        const std::string displayName =
+            (api && api->display_name) ? api->display_name : "";
+        libera::log::logError("Plugin: ", pathString, " ", validationError);
         closeLibrary(handle);
+        registry.recordFailure(pathString,
+                               PluginState::FailedValidation,
+                               validationError,
+                               typeName,
+                               displayName);
         return nullptr;
     }
 
@@ -241,9 +234,14 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
     if (api->create_backend) {
         backendHandle = api->create_backend(&kHostServices);
         if (!backendHandle) {
-            libera::log::logError("Plugin: ", path.string(),
+            libera::log::logError("Plugin: ", pathString,
                                   " create_backend() failed");
             closeLibrary(handle);
+            registry.recordFailure(pathString,
+                                   PluginState::FailedBackend,
+                                   "create_backend() returned null",
+                                   api->type_name,
+                                   api->display_name);
             return nullptr;
         }
     }
@@ -254,6 +252,7 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
     plugin->backendHandle = backendHandle;
     plugin->typeName = api->type_name;
     plugin->displayName = api->display_name;
+    plugin->path = pathString;
     plugin->initialised = true;
 
     libera::log::logInfo("Plugin: loaded \"", plugin->displayName,
@@ -265,6 +264,7 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
                          pluginApiSupportsFrameTransport(api) ? "frame" : "point",
                          ") from ",
                          path.filename().string());
+    registry.recordLoaded(pathString, plugin->typeName, plugin->displayName);
     return plugin;
 }
 
@@ -330,7 +330,8 @@ PluginDelegateManager::createController(const PluginControllerInfo& info) {
     return std::make_shared<PluginController>(
         plugin->api,
         plugin->backendHandle,
-        info.pluginInfo());
+        info.pluginInfo(),
+        plugin->path);
 }
 
 PluginDelegateManager::NewControllerDisposition
