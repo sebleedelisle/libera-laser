@@ -15,6 +15,18 @@ void PointStreamFramer::setMaxFrameSize(std::size_t size) {
     maxFrameSize = std::max<std::size_t>(size, 1);
 }
 
+void PointStreamFramer::setVirtualBufferTarget(std::size_t size) {
+    virtualBufferTarget = size;
+}
+
+void PointStreamFramer::setTransportBufferedPoints(std::size_t size) {
+    transportBufferedPoints = size;
+}
+
+std::size_t PointStreamFramer::bufferedPointCount() const {
+    return accumulator.size();
+}
+
 bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
                                      const PointFillRequest& templateRequest,
                                      Frame& outputFrame) {
@@ -28,12 +40,17 @@ bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
     const float maxFactor = (consecutiveForceEmits >= forceEmitFallbackCount)
                                 ? 1.1f
                                 : searchWindowMaxFactor;
-    const std::size_t targetAccumulation =
+    const std::size_t lookaheadTarget =
         std::min(static_cast<std::size_t>(nominalFrameSize * maxFactor), maxFrameSize);
+    const std::size_t desiredBufferedPoints =
+        std::max(virtualBufferTarget, lookaheadTarget);
+    const std::size_t currentBufferedPoints = transportBufferedPoints + accumulator.size();
 
-    // Pull enough points to reach the target accumulation level.
-    if (accumulator.size() < targetAccumulation) {
-        const std::size_t deficit = targetAccumulation - accumulator.size();
+    // Pull only the deficit needed to reach the shared virtual backlog target.
+    // This keeps callback generation bounded when the frame transport is
+    // already sitting on a deep queue of previously accepted frames.
+    if (currentBufferedPoints < desiredBufferedPoints) {
+        const std::size_t deficit = desiredBufferedPoints - currentBufferedPoints;
         pullPoints(callback, templateRequest, deficit);
     }
 
@@ -94,6 +111,8 @@ void PointStreamFramer::reset() {
     anchorX = 0.0f;
     anchorY = 0.0f;
     anchorSet = false;
+    virtualBufferTarget = 0;
+    transportBufferedPoints = 0;
     consecutiveForceEmits = 0;
     totalPointsConsumed = 0;
 }
@@ -106,7 +125,9 @@ void PointStreamFramer::pullPoints(const RequestPointsCallback& callback,
     PointFillRequest req = templateRequest;
     req.minimumPointsRequired = count;
     req.maximumPointsRequired = count;
-    req.currentPointIndex = totalPointsConsumed;
+    // Keep the callback's absolute point index advancing from the transport's
+    // current playout cursor rather than restarting at zero inside the framer.
+    req.currentPointIndex = templateRequest.currentPointIndex + totalPointsConsumed;
 
     std::vector<LaserPoint> batch;
     batch.reserve(count);

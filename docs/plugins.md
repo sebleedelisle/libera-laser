@@ -212,6 +212,14 @@ uses different readiness signals depending on the transport shape:
   more frame now. Return `LIBERA_ERR_BUSY` when the transport is not ready yet;
   the host waits briefly and asks again.
 
+  When the active content source is a live point callback, the host also keeps
+  a shared virtual point backlog for the callback-to-frame adapter. That
+  backlog includes points already accepted through successful `send_frame()`
+  calls plus any extra points currently staged inside the adapter while it
+  searches for natural frame boundaries. The host uses that shared backlog to
+  decide how many more callback points to request, so frame-ingester plugins do
+  not need to invent their own point-side pacing policy.
+
 Two details are important:
 
 - `send_points()` / `send_frame()` are submission calls, not readiness polls.
@@ -221,6 +229,12 @@ Two details are important:
   automatic point-rate-based feeding. In that mode the host does not try to
   maintain a specific device-side buffer level; it derives a fixed batch size
   from the current point rate and keeps submitting on its own cadence.
+- A frame-ingester plugin does not need `get_buffer_state()` for that callback
+  adaptation path to work. The host can synthesize a virtual backlog from
+  accepted `send_frame()` submissions. If the plugin does expose
+  `get_buffer_state()`, the host uses that as the transport-side truth and
+  still adds the adapter's own staged points on top when reporting the shared
+  buffered-point view.
 
 ## Helper utilities
 
@@ -415,6 +429,12 @@ The plugin's job is just to:
 
 Whether the application is using queued frames or a live point callback, the
 host adapts that content source into the payload shape the plugin asked for.
+
+For frame-ingester plugins, that host-owned adaptation now also includes the
+virtual point backlog used to throttle live callbacks. The plugin still only
+needs to expose frame readiness and accept frames; the host keeps the callback
+side from overfilling the transport by accounting for both accepted frames and
+any points staged in the shared framer.
 
 If your vendor SDK is internally frame-based, prefer the
 `get_frame_requirements()` + `send_frame()` path so the plugin stays aligned

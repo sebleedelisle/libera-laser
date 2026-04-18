@@ -629,7 +629,7 @@ void HeliosController::prepareForShutdown() {
 
 void HeliosController::close() {
     setConnectionState(false);
-    clearEstimatedBufferState();
+    clearFrameTransportSubmissionEstimate();
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
     if (sdk) {
         sdk->Stop(index.load(std::memory_order_relaxed));
@@ -668,7 +668,7 @@ void HeliosController::updateControllerIndex(unsigned int controllerIndex) {
     consecutiveStatusErrors = 0;
     consecutiveWriteErrors = 0;
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
-    updateEstimatedBufferSnapshotNow(0, getPointRate());
+    clearFrameTransportSubmissionEstimate();
     statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
     resetStartupBlank();
 }
@@ -747,6 +747,7 @@ void HeliosController::run() {
                 recordConnectionError(error_types::usb::connectionLost);
             }
             setConnectionState(false);
+            clearFrameTransportSubmissionEstimate();
             wasConnected = false;
             std::this_thread::sleep_for(100ms);
             continue;
@@ -795,9 +796,6 @@ void HeliosController::run() {
         const std::size_t framePoints = targetFramePoints.load(std::memory_order_relaxed);
         const unsigned int pps = getPointRate();
 
-        setEstimatedBufferCapacity(static_cast<int>(framePoints));
-        updateEstimatedBufferSnapshotNow(0, pps);
-
         const auto writeLead = detail::requestRenderLead(
             std::chrono::microseconds(
                 estimatedWriteLeadMicros.load(std::memory_order_relaxed)));
@@ -827,6 +825,8 @@ void HeliosController::run() {
 
             sourcePoints = &nativeFrame.points;
         } else {
+            setEstimatedBufferCapacity(static_cast<int>(framePoints));
+            updateEstimatedBufferSnapshotNow(0, pps);
             // Streaming backends and SDK-backed Helios paths still pull a
             // controller-sized point batch, which is then packed into one
             // transport frame for submission.
@@ -902,11 +902,18 @@ void HeliosController::run() {
             estimatedWriteLeadMicros.store(
                 detail::smoothWriteLeadMicros(previousWriteLeadMicros, measuredWriteLeadMicros),
                 std::memory_order_relaxed);
-            setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
-            updateEstimatedBufferSnapshot(
-                static_cast<int>(frameBuffer.size()),
-                sendDone,
-                pps);
+            if (usbConnection) {
+                noteFrameTransportSubmission(
+                    frameBuffer.size(),
+                    estimatedFirstRenderTime,
+                    pps);
+            } else {
+                setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
+                updateEstimatedBufferSnapshot(
+                    static_cast<int>(frameBuffer.size()),
+                    sendDone,
+                    pps);
+            }
             currentPointIndex.fetch_add(frameBuffer.size(), std::memory_order_relaxed);
         }
     }

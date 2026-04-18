@@ -259,6 +259,19 @@ controller->setPointCallback(
     });
 ```
 
+`minimumPointsRequired` / `maximumPointsRequired` are transport-shaped hints.
+For point-ingester controllers they usually track device buffer headroom
+directly. For frame-first controllers Libera may first adapt the callback into
+whole frames behind the scenes. In that case the callback limits are driven by
+a shared virtual point backlog that includes:
+
+- points already accepted by the frame transport
+- points currently staged inside Libera's point-to-frame adapter
+
+That means a frame-first controller can still consume a live point stream
+without silently building unbounded latency just because it is ready to ingest
+another frame.
+
 The callback runs on a Libera-owned thread, so keep it quick and don't block.
 If you share state between the callback and your main thread, protect it with a
 lock or a lock-free structure.

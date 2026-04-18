@@ -35,6 +35,12 @@ public:
         return LaserController::requestFrame(request, outputFrame);
     }
 
+    void noteSubmittedFrame(std::size_t pointCount,
+                            std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
+                            std::uint32_t pointRate) {
+        noteFrameTransportSubmission(pointCount, estimatedFirstPointRenderTime, pointRate);
+    }
+
 protected:
     void run() override {}
 };
@@ -322,6 +328,104 @@ void testPointCallbackFrameRequestHonoursBackendMaximum() {
     ASSERT_EQ(output.points.back().x, 63.0f, "clamped callback frame drops the excess callback tail");
 }
 
+void testPointCallbackBuildsSharedVirtualBuffer() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(100));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    preparePointCallbackController(controller);
+
+    std::size_t callbackCallCount = 0;
+    std::size_t lastRequestedMax = 0;
+    std::size_t nextPointIndex = 0;
+    controller.setPointCallback(
+        [&callbackCallCount, &lastRequestedMax, &nextPointIndex](
+            const PointFillRequest& request,
+            std::vector<LaserPoint>& out) {
+            ++callbackCallCount;
+            lastRequestedMax = request.maximumPointsRequired;
+            for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.x = 80.0f + static_cast<float>(nextPointIndex++);
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                point.i = 1.0f;
+                out.push_back(point);
+            }
+        });
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame output;
+    ASSERT_TRUE(controller.requestFrameNow(20, 20, now, output, 20),
+                "requestFrame succeeds while building initial virtual backlog");
+    ASSERT_EQ(lastRequestedMax, static_cast<std::size_t>(120),
+              "callback sees the full shared virtual-buffer deficit");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(20),
+              "first frame keeps the preferred transport size");
+
+    const auto bufferedAfterFirstFrame = controller.getBufferState();
+    ASSERT_TRUE(bufferedAfterFirstFrame.has_value(),
+                "virtual backlog should be reportable once the framer has prefetched points");
+    ASSERT_EQ(bufferedAfterFirstFrame->pointsInBuffer, 100,
+              "reported buffer includes the prefetched framer accumulator");
+    ASSERT_EQ(bufferedAfterFirstFrame->totalBufferPoints, 120,
+              "reported virtual capacity matches the shared target backlog");
+
+    controller.noteSubmittedFrame(20, now + std::chrono::milliseconds(40), 1000);
+
+    Frame secondOutput;
+    ASSERT_TRUE(controller.requestFrameNow(20, 20, now, secondOutput, 20),
+                "second requestFrame succeeds from buffered content");
+    ASSERT_EQ(callbackCallCount, static_cast<std::size_t>(1),
+              "no extra callback pull is needed while the shared virtual backlog is full");
+
+    const auto bufferedAfterSubmission = controller.getBufferState();
+    ASSERT_TRUE(bufferedAfterSubmission.has_value(),
+                "submitted transport points remain visible in the virtual backlog");
+    ASSERT_EQ(bufferedAfterSubmission->pointsInBuffer, 100,
+              "one emitted frame moves from the framer into transport without changing total backlog");
+}
+
+void testPointCallbackOnlyPullsRemainingHeadroomAboveTransportBacklog() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(100));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    preparePointCallbackController(controller);
+
+    std::size_t callbackCallCount = 0;
+    std::size_t lastRequestedMax = 0;
+    std::size_t nextPointIndex = 0;
+    controller.setPointCallback(
+        [&callbackCallCount, &lastRequestedMax, &nextPointIndex](
+            const PointFillRequest& request,
+            std::vector<LaserPoint>& out) {
+            ++callbackCallCount;
+            lastRequestedMax = request.maximumPointsRequired;
+            for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.x = 120.0f + static_cast<float>(nextPointIndex++);
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                point.i = 1.0f;
+                out.push_back(point);
+            }
+        });
+
+    const auto now = std::chrono::steady_clock::now();
+    controller.noteSubmittedFrame(80, now + std::chrono::milliseconds(40), 1000);
+
+    Frame output;
+    ASSERT_TRUE(controller.requestFrameNow(20, 20, now, output, 20),
+                "requestFrame succeeds with a pre-existing transport backlog");
+    ASSERT_EQ(callbackCallCount, static_cast<std::size_t>(1),
+              "callback still runs when the framer needs the remaining headroom");
+    ASSERT_EQ(lastRequestedMax, static_cast<std::size_t>(40),
+              "callback only sees the headroom above the transport backlog");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(20),
+              "transport frame size stays unchanged even when the callback is throttled");
+}
+
 } // namespace
 
 int main() {
@@ -333,6 +437,8 @@ int main() {
     testOversizedFrameFinishesItsLoopBeforeSwitchingFrames();
     testPointCallbackCanFillOneTransportFrame();
     testPointCallbackFrameRequestHonoursBackendMaximum();
+    testPointCallbackBuildsSharedVirtualBuffer();
+    testPointCallbackOnlyPullsRemainingHeadroomAboveTransportBacklog();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

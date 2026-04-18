@@ -48,7 +48,9 @@ public:
 private:
     void run() override;
     bool usesFrameTransport() const;
-    bool updateBufferTelemetry(std::uint32_t rate, libera_buffer_state_t& bufferState);
+    bool updateBufferTelemetry(std::uint32_t rate,
+                               libera_buffer_state_t& bufferState,
+                               bool clearOnMissingTelemetry = true);
     void handlePluginFailure(libera_status_t status,
                              const char* action,
                              const char* errorPrefix);

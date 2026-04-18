@@ -125,6 +125,7 @@ bool PluginController::open() {
 
     connected.store(true, std::memory_order_relaxed);
     setConnectionState(true);
+    clearFrameTransportSubmissionEstimate();
 
     if (api->set_point_rate) {
         api->set_point_rate(pluginHandle, getPointRate());
@@ -149,13 +150,16 @@ bool PluginController::usesFrameTransport() const {
 }
 
 bool PluginController::updateBufferTelemetry(std::uint32_t rate,
-                                             libera_buffer_state_t& bufferState) {
+                                             libera_buffer_state_t& bufferState,
+                                             bool clearOnMissingTelemetry) {
     bufferState = {-1, -1};
     if (!pluginHandle || !api || !api->get_buffer_state ||
         api->get_buffer_state(pluginHandle, &bufferState) != 0 ||
         bufferState.total_buffer_points <= 0 ||
         bufferState.points_in_buffer < 0) {
-        clearEstimatedBufferState();
+        if (clearOnMissingTelemetry) {
+            clearEstimatedBufferState();
+        }
         return false;
     }
 
@@ -270,6 +274,7 @@ void PluginController::run() {
             setConnectionState(false);
 
             if (pluginHandle && api->destroy_controller) {
+                clearFrameTransportSubmissionEstimate();
                 api->destroy_controller(pluginHandle);
                 pluginHandle = nullptr;
             }
@@ -290,6 +295,7 @@ void PluginController::run() {
             lastSentArmed = !isArmed();
             currentPointIndex = 0;
             resetStartupBlank();
+            clearFrameTransportSubmissionEstimate();
             connected.store(true, std::memory_order_relaxed);
         }
 
@@ -306,7 +312,13 @@ void PluginController::run() {
         const auto rate = getPointRate();
 
         libera_buffer_state_t bufferState{-1, -1};
-        const bool haveBuffer = updateBufferTelemetry(rate, bufferState);
+        // Frame transports without point-buffer telemetry still need the
+        // shared synthetic backlog estimate from successful send_frame() calls,
+        // so do not clear that estimate just because get_buffer_state() is absent.
+        const bool haveBuffer = updateBufferTelemetry(
+            rate,
+            bufferState,
+            !frameTransport);
 
         if (frameTransport) {
             libera_frame_requirements_t requirements{};
@@ -370,6 +382,10 @@ void PluginController::run() {
                 continue;
             }
 
+            noteFrameTransportSubmission(
+                sentPointCount,
+                request.estimatedFirstPointRenderTime,
+                rate);
             currentPointIndex += sentPointCount;
             continue;
         }

@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <atomic>
+#include <limits>
 
 namespace libera::core {
 namespace {
@@ -63,6 +64,7 @@ void LaserController::setPointCallback(const PointCallback& callback) {
     // Keep "last writer wins" behaviour, but serialize the source switch so
     // the worker cannot observe the queue being torn down mid-request.
     frameScheduler->reset();
+    resetPointCallbackAdapterState();
     LaserControllerStreaming::setRequestPointsCallback(callback);
     activeSource = ContentSource::PointCallback;
 }
@@ -71,7 +73,7 @@ void LaserController::clearPointCallback() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     LaserControllerStreaming::setRequestPointsCallback({});
     if (activeSource == ContentSource::PointCallback) {
-        if (pointStreamFramer) pointStreamFramer->reset();
+        resetPointCallbackAdapterState();
         activeSource = ContentSource::None;
     }
 }
@@ -97,6 +99,7 @@ bool LaserController::sendFrame(Frame&& frame) {
     if (activeSource != ContentSource::FrameQueue) {
         // Frame mode owns scheduling internally, so it must not reuse the user
         // point callback slot in the streaming base class.
+        resetPointCallbackAdapterState();
         LaserControllerStreaming::setRequestPointsCallback({});
         activeSource = ContentSource::FrameQueue;
     }
@@ -116,6 +119,7 @@ void LaserController::useFrameQueue() {
 
     // Frame mode owns scheduling internally, so it must not reuse the user
     // point callback slot in the streaming base class.
+    resetPointCallbackAdapterState();
     LaserControllerStreaming::setRequestPointsCallback({});
     activeSource = ContentSource::FrameQueue;
 }
@@ -132,7 +136,7 @@ void LaserController::clearContentSource() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     LaserControllerStreaming::setRequestPointsCallback({});
     frameScheduler->reset();
-    if (pointStreamFramer) pointStreamFramer->reset();
+    resetPointCallbackAdapterState();
     activeSource = ContentSource::None;
 }
 
@@ -162,6 +166,42 @@ bool LaserController::isReadyForNewFrame() const {
 std::size_t LaserController::queuedFrameCount() const {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     return frameScheduler->queuedFrameCount();
+}
+
+std::optional<BufferState> LaserController::getBufferState() const {
+    const auto transportState = LaserControllerStreaming::getBufferState();
+
+    ContentSource source = ContentSource::None;
+    {
+        std::lock_guard<std::mutex> lock(contentSourceMutex);
+        source = activeSource;
+    }
+
+    if (source != ContentSource::PointCallback) {
+        return transportState;
+    }
+
+    std::size_t framerBufferedPoints = 0;
+    {
+        std::lock_guard<std::mutex> lock(pointStreamFramerMutex);
+        if (pointStreamFramer) {
+            framerBufferedPoints = pointStreamFramer->bufferedPointCount();
+        }
+    }
+    if (framerBufferedPoints == 0) {
+        return transportState;
+    }
+
+    const std::size_t transportBufferedPoints =
+        transportState ? static_cast<std::size_t>(std::max(transportState->pointsInBuffer, 0)) : 0;
+    const std::size_t virtualBufferedPoints = transportBufferedPoints + framerBufferedPoints;
+    const std::size_t virtualTargetPoints = std::max(
+        lastPointCallbackVirtualBufferTarget.load(std::memory_order_relaxed),
+        virtualBufferedPoints);
+
+    return buildBufferState(
+        clampPointCountToInt(virtualTargetPoints),
+        clampPointCountToInt(virtualBufferedPoints));
 }
 
 bool LaserController::requestPoints(const PointFillRequest& request) {
@@ -236,13 +276,6 @@ bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outpu
             return false;
         }
 
-        if (!pointStreamFramer) {
-            pointStreamFramer = std::make_unique<PointStreamFramer>();
-        }
-        pointStreamFramer->setNominalFrameSize(preferredPointCount);
-        pointStreamFramer->setMaxFrameSize(
-            request.maximumPointsRequired > 0 ? request.maximumPointsRequired : preferredPointCount);
-
         RequestPointsCallback callback;
         {
             std::lock_guard<std::mutex> lock(requestPointsCallbackMutex);
@@ -257,7 +290,29 @@ bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outpu
         templateReq.estimatedFirstPointRenderTime = request.estimatedFirstPointRenderTime;
         templateReq.currentPointIndex = request.currentPointIndex;
 
-        if (!pointStreamFramer->extractFrame(callback, templateReq, outputFrame)) {
+        const std::size_t transportBufferedPoints = currentFrameTransportBufferedPoints();
+        const std::size_t virtualBufferTarget =
+            pointCallbackVirtualBufferTarget(preferredPointCount);
+
+        lastPointCallbackVirtualBufferTarget.store(
+            virtualBufferTarget,
+            std::memory_order_relaxed);
+
+        bool extractedFrame = false;
+        {
+            std::lock_guard<std::mutex> lock(pointStreamFramerMutex);
+            if (!pointStreamFramer) {
+                pointStreamFramer = std::make_unique<PointStreamFramer>();
+            }
+            pointStreamFramer->setNominalFrameSize(preferredPointCount);
+            pointStreamFramer->setMaxFrameSize(
+                request.maximumPointsRequired > 0 ? request.maximumPointsRequired : preferredPointCount);
+            pointStreamFramer->setVirtualBufferTarget(virtualBufferTarget);
+            pointStreamFramer->setTransportBufferedPoints(transportBufferedPoints);
+            extractedFrame = pointStreamFramer->extractFrame(callback, templateReq, outputFrame);
+        }
+
+        if (!extractedFrame) {
             outputFrame = Frame{};
             return false;
         }
@@ -295,6 +350,101 @@ std::size_t LaserController::queuedPointBudget() const {
     const auto nominalFramePoints =
         std::max<std::size_t>(frameScheduler->nominalFramePointCount(), 1);
     return latencyPoints + nominalFramePoints;
+}
+
+void LaserController::noteFrameTransportSubmission(
+    std::size_t pointCount,
+    std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
+    std::uint32_t pointRateValue) {
+    if (pointCount == 0) {
+        return;
+    }
+
+    if (pointRateValue == 0) {
+        pointRateValue = getPointRate();
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto requestedStartTime =
+        estimatedFirstPointRenderTime == std::chrono::steady_clock::time_point{}
+            ? now
+            : estimatedFirstPointRenderTime;
+
+    std::size_t totalBufferedPoints = pointCount;
+    std::chrono::steady_clock::time_point snapshotTime = std::max(requestedStartTime, now);
+
+    {
+        std::lock_guard<std::mutex> lock(frameTransportEstimateMutex);
+        if (frameTransportEstimate.valid) {
+            const int remainingPoints = calculateBufferFullnessFromSnapshot(
+                clampPointCountToInt(frameTransportEstimate.snapshotPoints),
+                frameTransportEstimate.snapshotTime,
+                frameTransportEstimate.pointRate,
+                clampPointCountToInt(frameTransportEstimate.snapshotPoints));
+
+            if (remainingPoints > 0) {
+                totalBufferedPoints += static_cast<std::size_t>(remainingPoints);
+                // Once playout has started we can collapse the aggregate
+                // backlog to "remaining points from now". If playout has not
+                // started yet, keep the future start time so the estimate does
+                // not begin draining early.
+                if (frameTransportEstimate.snapshotTime > now) {
+                    snapshotTime = frameTransportEstimate.snapshotTime;
+                }
+            }
+        }
+
+        frameTransportEstimate.snapshotPoints = totalBufferedPoints;
+        frameTransportEstimate.snapshotTime = snapshotTime;
+        frameTransportEstimate.pointRate = pointRateValue;
+        frameTransportEstimate.valid = true;
+    }
+
+    const std::size_t bufferedTarget = std::max({
+        lastPointCallbackVirtualBufferTarget.load(std::memory_order_relaxed),
+        pointCallbackVirtualBufferTarget(pointCount),
+        totalBufferedPoints});
+    setEstimatedBufferCapacity(clampPointCountToInt(bufferedTarget));
+    updateEstimatedBufferSnapshot(
+        clampPointCountToInt(totalBufferedPoints),
+        snapshotTime,
+        pointRateValue);
+}
+
+void LaserController::clearFrameTransportSubmissionEstimate() {
+    {
+        std::lock_guard<std::mutex> lock(frameTransportEstimateMutex);
+        frameTransportEstimate = FrameTransportEstimate{};
+    }
+    clearEstimatedBufferState();
+}
+
+void LaserController::resetPointCallbackAdapterState() {
+    std::lock_guard<std::mutex> lock(pointStreamFramerMutex);
+    if (pointStreamFramer) {
+        pointStreamFramer->reset();
+    }
+    lastPointCallbackVirtualBufferTarget.store(0, std::memory_order_relaxed);
+}
+
+std::size_t LaserController::pointCallbackVirtualBufferTarget(std::size_t nominalFramePoints) const {
+    const auto latencyPoints = static_cast<std::size_t>(
+        std::max(0, millisToPoints(targetLatency())));
+    return latencyPoints + std::max<std::size_t>(nominalFramePoints, 1);
+}
+
+std::size_t LaserController::currentFrameTransportBufferedPoints() const {
+    const auto transportState = LaserControllerStreaming::getBufferState();
+    if (!transportState) {
+        return 0;
+    }
+    return static_cast<std::size_t>(std::max(transportState->pointsInBuffer, 0));
+}
+
+int LaserController::clampPointCountToInt(std::size_t pointCount) {
+    return static_cast<int>(std::min<std::size_t>(
+        pointCount,
+        static_cast<std::size_t>(std::numeric_limits<int>::max())));
 }
 
 } // namespace libera::core

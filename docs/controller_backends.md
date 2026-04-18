@@ -112,6 +112,17 @@ direct Helios USB path.
 Out-of-tree plugins can now mirror this frame-ingester shape too via the ABI
 v2 `get_frame_requirements()` + `send_frame()` callbacks.
 
+For frame-ingester backends driven from a live point callback, Libera also
+maintains one shared virtual point backlog. That backlog combines:
+
+- points already accepted by the frame transport but not yet projected to have
+  played
+- points currently sitting in the point-to-frame adapter's accumulator
+
+The point callback is then asked only for the remaining headroom above that
+shared backlog target. This keeps a frame-first transport from silently
+building too much latency just because it can accept another whole frame now.
+
 ## Discovery example
 
 Built-in backends implement discovery on the manager, not on the controller
@@ -287,3 +298,8 @@ That means:
 - a frame-ingester backend can call `requestFrame(...)` and let the shared
   scheduler adapt either content source into whole-frame submissions, as long
   as it provides the transport's preferred frame size in `FrameFillRequest`
+
+For built-in frame-ingester backends the backend-specific code should only
+report transport facts such as "a frame was accepted" and the estimated first
+render time for that submission slot. The shared core adapter owns the virtual
+backlog policy used to throttle live point callbacks.

@@ -2,6 +2,7 @@
 
 #include "libera/core/LaserControllerStreaming.hpp"
 
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -104,6 +105,7 @@ public:
     bool isFrameModeEnabled() const;
     bool isReadyForNewFrame() const;
     std::size_t queuedFrameCount() const;
+    std::optional<BufferState> getBufferState() const override;
 
 protected:
     struct FrameFillRequest {
@@ -124,11 +126,42 @@ protected:
     bool requestFrame(const FrameFillRequest& request, Frame& outputFrame);
     bool isUsingFrameQueueSource() const;
 
+    /**
+     * @brief Record one frame-first transport submission in the shared estimate.
+     *
+     * Frame-first backends call this after the hardware/plugin has accepted a
+     * frame. The shared callback-to-frame adapter then counts those submitted
+     * points against the same virtual backlog budget as the framer accumulator.
+     */
+    void noteFrameTransportSubmission(
+        std::size_t pointCount,
+        std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
+        std::uint32_t pointRateValue);
+
+    /// Drop any shared frame-transport backlog estimate on disconnect/reset.
+    void clearFrameTransportSubmissionEstimate();
+
 private:
+    struct FrameTransportEstimate {
+        std::size_t snapshotPoints = 0;
+        std::chrono::steady_clock::time_point snapshotTime{};
+        std::uint32_t pointRate = 0;
+        bool valid = false;
+    };
+
+    void resetPointCallbackAdapterState();
+    std::size_t pointCallbackVirtualBufferTarget(std::size_t nominalFramePoints) const;
+    std::size_t currentFrameTransportBufferedPoints() const;
+    static int clampPointCountToInt(std::size_t pointCount);
+
     mutable std::mutex contentSourceMutex;
+    mutable std::mutex pointStreamFramerMutex;
     std::unique_ptr<FrameScheduler> frameScheduler;
     std::unique_ptr<PointStreamFramer> pointStreamFramer;
     ContentSource activeSource = ContentSource::None;
+    mutable std::mutex frameTransportEstimateMutex;
+    FrameTransportEstimate frameTransportEstimate;
+    std::atomic<std::size_t> lastPointCallbackVirtualBufferTarget{0};
     std::size_t queuedPointBudget() const;
 };
 

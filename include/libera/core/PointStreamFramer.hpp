@@ -32,6 +32,29 @@ public:
     void setMaxFrameSize(std::size_t size);
 
     /**
+     * @brief Set the desired total buffered points across transport + framer.
+     *
+     * The point-callback path uses this to keep a bounded virtual backlog for
+     * frame-first transports. The framer combines this transport-level target
+     * with its own local lookahead requirement when deciding how many fresh
+     * callback points to pull.
+     */
+    void setVirtualBufferTarget(std::size_t size);
+
+    /**
+     * @brief Set the estimated points already buffered downstream of the framer.
+     *
+     * Frame-first transports can accept multiple whole-frame submissions ahead
+     * of playout. Those queued points must count against the same virtual
+     * backlog budget as the framer's own accumulator so the callback does not
+     * keep generating content faster than the transport can digest it.
+     */
+    void setTransportBufferedPoints(std::size_t size);
+
+    /// Inspect how many callback-generated points are waiting in the framer.
+    std::size_t bufferedPointCount() const;
+
+    /**
      * @brief Extract one natural frame from the point stream.
      *
      * Pulls points from @p callback into an internal accumulator, searches for
@@ -66,6 +89,8 @@ private:
     bool anchorSet = false;
     std::size_t nominalFrameSize = 300;
     std::size_t maxFrameSize = 4095;
+    std::size_t virtualBufferTarget = 0;
+    std::size_t transportBufferedPoints = 0;
     std::size_t consecutiveForceEmits = 0;
     std::uint64_t totalPointsConsumed = 0;
 

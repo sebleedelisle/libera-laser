@@ -139,7 +139,13 @@ public:
      */
     virtual std::uint32_t getPointRate() const noexcept;
 
-    /// Host-side view of controller buffer fullness, if the backend can provide it.
+    /// Host-side view of buffered points.
+    ///
+    /// Point-ingester backends usually expose a projected device-side point
+    /// buffer here. Frame-ingester backends may instead expose a shared
+    /// host-side virtual backlog derived from accepted frame submissions. When
+    /// a live point callback is being adapted into frames, that virtual backlog
+    /// also includes points currently staged inside the point-to-frame adapter.
     virtual std::optional<BufferState> getBufferState() const;
 
     /// Rolling latency percentiles (transport/admission), if supported.
