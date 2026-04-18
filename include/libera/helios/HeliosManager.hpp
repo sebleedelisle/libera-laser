@@ -27,7 +27,7 @@ public:
 private:
     struct ActiveControllerSnapshot {
         bool hasActive = false;
-        // Track which physical USB DACs this process already owns.
+        // Track which physical USB DAC transport paths this process already owns.
         //
         // Why this exists:
         // discovery probes intentionally interpret claim/open failures as

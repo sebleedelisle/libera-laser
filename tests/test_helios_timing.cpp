@@ -1,4 +1,6 @@
 #include "libera/helios/HeliosController.hpp"
+#include "libera/helios/HeliosTransportSupport.hpp"
+#include "libera/idn/IdnController.hpp"
 #include "libera/log/Log.hpp"
 
 #include <chrono>
@@ -53,7 +55,11 @@ void testDefaultFramePointCountTracksPointRate() {
 }
 
 void testExplicitFramePointCountStopsAutomaticRetuning() {
-    HeliosController controller(nullptr, 0);
+    // The automatic frame-size policy is shared between the Helios USB and IDN
+    // transports. Use the SDK-backed controller here because the USB controller
+    // now represents a real direct-USB connection and no longer exposes an
+    // artificial disconnected constructor just for tests.
+    libera::idn::IdnController controller(nullptr, 0);
     ASSERT_EQ(static_cast<long long>(controller.framePointCount()),
               300LL,
               "constructor seeds automatic frame point count from default pps");

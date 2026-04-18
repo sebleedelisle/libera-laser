@@ -1,6 +1,7 @@
 #include "libera/helios/HeliosController.hpp"
 
 #include "libera/core/ControllerErrorTypes.hpp"
+#include "libera/helios/HeliosTransportSupport.hpp"
 #include "libera/log/Log.hpp"
 
 #include <algorithm>
@@ -23,12 +24,6 @@
 
 namespace libera::helios {
 namespace {
-
-constexpr std::size_t MIN_FRAME_POINTS = 20;
-constexpr double TARGET_FRAME_DURATION_MS = 10.0;
-constexpr auto STATUS_ERROR_WARMUP_GRACE = std::chrono::milliseconds(250);
-
-constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
 std::string describeHeliosError(int code) {
     // libusb errors are encoded as HELIOS_ERROR_LIBUSB_BASE + libusb_error.
@@ -65,11 +60,6 @@ std::string describeHeliosError(int code) {
     default:
         return "unknown";
     }
-}
-
-bool shouldLogErrorBurst(std::size_t consecutiveCount) {
-    // Always log first failure, then throttle to keep console readable.
-    return consecutiveCount == 1 || (consecutiveCount % 25 == 0);
 }
 
 std::string makeHeliosUsbPortPath(libusb_device* device) {
@@ -475,33 +465,6 @@ private:
     std::vector<std::uint8_t> bulkTransferBuffer;
 };
 
-std::size_t detail::defaultFramePointCount(std::uint32_t pointRate) {
-    if (pointRate == 0) {
-        return MIN_FRAME_POINTS;
-    }
-    const double rawPoints =
-        (static_cast<double>(pointRate) * TARGET_FRAME_DURATION_MS) / 1000.0;
-    const auto roundedPoints = static_cast<std::size_t>(std::llround(rawPoints));
-    return std::clamp<std::size_t>(roundedPoints, MIN_FRAME_POINTS, HELIOS_MAX_POINTS);
-}
-
-std::size_t detail::minimumRequestPoints(std::size_t maxFramePoints) {
-    return std::min<std::size_t>(maxFramePoints, MIN_FRAME_POINTS);
-}
-
-std::chrono::steady_clock::duration detail::requestRenderLead(std::chrono::microseconds previousWriteLead) {
-    return std::chrono::microseconds(std::max<std::int64_t>(0, previousWriteLead.count()));
-}
-
-std::int64_t detail::smoothWriteLeadMicros(std::int64_t previousMicros, std::int64_t currentMicros) {
-    const auto clampedPrevious = std::max<std::int64_t>(0, previousMicros);
-    const auto clampedCurrent = std::max<std::int64_t>(0, currentMicros);
-    if (clampedPrevious == 0) {
-        return clampedCurrent;
-    }
-    return ((clampedPrevious * 3) + clampedCurrent) / 4;
-}
-
 std::shared_ptr<HeliosController> HeliosController::connectUsb(
     std::shared_ptr<libusb_context> usbContext,
     std::string controllerPortPath) {
@@ -589,17 +552,6 @@ std::shared_ptr<HeliosController> HeliosController::connectUsb(
                              std::move(directConnection)));
 }
 
-HeliosController::HeliosController(std::shared_ptr<HeliosDac> sdkInstance, unsigned int controllerIndex)
-    : sdk(std::move(sdkInstance))
-    , index(controllerIndex) {
-    const auto defaultFramePoints = detail::defaultFramePointCount(getPointRate());
-    targetFramePoints.store(defaultFramePoints, std::memory_order_relaxed);
-    frameBuffer.reserve(defaultFramePoints);
-    setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
-    updateEstimatedBufferSnapshotNow(0, getPointRate());
-    statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
-}
-
 HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextValue,
                                    std::string controllerPortPath,
                                    std::unique_ptr<DirectUsbConnection> directConnection)
@@ -613,7 +565,8 @@ HeliosController::HeliosController(std::shared_ptr<libusb_context> usbContextVal
     frameBuffer.reserve(defaultFramePoints);
     setEstimatedBufferCapacity(static_cast<int>(defaultFramePoints));
     updateEstimatedBufferSnapshotNow(0, getPointRate());
-    statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
+    statusWarmupDeadline =
+        std::chrono::steady_clock::now() + detail::STATUS_ERROR_WARMUP_GRACE;
 }
 
 HeliosController::~HeliosController() {
@@ -631,9 +584,6 @@ void HeliosController::close() {
     setConnectionState(false);
     clearFrameTransportSubmissionEstimate();
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
-    if (sdk) {
-        sdk->Stop(index.load(std::memory_order_relaxed));
-    }
     if (usbConnection) {
         // For direct USB, closing means releasing exactly one DAC's interface.
         usbConnection->close();
@@ -641,36 +591,10 @@ void HeliosController::close() {
 }
 
 bool HeliosController::isConnected() const {
-    if (sdk) {
-        return sdk->GetIsClosed(index.load(std::memory_order_relaxed)) == 0;
-    }
     if (usbConnection) {
         return !usbConnection->isClosed();
     }
     return false;
-}
-
-void HeliosController::updateControllerIndex(unsigned int controllerIndex) {
-    if (!sdk) {
-        return;
-    }
-
-    const unsigned int previousIndex =
-        index.exchange(controllerIndex, std::memory_order_relaxed);
-    if (previousIndex == controllerIndex) {
-        return;
-    }
-
-    // IDN reconnect strategy:
-    // when the manager remaps a stable unit ID to a different transient SDK
-    // slot after a network rescan, flush short-term scheduling state so the
-    // stream ramps back in cleanly on the new slot.
-    consecutiveStatusErrors = 0;
-    consecutiveWriteErrors = 0;
-    estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
-    clearFrameTransportSubmissionEstimate();
-    statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
-    resetStartupBlank();
 }
 
 void HeliosController::setPointRate(std::uint32_t pointRateValue) {
@@ -684,7 +608,9 @@ void HeliosController::setPointRate(std::uint32_t pointRateValue) {
 }
 
 void HeliosController::setFramePointCount(std::size_t points) {
-    const auto clamped = std::clamp<std::size_t>(points, MIN_FRAME_POINTS, HELIOS_MAX_POINTS);
+    const auto clamped = std::clamp<std::size_t>(points,
+                                                 detail::MIN_FRAME_POINTS,
+                                                 HELIOS_MAX_POINTS);
     framePointCountExplicitlySet.store(true, std::memory_order_relaxed);
     targetFramePoints.store(clamped, std::memory_order_relaxed);
     frameBuffer.reserve(clamped);
@@ -696,9 +622,6 @@ std::size_t HeliosController::framePointCount() const {
 }
 
 int HeliosController::getFirmwareVersion() const {
-    if (sdk) {
-        return sdk->GetFirmwareVersion(index.load(std::memory_order_relaxed));
-    }
     if (usbConnection) {
         return usbConnection->getFirmwareVersion();
     }
@@ -707,9 +630,7 @@ int HeliosController::getFirmwareVersion() const {
 
 std::string HeliosController::getDacName() const {
     char buf[32] = {0};
-    if (sdk) {
-        sdk->GetName(index.load(std::memory_order_relaxed), buf);
-    } else if (usbConnection) {
+    if (usbConnection) {
         usbConnection->getName(buf);
     }
     return std::string(buf);
@@ -719,9 +640,6 @@ bool HeliosController::setDacName(const std::string& name) {
     std::string truncated = name.substr(0, 30);
     char buf[32] = {0};
     std::strncpy(buf, truncated.c_str(), 30);
-    if (sdk) {
-        return sdk->SetName(index.load(std::memory_order_relaxed), buf) == HELIOS_SUCCESS;
-    }
     if (usbConnection) {
         return usbConnection->setName(buf) == HELIOS_SUCCESS;
     }
@@ -735,13 +653,7 @@ void HeliosController::run() {
     bool wasConnected = false;
 
     while (running) {
-        const unsigned int sdkIndex = index.load(std::memory_order_relaxed);
-
-        // Support both backends behind one controller implementation:
-        // - SDK/index path for legacy or non-USB cases
-        // - direct libusb path for Helios USB
-        const bool backendConnected = sdk ? (sdk->GetIsClosed(sdkIndex) == 0)
-                                          : (usbConnection && !usbConnection->isClosed());
+        const bool backendConnected = usbConnection && !usbConnection->isClosed();
         if (!backendConnected) {
             if (wasConnected) {
                 recordConnectionError(error_types::usb::connectionLost);
@@ -756,11 +668,12 @@ void HeliosController::run() {
         setConnectionState(true);
         if (!wasConnected) {
             resetStartupBlank();
-            statusWarmupDeadline = std::chrono::steady_clock::now() + STATUS_ERROR_WARMUP_GRACE;
+            statusWarmupDeadline =
+                std::chrono::steady_clock::now() + detail::STATUS_ERROR_WARMUP_GRACE;
         }
         wasConnected = true;
 
-        const int status = sdk ? sdk->GetStatus(sdkIndex) : usbConnection->getStatus();
+        const int status = usbConnection->getStatus();
         if (status < 0) {
             if (std::chrono::steady_clock::now() < statusWarmupDeadline) {
                 consecutiveStatusErrors = 0;
@@ -774,10 +687,9 @@ void HeliosController::run() {
             }
             recordIntermittentError(error_types::usb::statusError);
             ++consecutiveStatusErrors;
-            if (shouldLogErrorBurst(consecutiveStatusErrors)) {
+            if (detail::shouldLogErrorBurst(consecutiveStatusErrors)) {
                 logError("[HeliosController] status error",
-                         sdk ? "index" : "path",
-                         sdk ? std::to_string(sdkIndex) : usbPortPath,
+                         "path", usbPortPath,
                          "code", status,
                          "reason", describeHeliosError(status),
                          "consecutive", consecutiveStatusErrors);
@@ -803,76 +715,34 @@ void HeliosController::run() {
             std::chrono::steady_clock::now() + writeLead;
         const auto pointIndex = currentPointIndex.load(std::memory_order_relaxed);
 
-        std::vector<core::LaserPoint>* sourcePoints = &pointsToSend;
         core::Frame nativeFrame;
 
-        if (usbConnection) {
-            // Direct Helios USB is a frame-ingester transport. It always wants
-            // one complete submission for each free device slot, regardless of
-            // whether the active content source is the frame queue or a live
-            // point callback.
-            FrameFillRequest req;
-            req.maximumPointsRequired = HELIOS_MAX_POINTS;
-            req.preferredPointCount = framePoints;
-            req.blankFramePointCount = framePoints;
-            req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
-            req.currentPointIndex = pointIndex;
+        // Direct Helios USB is a frame-ingester transport. It always wants one
+        // complete submission for each free device slot, regardless of whether
+        // the active source is queued frames or a live point callback.
+        FrameFillRequest req;
+        req.maximumPointsRequired = HELIOS_MAX_POINTS;
+        req.preferredPointCount = framePoints;
+        req.blankFramePointCount = framePoints;
+        req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
+        req.currentPointIndex = pointIndex;
 
-            if (!requestFrame(req, nativeFrame)) {
-                std::this_thread::sleep_for(5ms);
-                continue;
-            }
-
-            sourcePoints = &nativeFrame.points;
-        } else {
-            setEstimatedBufferCapacity(static_cast<int>(framePoints));
-            updateEstimatedBufferSnapshotNow(0, pps);
-            // Streaming backends and SDK-backed Helios paths still pull a
-            // controller-sized point batch, which is then packed into one
-            // transport frame for submission.
-            core::PointFillRequest req;
-            req.minimumPointsRequired = framePoints;
-            req.maximumPointsRequired = framePoints;
-            req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
-            req.currentPointIndex = pointIndex;
-
-            if (!requestPoints(req)) {
-                std::this_thread::sleep_for(5ms);
-                continue;
-            }
-        }
-
-        if (sourcePoints->empty()) {
+        if (!requestFrame(req, nativeFrame)) {
+            std::this_thread::sleep_for(5ms);
             continue;
         }
 
-        frameBuffer.resize(sourcePoints->size());
-        for (std::size_t i = 0; i < sourcePoints->size(); ++i) {
-            const auto& p = (*sourcePoints)[i];
-            auto& out = frameBuffer[i];
-            out.x = encodeUnsigned16FromSignedUnit(p.x);
-            out.y = encodeUnsigned16FromSignedUnit(p.y);
-            out.r = encodeUnsigned16FromUnit(p.r);
-            out.g = encodeUnsigned16FromUnit(p.g);
-            out.b = encodeUnsigned16FromUnit(p.b);
-            out.i = encodeUnsigned16FromUnit(p.i);
-            out.user1 = encodeUnsigned16FromUnit(p.u1);
-            out.user2 = encodeUnsigned16FromUnit(p.u2);
-            out.user3 = 0;
-            out.user4 = 0;
+        if (nativeFrame.points.empty()) {
+            continue;
         }
 
+        detail::encodeFramePoints(nativeFrame.points, frameBuffer);
+
         const auto sendStart = std::chrono::steady_clock::now();
-        const int result = sdk
-            ? sdk->WriteFrameExtended(sdkIndex,
-                                      pps,
-                                      HELIOS_FLAGS,
-                                      frameBuffer.data(),
-                                      static_cast<unsigned int>(frameBuffer.size()))
-            : usbConnection->writeFrameExtended(pps,
-                                                HELIOS_FLAGS,
-                                                frameBuffer.data(),
-                                                static_cast<unsigned int>(frameBuffer.size()));
+        const int result = usbConnection->writeFrameExtended(pps,
+                                                             detail::HELIOS_FLAGS,
+                                                             frameBuffer.data(),
+                                                             static_cast<unsigned int>(frameBuffer.size()));
         const auto sendDone = std::chrono::steady_clock::now();
 
         if (result < 0) {
@@ -882,10 +752,9 @@ void HeliosController::run() {
                 recordIntermittentError(error_types::usb::transferFailed);
             }
             ++consecutiveWriteErrors;
-            if (shouldLogErrorBurst(consecutiveWriteErrors)) {
+            if (detail::shouldLogErrorBurst(consecutiveWriteErrors)) {
                 logError("[HeliosController] WriteFrameExtended failed",
-                         sdk ? "index" : "path",
-                         sdk ? std::to_string(sdkIndex) : usbPortPath,
+                         "path", usbPortPath,
                          "code", result,
                          "reason", describeHeliosError(result),
                          "consecutive", consecutiveWriteErrors,
@@ -902,18 +771,10 @@ void HeliosController::run() {
             estimatedWriteLeadMicros.store(
                 detail::smoothWriteLeadMicros(previousWriteLeadMicros, measuredWriteLeadMicros),
                 std::memory_order_relaxed);
-            if (usbConnection) {
-                noteFrameTransportSubmission(
-                    frameBuffer.size(),
-                    estimatedFirstRenderTime,
-                    pps);
-            } else {
-                setEstimatedBufferCapacity(static_cast<int>(frameBuffer.size()));
-                updateEstimatedBufferSnapshot(
-                    static_cast<int>(frameBuffer.size()),
-                    sendDone,
-                    pps);
-            }
+            noteFrameTransportSubmission(
+                frameBuffer.size(),
+                estimatedFirstRenderTime,
+                pps);
             currentPointIndex.fetch_add(frameBuffer.size(), std::memory_order_relaxed);
         }
     }

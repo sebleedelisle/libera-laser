@@ -13,8 +13,126 @@ namespace {
 
 constexpr std::size_t maxHeliosNameLength = 30;
 
-std::string makeFallbackLabel(unsigned int index) {
-    return "Helios " + std::to_string(index);
+std::string truncateHeliosName(const std::string& label);
+
+std::string trimAsciiWhitespace(std::string value) {
+    auto isAsciiSpace = [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    };
+
+    while (!value.empty() && isAsciiSpace(static_cast<unsigned char>(value.front()))) {
+        value.erase(value.begin());
+    }
+    while (!value.empty() && isAsciiSpace(static_cast<unsigned char>(value.back()))) {
+        value.pop_back();
+    }
+    return value;
+}
+
+std::string lowercaseAscii(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char ch : value) {
+        out.push_back(static_cast<char>(std::tolower(ch)));
+    }
+    return out;
+}
+
+bool containsAsciiNoCase(std::string_view haystack, std::string_view needle) {
+    return lowercaseAscii(haystack).find(lowercaseAscii(needle)) != std::string::npos;
+}
+
+std::string sanitizeSerialToken(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (unsigned char ch : text) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(ch));
+        }
+    }
+    return out;
+}
+
+std::string digitsOnly(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (unsigned char ch : text) {
+        if (std::isdigit(ch)) {
+            out.push_back(static_cast<char>(ch));
+        }
+    }
+    return out;
+}
+
+std::string makePortPathFallbackToken(const std::string& portPath, std::size_t maxLength) {
+    std::string digits = digitsOnly(portPath);
+    if (digits.empty()) {
+        digits = sanitizeSerialToken(portPath);
+    }
+    if (digits.empty()) {
+        digits = "0";
+    }
+    if (digits.size() > maxLength) {
+        digits = digits.substr(digits.size() - maxLength);
+    }
+    return digits;
+}
+
+std::string queryUsbStringDescriptor(libusb_device_handle* handle, std::uint8_t descriptorIndex) {
+    if (handle == nullptr || descriptorIndex == 0) {
+        return {};
+    }
+
+    std::array<unsigned char, 128> buffer{};
+    const int length = libusb_get_string_descriptor_ascii(handle,
+                                                          descriptorIndex,
+                                                          buffer.data(),
+                                                          static_cast<int>(buffer.size()));
+    if (length <= 0) {
+        return {};
+    }
+
+    return trimAsciiWhitespace(
+        std::string(reinterpret_cast<const char*>(buffer.data()), static_cast<std::size_t>(length)));
+}
+
+bool prefersHeliosProDefaultName(const std::string& productString,
+                                 const std::string& serialToken) {
+    if (containsAsciiNoCase(productString, "heliospro") ||
+        containsAsciiNoCase(productString, "idn")) {
+        return true;
+    }
+
+    // The newer HeliosPro-style default names typically use a short numeric
+    // suffix, while original Helios USB names usually carry a longer serial.
+    return !serialToken.empty() && serialToken.size() <= 4;
+}
+
+std::string makeHeliosUsbDefaultName(const std::string& productString,
+                                     const std::string& serialString,
+                                     const std::string& portPath) {
+    std::string serialToken = digitsOnly(serialString);
+    if (serialToken.empty()) {
+        serialToken = sanitizeSerialToken(serialString);
+    }
+
+    if (prefersHeliosProDefaultName(productString, serialToken)) {
+        if (serialToken.empty()) {
+            serialToken = makePortPathFallbackToken(portPath, 4);
+        } else if (serialToken.size() > 4) {
+            serialToken = serialToken.substr(serialToken.size() - 4);
+        }
+        return truncateHeliosName("HeliosPro " + serialToken);
+    }
+
+    if (serialToken.empty()) {
+        serialToken = makePortPathFallbackToken(portPath, 9);
+    }
+    return truncateHeliosName("helios " + serialToken);
+}
+
+std::string makeGenericHeliosFallbackName(unsigned int index) {
+    return truncateHeliosName("helios " + std::to_string(index));
 }
 
 std::string truncateHeliosName(const std::string& label) {
@@ -30,7 +148,7 @@ std::string makeUniqueRenameLabelWithSuffix(unsigned int index,
                                             int suffix) {
     std::string base = truncateHeliosName(preferredBase);
     if (base.empty()) {
-        base = truncateHeliosName(makeFallbackLabel(index));
+        base = makeGenericHeliosFallbackName(index);
     }
 
     const std::string suffixLabel = " (" + std::to_string(suffix) + ")";
@@ -45,7 +163,7 @@ std::string makeUniqueRenameLabelWithSuffix(unsigned int index,
             base.pop_back();
         }
         if (base.empty()) {
-            base = makeFallbackLabel(index);
+            base = makeGenericHeliosFallbackName(index);
             if (base.size() > maxBaseLength) {
                 base.resize(maxBaseLength);
             }
@@ -61,7 +179,7 @@ std::string makeUniqueRenameLabel(unsigned int index,
                                   const std::unordered_set<std::string>& usedLabels) {
     std::string candidate = truncateHeliosName(preferredBase);
     if (candidate.empty()) {
-        candidate = truncateHeliosName(makeFallbackLabel(index));
+        candidate = makeGenericHeliosFallbackName(index);
     }
 
     const std::string truncatedCurrentLabel = truncateHeliosName(currentLabel);
@@ -382,6 +500,8 @@ struct DirectHeliosUsbProbe {
     libusb_device* device = nullptr;
     std::string portPath;
     std::string reportedLabel;
+    std::string productString;
+    std::string serialString;
     int firmwareVersion = 0;
     bool nameQuerySucceeded = false;
     bool nameWasEmpty = false;
@@ -423,11 +543,12 @@ HeliosManager::ActiveControllerSnapshot HeliosManager::snapshotActiveControllers
         return snapshot;
     }
 
-    for (const auto& [portPath, controller] : activeControllerSnapshot) {
+    for (const auto& [controllerName, controller] : activeControllerSnapshot) {
+        (void)controllerName;
         if (controller && controller->isConnected()) {
             // Record the exact DAC this process owns so discovery does not mark
             // our own connected device as "(in use)" by mistake.
-            snapshot.connectedPortPaths.insert(portPath);
+            snapshot.connectedPortPaths.insert(controller->controllerPortPath());
         }
     }
 
@@ -499,6 +620,8 @@ std::vector<HeliosControllerInfo> HeliosManager::collectDiscoveredControllers(
 
         probe.firmwareVersion = queryHeliosUsbFirmwareVersion(handle.get());
         announceHeliosSdkVersion(handle.get());
+        probe.productString = queryUsbStringDescriptor(handle.get(), descriptor.iProduct);
+        probe.serialString = queryUsbStringDescriptor(handle.get(), descriptor.iSerialNumber);
         const HeliosUsbNameQueryResult nameResult = queryHeliosUsbName(handle.get());
         probe.nameQuerySucceeded = nameResult.succeeded;
         probe.nameWasEmpty = nameResult.empty;
@@ -527,6 +650,8 @@ std::vector<HeliosControllerInfo> HeliosManager::collectDiscoveredControllers(
         DirectHeliosUsbProbe& probe = freeProbes[i];
         std::string label = probe.reportedLabel;
         const bool hadCachedLabel = stableLabelByPortPath.find(probe.portPath) != stableLabelByPortPath.end();
+        const std::string preferredDefaultName =
+            makeHeliosUsbDefaultName(probe.productString, probe.serialString, probe.portPath);
 
         if (label.empty()) {
             auto cachedLabel = stableLabelByPortPath.find(probe.portPath);
@@ -536,18 +661,21 @@ std::vector<HeliosControllerInfo> HeliosManager::collectDiscoveredControllers(
         }
 
         if (label.empty()) {
-            label = makeFallbackLabel(static_cast<unsigned int>(i));
+            label = preferredDefaultName;
         }
 
         const bool duplicateLabel = usedLabels.find(label) != usedLabels.end();
         const bool shouldPersistUniqueLabel = duplicateLabel || probe.nameWasEmpty;
         if (shouldPersistUniqueLabel) {
-            // Preserve the existing "auto-fix duplicate or empty Helios names"
-            // behavior, but do it through the same direct USB probe path rather
-            // than reopening the full vendor SDK device list.
+            // Empty or duplicate USB Helios names are unsafe as controller
+            // identities, so rewrite them to the same style as the vendor's
+            // default persistent names before exposing the device.
             const std::string originalDeviceLabel = probe.nameWasEmpty ? std::string() : label;
             const std::string renamedLabel =
-                makeUniqueRenameLabel(static_cast<unsigned int>(i), label, originalDeviceLabel, usedLabels);
+                makeUniqueRenameLabel(static_cast<unsigned int>(i),
+                                      preferredDefaultName,
+                                      originalDeviceLabel,
+                                      usedLabels);
             ScopedHeliosUsbHandle renameHandle(probe.device);
             if (renameHandle.valid() && setHeliosUsbName(renameHandle.get(), renamedLabel)) {
                 logInfo("[HeliosManager] Helios name auto-renamed",
@@ -634,7 +762,7 @@ std::vector<std::unique_ptr<core::ControllerInfo>> HeliosManager::discover() {
 
 std::string
 HeliosManager::controllerKey(const HeliosControllerInfo& info) const {
-    return info.portPath();
+    return info.labelValue();
 }
 
 std::shared_ptr<HeliosController>

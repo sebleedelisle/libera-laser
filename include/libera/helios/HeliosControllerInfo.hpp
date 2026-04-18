@@ -26,16 +26,16 @@ public:
     , isUsb(usbController)
     , firmwareVersion(firmwareVersionValue) {}
 
-    // For Helios USB we intentionally identify the physical device by USB port
-    // path rather than a vendor-SDK index.
+    // For Helios USB the persistent DAC name is the stable identity, while the
+    // port path remains the current transport locator used for the actual USB
+    // connection attempt.
     //
     // Why:
-    // - the bundled SDK opens every Helios USB DAC at once and assigns transient
-    //   indices inside one process-local device list
-    // - when another process is already using one Helios, those indices are no
-    //   longer stable or even globally meaningful
-    // - a port path lets us reconnect to the exact physical DAC we discovered
-    //   without forcing a process to claim all Helios devices first
+    // - users expect the same named DAC to keep its assignment if the cable
+    //   moves to another USB port
+    // - the bundled SDK's transient indices are not a safe identity either
+    // - direct libusb still needs the current port path so we can open the
+    //   exact physical DAC discovered on this scan
     const std::string& portPath() const { return usbPortPath; }
     bool isUsbController() const { return isUsb; }
     int firmwareVersionValue() const { return firmwareVersion; }
