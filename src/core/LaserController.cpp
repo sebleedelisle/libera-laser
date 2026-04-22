@@ -82,6 +82,14 @@ void LaserController::setRequestPointsCallback(const RequestPointsCallback& call
     setPointCallback(callback);
 }
 
+void LaserController::clearPointCallbackPrefetch() {
+    std::lock_guard<std::mutex> lock(contentSourceMutex);
+    if (activeSource != ContentSource::PointCallback) {
+        return;
+    }
+    resetPointCallbackAdapterState();
+}
+
 // returns false if the controller isn't ready for a new frame or if the frame is empty. 
 
 bool LaserController::sendFrame(Frame&& frame) {
@@ -202,6 +210,37 @@ std::optional<BufferState> LaserController::getBufferState() const {
     return buildBufferState(
         clampPointCountToInt(virtualTargetPoints),
         clampPointCountToInt(virtualBufferedPoints));
+}
+
+std::optional<LaserController::PointCallbackBufferBreakdown>
+LaserController::getPointCallbackBufferBreakdown() const {
+    const auto transportState = LaserControllerStreaming::getBufferState();
+    const std::size_t transportBufferedPoints =
+        transportState ? static_cast<std::size_t>(std::max(transportState->pointsInBuffer, 0)) : 0;
+
+    ContentSource source = ContentSource::None;
+    {
+        std::lock_guard<std::mutex> lock(contentSourceMutex);
+        source = activeSource;
+    }
+
+    std::size_t prefetchedPoints = 0;
+    if (source == ContentSource::PointCallback) {
+        std::lock_guard<std::mutex> lock(pointStreamFramerMutex);
+        if (pointStreamFramer) {
+            prefetchedPoints = pointStreamFramer->bufferedPointCount();
+        }
+    }
+
+    if (!transportState && prefetchedPoints == 0) {
+        return std::nullopt;
+    }
+
+    PointCallbackBufferBreakdown breakdown;
+    breakdown.transportBufferedPoints = transportBufferedPoints;
+    breakdown.prefetchedPoints = prefetchedPoints;
+    breakdown.totalBufferedPoints = transportBufferedPoints + prefetchedPoints;
+    return breakdown;
 }
 
 bool LaserController::requestPoints(const PointFillRequest& request) {
@@ -356,6 +395,18 @@ void LaserController::noteFrameTransportSubmission(
     std::size_t pointCount,
     std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
     std::uint32_t pointRateValue) {
+    noteFrameTransportSubmissionBounded(
+        pointCount,
+        estimatedFirstPointRenderTime,
+        pointRateValue,
+        std::numeric_limits<std::size_t>::max());
+}
+
+void LaserController::noteFrameTransportSubmissionBounded(
+    std::size_t pointCount,
+    std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
+    std::uint32_t pointRateValue,
+    std::size_t maxCarryOverPoints) {
     if (pointCount == 0) {
         return;
     }
@@ -383,7 +434,10 @@ void LaserController::noteFrameTransportSubmission(
                 clampPointCountToInt(frameTransportEstimate.snapshotPoints));
 
             if (remainingPoints > 0) {
-                totalBufferedPoints += static_cast<std::size_t>(remainingPoints);
+                const auto carryOverPoints = std::min<std::size_t>(
+                    static_cast<std::size_t>(remainingPoints),
+                    maxCarryOverPoints);
+                totalBufferedPoints += carryOverPoints;
                 // Once playout has started we can collapse the aggregate
                 // backlog to "remaining points from now". If playout has not
                 // started yet, keep the future start time so the estimate does

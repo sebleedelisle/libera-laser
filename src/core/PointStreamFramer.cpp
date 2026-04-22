@@ -24,7 +24,7 @@ void PointStreamFramer::setTransportBufferedPoints(std::size_t size) {
 }
 
 std::size_t PointStreamFramer::bufferedPointCount() const {
-    return accumulator.size();
+    return accumulator.size() + preparedPointCount;
 }
 
 bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
@@ -34,26 +34,75 @@ bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
         return false;
     }
 
-    // Determine how many points we want in the accumulator before searching.
-    // Normally 2x nominal so we can see a full loop, but if we've been
-    // force-emitting repeatedly (no natural boundaries found), don't over-buffer.
-    const float maxFactor = (consecutiveForceEmits >= forceEmitFallbackCount)
-                                ? 1.1f
-                                : searchWindowMaxFactor;
-    const std::size_t lookaheadTarget =
-        std::min(static_cast<std::size_t>(nominalFrameSize * maxFactor), maxFrameSize);
-    const std::size_t desiredBufferedPoints =
-        std::max(virtualBufferTarget, lookaheadTarget);
-    const std::size_t currentBufferedPoints = transportBufferedPoints + accumulator.size();
-
-    // Pull only the deficit needed to reach the shared virtual backlog target.
-    // This keeps callback generation bounded when the frame transport is
-    // already sitting on a deep queue of previously accepted frames.
-    if (currentBufferedPoints < desiredBufferedPoints) {
-        const std::size_t deficit = desiredBufferedPoints - currentBufferedPoints;
-        pullPoints(callback, templateRequest, deficit);
+    ensurePreparedFrames(callback, templateRequest, 1 + preparedFrameReserveCount);
+    if (preparedFrames.empty()) {
+        return false;
     }
 
+    outputFrame = Frame{};
+    outputFrame.points = std::move(preparedFrames.front());
+    preparedPointCount -= outputFrame.points.size();
+    preparedFrames.pop_front();
+    return !outputFrame.points.empty();
+}
+
+void PointStreamFramer::ensurePreparedFrames(const RequestPointsCallback& callback,
+                                             const PointFillRequest& templateRequest,
+                                             std::size_t desiredReadyFrames) {
+    if (!callback) {
+        return;
+    }
+
+    while (preparedFrames.size() < desiredReadyFrames) {
+        // Determine how many points we want in the accumulator before searching.
+        // Pull a modest multiple of nominal so the search has room to find
+        // boundaries in frames somewhat larger than nominal, without buffering
+        // the full maxFrameSize and inflating latency. The search window itself
+        // extends to whatever is already in the accumulator (up to maxFrameSize),
+        // so larger frames are found naturally as the accumulator grows across
+        // successive extractFrame calls.
+        const std::size_t lookaheadTarget =
+            (consecutiveForceEmits >= forceEmitFallbackCount)
+                ? std::min(static_cast<std::size_t>(nominalFrameSize * 1.1f), maxFrameSize)
+                : std::min(nominalFrameSize * 4, maxFrameSize);
+
+        // Two separate pull requirements:
+        // 1. The accumulator itself must have enough data for the search window.
+        //    Transport-buffered points are already downstream and can't be searched.
+        // 2. The total virtual backlog (accumulator + transport) should not exceed
+        //    the desired target, to avoid over-generating content.
+        const std::size_t accumulatorDeficit =
+            (accumulator.size() < lookaheadTarget)
+                ? (lookaheadTarget - accumulator.size())
+                : 0;
+        const std::size_t totalBuffered =
+            transportBufferedPoints + preparedPointCount + accumulator.size();
+        const std::size_t desiredBufferedPoints =
+            std::max(virtualBufferTarget, lookaheadTarget);
+        const std::size_t backlogDeficit =
+            (totalBuffered < desiredBufferedPoints)
+                ? (desiredBufferedPoints - totalBuffered)
+                : 0;
+        const std::size_t pullCount = std::max(accumulatorDeficit, backlogDeficit);
+
+        if (pullCount > 0) {
+            pullPoints(callback, templateRequest, pullCount);
+        }
+
+        if (accumulator.empty()) {
+            return;
+        }
+
+        std::vector<LaserPoint> preparedFrame;
+        if (!extractOneFrame(preparedFrame)) {
+            return;
+        }
+        preparedPointCount += preparedFrame.size();
+        preparedFrames.push_back(std::move(preparedFrame));
+    }
+}
+
+bool PointStreamFramer::extractOneFrame(std::vector<LaserPoint>& framePoints) {
     if (accumulator.empty()) {
         return false;
     }
@@ -70,9 +119,8 @@ bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
 
     if (splitIndex > 0) {
         // Natural boundary found — emit points [0, splitIndex).
-        outputFrame = Frame{};
-        outputFrame.points.assign(accumulator.begin(),
-                                  accumulator.begin() + static_cast<std::ptrdiff_t>(splitIndex));
+        framePoints.assign(accumulator.begin(),
+                           accumulator.begin() + static_cast<std::ptrdiff_t>(splitIndex));
         accumulator.erase(accumulator.begin(),
                           accumulator.begin() + static_cast<std::ptrdiff_t>(splitIndex));
 
@@ -84,14 +132,13 @@ bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
             anchorSet = false;
         }
         consecutiveForceEmits = 0;
-        return true;
+        return !framePoints.empty();
     }
 
     // No natural boundary — force-emit at nominal size.
     const std::size_t emitCount = std::min(nominalFrameSize, accumulator.size());
-    outputFrame = Frame{};
-    outputFrame.points.assign(accumulator.begin(),
-                              accumulator.begin() + static_cast<std::ptrdiff_t>(emitCount));
+    framePoints.assign(accumulator.begin(),
+                       accumulator.begin() + static_cast<std::ptrdiff_t>(emitCount));
     accumulator.erase(accumulator.begin(),
                       accumulator.begin() + static_cast<std::ptrdiff_t>(emitCount));
 
@@ -103,11 +150,13 @@ bool PointStreamFramer::extractFrame(const RequestPointsCallback& callback,
         anchorSet = false;
     }
     ++consecutiveForceEmits;
-    return true;
+    return !framePoints.empty();
 }
 
 void PointStreamFramer::reset() {
     accumulator.clear();
+    preparedFrames.clear();
+    preparedPointCount = 0;
     anchorX = 0.0f;
     anchorY = 0.0f;
     anchorSet = false;
@@ -145,16 +194,11 @@ std::size_t PointStreamFramer::findNaturalBoundary() const {
     const float minFactor = (consecutiveForceEmits >= forceEmitFallbackCount)
                                 ? 0.9f
                                 : searchWindowMinFactor;
-    const float maxFactor = (consecutiveForceEmits >= forceEmitFallbackCount)
-                                ? 1.1f
-                                : searchWindowMaxFactor;
 
     const std::size_t windowStart =
         static_cast<std::size_t>(nominalFrameSize * minFactor);
     const std::size_t windowEnd =
-        std::min({static_cast<std::size_t>(nominalFrameSize * maxFactor),
-                  maxFrameSize,
-                  accumulator.size()});
+        std::min(maxFrameSize, accumulator.size());
 
     if (windowStart >= windowEnd) {
         return 0;

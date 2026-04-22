@@ -583,6 +583,7 @@ void HeliosController::prepareForShutdown() {
 void HeliosController::close() {
     setConnectionState(false);
     clearFrameTransportSubmissionEstimate();
+    lastSubmittedFramePoints.store(0, std::memory_order_relaxed);
     estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
     if (usbConnection) {
         // For direct USB, closing means releasing exactly one DAC's interface.
@@ -660,6 +661,7 @@ void HeliosController::run() {
             }
             setConnectionState(false);
             clearFrameTransportSubmissionEstimate();
+            lastSubmittedFramePoints.store(0, std::memory_order_relaxed);
             wasConnected = false;
             std::this_thread::sleep_for(100ms);
             continue;
@@ -771,10 +773,14 @@ void HeliosController::run() {
             estimatedWriteLeadMicros.store(
                 detail::smoothWriteLeadMicros(previousWriteLeadMicros, measuredWriteLeadMicros),
                 std::memory_order_relaxed);
-            noteFrameTransportSubmission(
+            const auto previousFramePoints =
+                lastSubmittedFramePoints.load(std::memory_order_relaxed);
+            noteFrameTransportSubmissionBounded(
                 frameBuffer.size(),
                 estimatedFirstRenderTime,
-                pps);
+                pps,
+                previousFramePoints);
+            lastSubmittedFramePoints.store(frameBuffer.size(), std::memory_order_relaxed);
             currentPointIndex.fetch_add(frameBuffer.size(), std::memory_order_relaxed);
         }
     }

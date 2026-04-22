@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <vector>
 
 namespace libera::core {
@@ -21,14 +22,17 @@ struct Frame;
  * PointStreamFramer accumulates points from a callback, detects natural loop
  * closures (blanked points near the accumulation anchor), and emits visually
  * complete frames. If no natural boundary is found it falls back to a fixed-
- * size emit identical to the previous behaviour.
+ * size emit identical to the previous behaviour. The framer also keeps one
+ * prepared frame in reserve when possible so frame-ingester transports do not
+ * have to replay the previous hardware frame while waiting for point-to-frame
+ * conversion on the next ready poll.
  */
 class PointStreamFramer {
 public:
     /// Set the target frame size in points (e.g. pointRate * 10ms / 1000).
     void setNominalFrameSize(std::size_t size);
 
-    /// Set the hard upper limit on emitted frame size (e.g. HELIOS_MAX_POINTS).
+    /// Set the hard upper limit on emitted frame size (hardware-dependent).
     void setMaxFrameSize(std::size_t size);
 
     /**
@@ -73,6 +77,12 @@ public:
     void reset();
 
 private:
+    void ensurePreparedFrames(const RequestPointsCallback& callback,
+                              const PointFillRequest& templateRequest,
+                              std::size_t desiredReadyFrames);
+
+    bool extractOneFrame(std::vector<LaserPoint>& framePoints);
+
     void pullPoints(const RequestPointsCallback& callback,
                     const PointFillRequest& templateRequest,
                     std::size_t count);
@@ -84,6 +94,8 @@ private:
     static bool isBlanked(const LaserPoint& p);
 
     std::vector<LaserPoint> accumulator;
+    std::deque<std::vector<LaserPoint>> preparedFrames;
+    std::size_t preparedPointCount = 0;
     float anchorX = 0.0f;
     float anchorY = 0.0f;
     bool anchorSet = false;
@@ -95,11 +107,11 @@ private:
     std::uint64_t totalPointsConsumed = 0;
 
     // Tunable parameters
-    static constexpr float distanceThreshold = 0.15f;
+    static constexpr float distanceThreshold = 0.3f;
     static constexpr float blankThreshold = 0.01f;
     static constexpr float searchWindowMinFactor = 0.5f;
-    static constexpr float searchWindowMaxFactor = 2.0f;
     static constexpr std::size_t forceEmitFallbackCount = 3;
+    static constexpr std::size_t preparedFrameReserveCount = 1;
 };
 
 } // namespace libera::core

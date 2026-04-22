@@ -41,6 +41,17 @@ public:
         noteFrameTransportSubmission(pointCount, estimatedFirstPointRenderTime, pointRate);
     }
 
+    void noteSubmittedFrameBounded(std::size_t pointCount,
+                                   std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
+                                   std::uint32_t pointRate,
+                                   std::size_t maxCarryOverPoints) {
+        noteFrameTransportSubmissionBounded(
+            pointCount,
+            estimatedFirstPointRenderTime,
+            pointRate,
+            maxCarryOverPoints);
+    }
+
 protected:
     void run() override {}
 };
@@ -426,6 +437,72 @@ void testPointCallbackOnlyPullsRemainingHeadroomAboveTransportBacklog() {
               "transport frame size stays unchanged even when the callback is throttled");
 }
 
+void testClearingPointCallbackPrefetchDropsStaleAccumulatorButKeepsTransportEstimate() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(100));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    preparePointCallbackController(controller);
+
+    std::size_t callbackCallCount = 0;
+    std::size_t lastRequestedMax = 0;
+    std::size_t nextPointIndex = 0;
+    controller.setPointCallback(
+        [&callbackCallCount, &lastRequestedMax, &nextPointIndex](
+            const PointFillRequest& request,
+            std::vector<LaserPoint>& out) {
+            ++callbackCallCount;
+            lastRequestedMax = request.maximumPointsRequired;
+            for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.x = 160.0f + static_cast<float>(nextPointIndex++);
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                point.i = 1.0f;
+                out.push_back(point);
+            }
+        });
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame firstOutput;
+    ASSERT_TRUE(controller.requestFrameNow(20, 20, now, firstOutput, 20),
+                "requestFrame succeeds while building callback prefetch");
+    controller.noteSubmittedFrame(20, now + std::chrono::milliseconds(40), 1000);
+
+    controller.clearPointCallbackPrefetch();
+
+    const auto clearedBuffer = controller.getBufferState();
+    ASSERT_TRUE(clearedBuffer.has_value(),
+                "transport backlog remains visible after clearing callback prefetch");
+    ASSERT_EQ(clearedBuffer->pointsInBuffer, 20,
+              "clearing callback prefetch preserves only the submitted transport frame");
+
+    Frame secondOutput;
+    ASSERT_TRUE(controller.requestFrameNow(20, 20, now, secondOutput, 20),
+                "requestFrame rebuilds callback prefetch after a clear");
+    ASSERT_EQ(callbackCallCount, static_cast<std::size_t>(2),
+              "callback runs again once stale prefetched points are discarded");
+    ASSERT_EQ(lastRequestedMax, static_cast<std::size_t>(100),
+              "callback only repulls the headroom above retained transport backlog");
+}
+
+void testBoundedTransportSubmissionCapsCarriedBacklog() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    prepareController(controller);
+
+    const auto futureStart = std::chrono::steady_clock::now() + std::chrono::milliseconds(40);
+    controller.noteSubmittedFrame(80, futureStart, 1000);
+    controller.noteSubmittedFrameBounded(50, futureStart, 1000, 40);
+
+    const auto buffered = controller.getBufferState();
+    ASSERT_TRUE(buffered.has_value(),
+                "bounded transport submission should still publish a buffer estimate");
+    ASSERT_EQ(buffered->pointsInBuffer, 90,
+              "bounded transport submission caps carried backlog before adding the new frame");
+}
+
 } // namespace
 
 int main() {
@@ -439,6 +516,8 @@ int main() {
     testPointCallbackFrameRequestHonoursBackendMaximum();
     testPointCallbackBuildsSharedVirtualBuffer();
     testPointCallbackOnlyPullsRemainingHeadroomAboveTransportBacklog();
+    testClearingPointCallbackPrefetchDropsStaleAccumulatorButKeepsTransportEstimate();
+    testBoundedTransportSubmissionCapsCarriedBacklog();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

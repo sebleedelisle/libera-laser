@@ -34,6 +34,12 @@ public:
         FrameQueue
     };
 
+    struct PointCallbackBufferBreakdown {
+        std::size_t transportBufferedPoints = 0;
+        std::size_t prefetchedPoints = 0;
+        std::size_t totalBufferedPoints = 0;
+    };
+
     using PointCallback = RequestPointsCallback;
 
     LaserController();
@@ -95,6 +101,16 @@ public:
      */
     void setRequestPointsCallback(const RequestPointsCallback& callback);
 
+    /**
+     * @brief Discard prefetched point-callback data that has not reached transport yet.
+     *
+     * This is useful for "latest frame wins" bridges that replace their
+     * source stream wholesale and do not want stale callback lookahead to
+     * survive across that replacement. Already submitted transport data is
+     * intentionally left intact.
+     */
+    void clearPointCallbackPrefetch();
+
     bool sendFrame(Frame&& frame);
     void useFrameQueue();
     void clearFrameQueue();
@@ -106,6 +122,7 @@ public:
     bool isReadyForNewFrame() const;
     std::size_t queuedFrameCount() const;
     std::optional<BufferState> getBufferState() const override;
+    std::optional<PointCallbackBufferBreakdown> getPointCallbackBufferBreakdown() const;
 
 protected:
     struct FrameFillRequest {
@@ -137,6 +154,19 @@ protected:
         std::size_t pointCount,
         std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
         std::uint32_t pointRateValue);
+
+    /**
+     * @brief Record a frame transport submission while capping carried-over backlog.
+     *
+     * Some frame transports expose bounded hardware buffering, so once a write
+     * is accepted any previously buffered playout can only contribute up to a
+     * known maximum amount of remaining work.
+     */
+    void noteFrameTransportSubmissionBounded(
+        std::size_t pointCount,
+        std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
+        std::uint32_t pointRateValue,
+        std::size_t maxCarryOverPoints);
 
     /// Drop any shared frame-transport backlog estimate on disconnect/reset.
     void clearFrameTransportSubmissionEstimate();

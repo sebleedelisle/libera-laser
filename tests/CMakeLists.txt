@@ -17,6 +17,7 @@ set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_status.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_transition.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_scanner_sync.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_point_stream_framer.cpp
 )
 
 set(LIBERA_INTEGRATION_TESTS
@@ -25,6 +26,7 @@ set(LIBERA_INTEGRATION_TESTS
 
 set(LIBERA_HARDWARE_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_packet_latency.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_usb_stream.cpp
 )
 
 foreach(test_source IN LISTS LIBERA_UNIT_TESTS)

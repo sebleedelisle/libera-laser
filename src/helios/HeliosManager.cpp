@@ -665,7 +665,11 @@ std::vector<HeliosControllerInfo> HeliosManager::collectDiscoveredControllers(
         }
 
         const bool duplicateLabel = usedLabels.find(label) != usedLabels.end();
-        const bool shouldPersistUniqueLabel = duplicateLabel || probe.nameWasEmpty;
+        // Only attempt a hardware rename when the device name is genuinely
+        // new-empty (no cached label from a previous scan) or a true duplicate.
+        // Without the cache check, DACs that don't persist names to flash would
+        // trigger a rename on every single discovery cycle.
+        const bool shouldPersistUniqueLabel = duplicateLabel || (probe.nameWasEmpty && !hadCachedLabel);
         if (shouldPersistUniqueLabel) {
             // Empty or duplicate USB Helios names are unsafe as controller
             // identities, so rewrite them to the same style as the vendor's

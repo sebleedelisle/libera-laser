@@ -67,6 +67,7 @@ private:
     std::atomic<std::size_t> targetFramePoints{1000};
     std::atomic<bool> framePointCountExplicitlySet{false};
     std::atomic<std::uint64_t> currentPointIndex{0};
+    std::atomic<std::size_t> lastSubmittedFramePoints{0};
     std::atomic<std::int64_t> estimatedWriteLeadMicros{0};
     std::vector<HeliosPointExt> frameBuffer;
 
