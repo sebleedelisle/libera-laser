@@ -43,6 +43,7 @@ private:
     bool openDiscoverySession();
     void closeDiscoverySession();
     void runDiscoverySession();
+    void requestDiscoveryBurst();
     bool waitForNextDiscoveryBurst(std::chrono::steady_clock::duration delay);
     void pruneStaleUnlocked(Clock::time_point now);
     void updateSocketErrorState(const char* action, const std::error_code& ec);
@@ -53,6 +54,7 @@ private:
     std::thread listener;
     std::atomic<bool> running{false};
     std::atomic<bool> listenerFinished{false};
+    std::atomic<bool> discoveryRequested{false};
     std::mutex waitMutex;
     std::condition_variable waitCondition;
     std::optional<std::string> lastSocketError;

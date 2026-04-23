@@ -46,6 +46,7 @@ private:
     void closeDiscoverySession();
     void runDiscoverySession();
     void sendProbe(const std::shared_ptr<net::UdpSocket>& sessionSocket);
+    void requestDiscoveryBurst();
     bool waitForNextDiscoveryBurst(std::chrono::steady_clock::duration delay);
     void updateSocketErrorState(const char* action, const std::error_code& ec);
 
@@ -55,6 +56,7 @@ private:
     std::thread listener;
     std::atomic<bool> running{false};
     std::atomic<bool> listenerFinished{false};
+    std::atomic<bool> discoveryRequested{false};
     std::mutex waitMutex;
     std::condition_variable waitCondition;
     std::optional<std::string> lastSocketError;

@@ -69,6 +69,7 @@ EtherDreamManager::~EtherDreamManager() {
 
 std::vector<std::unique_ptr<core::ControllerInfo>>
 EtherDreamManager::discover() {
+    requestDiscoveryBurst();
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
     const auto now = Clock::now();
     std::lock_guard lock(controllersMutex);
@@ -286,10 +287,21 @@ void EtherDreamManager::runDiscoverySession() {
     }
 }
 
+void EtherDreamManager::requestDiscoveryBurst() {
+    discoveryRequested.store(true, std::memory_order_relaxed);
+    waitCondition.notify_all();
+}
+
 bool EtherDreamManager::waitForNextDiscoveryBurst(std::chrono::steady_clock::duration delay) {
     std::unique_lock lock(waitMutex);
-    waitCondition.wait_for(lock, delay, [this] { return !running.load(); });
-    return running.load();
+    waitCondition.wait_for(lock, delay, [this] {
+        return !running.load() || discoveryRequested.load(std::memory_order_relaxed);
+    });
+    if (!running.load()) {
+        return false;
+    }
+    discoveryRequested.store(false, std::memory_order_relaxed);
+    return true;
 }
 
 void EtherDreamManager::updateSocketErrorState(const char* action,

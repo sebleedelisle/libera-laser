@@ -191,8 +191,14 @@ void LaserCubeNetManager::sendProbe(const std::shared_ptr<net::UdpSocket>& sessi
 
 bool LaserCubeNetManager::waitForNextDiscoveryBurst(std::chrono::steady_clock::duration delay) {
     std::unique_lock lock(waitMutex);
-    waitCondition.wait_for(lock, delay, [this] { return !running.load(); });
-    return running.load();
+    waitCondition.wait_for(lock, delay, [this] {
+        return !running.load() || discoveryRequested.load(std::memory_order_relaxed);
+    });
+    if (!running.load()) {
+        return false;
+    }
+    discoveryRequested.store(false, std::memory_order_relaxed);
+    return true;
 }
 
 void LaserCubeNetManager::updateSocketErrorState(const char* action,
@@ -209,6 +215,7 @@ void LaserCubeNetManager::updateSocketErrorState(const char* action,
 }
 
 std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeNetManager::discover() {
+    requestDiscoveryBurst();
     std::vector<std::unique_ptr<core::ControllerInfo>> out;
     std::lock_guard lock(controllersMutex);
     out.reserve(controllers.size());
@@ -216,6 +223,11 @@ std::vector<std::unique_ptr<core::ControllerInfo>> LaserCubeNetManager::discover
         out.emplace_back(std::make_unique<LaserCubeNetControllerInfo>(entry.status));
     }
     return out;
+}
+
+void LaserCubeNetManager::requestDiscoveryBurst() {
+    discoveryRequested.store(true, std::memory_order_relaxed);
+    waitCondition.notify_all();
 }
 
 std::shared_ptr<LaserCubeNetController>
