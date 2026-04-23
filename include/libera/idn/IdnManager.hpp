@@ -40,7 +40,14 @@ private:
 };
 
 inline core::ControllerManagerRegistry IdnManager::registrar{
-    [] { return std::make_unique<IdnManager>(); }
+    core::ControllerManagerRegistration{
+        core::ControllerManagerInfo{
+            std::string(IdnControllerInfo::controllerType()),
+            "IDN",
+            "Helios IDN network controllers.",
+        },
+        [] { return std::make_unique<IdnManager>(); },
+    }
 };
 
 } // namespace libera::idn

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <unordered_set>
 #include <vector>
 
 #ifdef _WIN32
@@ -190,9 +191,20 @@ core::ControllerUsageState toUsageState(libera_controller_usage_state_t usageSta
     }
 }
 
+std::string canonicalPluginPath(const fs::path& path) {
+    std::error_code ec;
+    const auto canonical = fs::weakly_canonical(path, ec);
+    return ec ? path.string() : canonical.string();
+}
+
+std::unordered_set<std::string>& loadedPluginPaths() {
+    static std::unordered_set<std::string> paths;
+    return paths;
+}
+
 std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
     auto& registry = PluginRegistry::instance();
-    const std::string pathString = path.string();
+    const std::string pathString = canonicalPluginPath(path);
 
     void* handle = openLibrary(pathString);
     if (!handle) {
@@ -230,30 +242,12 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
         return nullptr;
     }
 
-    void* backendHandle = nullptr;
-    if (api->create_backend) {
-        backendHandle = api->create_backend(&kHostServices);
-        if (!backendHandle) {
-            libera::log::logError("Plugin: ", pathString,
-                                  " create_backend() failed");
-            closeLibrary(handle);
-            registry.recordFailure(pathString,
-                                   PluginState::FailedBackend,
-                                   "create_backend() returned null",
-                                   api->type_name,
-                                   api->display_name);
-            return nullptr;
-        }
-    }
-
     auto plugin = std::make_shared<LoadedPlugin>();
     plugin->libraryHandle = handle;
     plugin->api = api;
-    plugin->backendHandle = backendHandle;
     plugin->typeName = api->type_name;
     plugin->displayName = api->display_name;
     plugin->path = pathString;
-    plugin->initialised = true;
 
     libera::log::logInfo("Plugin: loaded \"", plugin->displayName,
                          "\" (type=",
@@ -279,8 +273,35 @@ PluginDelegateManager::~PluginDelegateManager() {
     closeAll();
 }
 
+bool PluginDelegateManager::ensureBackend() {
+    if (!plugin || !plugin->api) {
+        return false;
+    }
+    if (plugin->initialised) {
+        return true;
+    }
+
+    if (plugin->api->create_backend) {
+        plugin->backendHandle = plugin->api->create_backend(&kHostServices);
+        if (!plugin->backendHandle) {
+            const std::string message = "create_backend() returned null";
+            libera::log::logError("Plugin: ", plugin->path, " ", message);
+            PluginRegistry::instance().pushRuntimeError(
+                plugin->path, "create_backend", message);
+            return false;
+        }
+    }
+
+    plugin->initialised = true;
+    return true;
+}
+
 std::vector<std::unique_ptr<core::ControllerInfo>>
 PluginDelegateManager::discover() {
+    if (!ensureBackend()) {
+        return {};
+    }
+
     if (plugin->api->rescan) {
         plugin->api->rescan(plugin->backendHandle);
     }
@@ -327,6 +348,9 @@ PluginDelegateManager::discover() {
 
 std::shared_ptr<PluginController>
 PluginDelegateManager::createController(const PluginControllerInfo& info) {
+    if (!ensureBackend()) {
+        return nullptr;
+    }
     return std::make_shared<PluginController>(
         plugin->api,
         plugin->backendHandle,
@@ -371,13 +395,26 @@ void loadPluginsFromDirectory(const std::string& path) {
     std::sort(candidates.begin(), candidates.end());
 
     for (const auto& candidate : candidates) {
+        const std::string candidatePath = canonicalPluginPath(candidate);
+        if (loadedPluginPaths().find(candidatePath) != loadedPluginPaths().end()) {
+            continue;
+        }
+
         auto plugin = loadPlugin(candidate);
         if (!plugin) {
             continue;
         }
+        loadedPluginPaths().insert(candidatePath);
 
-        core::AddControllerManager([plugin]() {
-            return std::make_unique<PluginDelegateManager>(plugin);
+        core::AddControllerManager(core::ControllerManagerRegistration{
+            core::ControllerManagerInfo{
+                plugin->typeName,
+                plugin->displayName,
+                "Plugin controller from " + fs::path(plugin->path).filename().string(),
+            },
+            [plugin]() {
+                return std::make_unique<PluginDelegateManager>(plugin);
+            },
         });
     }
 }

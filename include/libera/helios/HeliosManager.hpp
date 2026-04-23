@@ -65,7 +65,14 @@ private:
 };
 
 inline core::ControllerManagerRegistry HeliosManager::registrar{
-    [] { return std::make_unique<HeliosManager>(); }
+    core::ControllerManagerRegistration{
+        core::ControllerManagerInfo{
+            std::string(HeliosControllerInfo::controllerType()),
+            "Helios",
+            "Helios USB and IDN controllers.",
+        },
+        [] { return std::make_unique<HeliosManager>(); },
+    }
 };
 
 } // namespace libera::helios

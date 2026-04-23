@@ -1,5 +1,8 @@
 #include "libera/System.hpp"
 
+#include <algorithm>
+#include <utility>
+
 #if LIBERA_ENABLE_PLUGINS
 #include "libera/plugin/PluginManager.hpp"
 #include <cstdlib>
@@ -23,12 +26,69 @@ std::vector<ControllerManagerFactory>& getControllerManagerFactories() {
     return factories;
 }
 
+std::vector<ControllerManagerRegistration>& getControllerManagerRegistrations() {
+    static std::vector<ControllerManagerRegistration> registrations;
+    return registrations;
+}
+
+namespace {
+
+ControllerManagerRegistration normalizeRegistration(ControllerManagerRegistration registration) {
+    if (registration.info.displayName.empty()) {
+        registration.info.displayName = registration.info.type;
+    }
+    return registration;
+}
+
+bool hasRegisteredManagerType(const std::string& type) {
+    if (type.empty()) {
+        return false;
+    }
+    const auto& registrations = getControllerManagerRegistrations();
+    return std::any_of(
+        registrations.begin(), registrations.end(),
+        [&](const ControllerManagerRegistration& registration) {
+            return registration.info.type == type;
+        });
+}
+
+} // namespace
+
 ControllerManagerRegistry::ControllerManagerRegistry(ControllerManagerFactory factory) {
     getControllerManagerFactories().push_back(std::move(factory));
 }
 
+ControllerManagerRegistry::ControllerManagerRegistry(ControllerManagerRegistration registration) {
+    AddControllerManager(std::move(registration));
+}
+
 void AddControllerManager(ControllerManagerFactory factory) {
     getControllerManagerFactories().push_back(std::move(factory));
+}
+
+void AddControllerManager(ControllerManagerRegistration registration) {
+    registration = normalizeRegistration(std::move(registration));
+    if (!registration.factory) {
+        return;
+    }
+    if (hasRegisteredManagerType(registration.info.type)) {
+        return;
+    }
+    getControllerManagerRegistrations().push_back(std::move(registration));
+}
+
+std::vector<ControllerManagerInfo> registeredControllerManagers() {
+    std::vector<ControllerManagerInfo> infos;
+    for (const auto& registration : getControllerManagerRegistrations()) {
+        if (!registration.info.type.empty()) {
+            infos.push_back(registration.info);
+        }
+    }
+    std::sort(infos.begin(), infos.end(),
+              [](const ControllerManagerInfo& a, const ControllerManagerInfo& b) {
+                  return a.displayName < b.displayName;
+              });
+    return infos;
 }
 
 } // namespace libera::core
@@ -132,6 +192,13 @@ std::vector<std::string>& pluginDirStorage() {
     return dirs;
 }
 
+void loadConfiguredPluginDirectories() {
+    for (const auto& dir : System::pluginDirectories()) {
+        if (dir.empty()) continue;
+        plugin::loadPluginsFromDirectory(resolvePluginDirectory(dir));
+    }
+}
+
 } // anonymous namespace
 
 void System::setPluginDirectory(const std::string& path) {
@@ -157,6 +224,12 @@ const std::vector<std::string>& System::pluginDirectories() {
 
 #else
 
+namespace {
+
+void loadConfiguredPluginDirectories() {}
+
+} // anonymous namespace
+
 void System::setPluginDirectory(const std::string&) {}
 
 const std::string& System::pluginDirectory() {
@@ -173,22 +246,45 @@ const std::vector<std::string>& System::pluginDirectories() {
 
 #endif
 
-System::System() {
-#if LIBERA_ENABLE_PLUGINS
-    for (const auto& dir : pluginDirectories()) {
-        if (dir.empty()) continue;
-        plugin::loadPluginsFromDirectory(resolvePluginDirectory(dir));
+System::System()
+: System(SystemOptions{}) {}
+
+System::System(SystemOptions options) {
+    loadConfiguredPluginDirectories();
+
+    auto controllerTypeEnabled = [&](std::string_view type) {
+        return type.empty() ||
+               options.disabledControllerTypes.find(std::string(type)) ==
+                   options.disabledControllerTypes.end();
+    };
+
+    for (const auto& registration : core::getControllerManagerRegistrations()) {
+        if (!registration.factory) continue;
+        if (!controllerTypeEnabled(registration.info.type)) continue;
+        auto manager = registration.factory();
+        if (!manager) continue;
+        auto type = std::string(manager->managedType());
+        managerByType[type] = manager.get();
+        managers.emplace_back(std::move(manager));
     }
-#endif
 
     for (const auto& factory : core::getControllerManagerFactories()) {
         if (!factory) continue;
         auto manager = factory();
         if (!manager) continue;
         auto type = std::string(manager->managedType());
+        if (!controllerTypeEnabled(type)) {
+            manager->closeAll();
+            continue;
+        }
         managerByType[type] = manager.get();
         managers.emplace_back(std::move(manager));
     }
+}
+
+std::vector<core::ControllerManagerInfo> System::availableControllerManagers() {
+    loadConfiguredPluginDirectories();
+    return core::registeredControllerManagers();
 }
 
 System::~System() {

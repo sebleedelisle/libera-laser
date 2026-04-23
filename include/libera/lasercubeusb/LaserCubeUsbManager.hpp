@@ -31,7 +31,14 @@ private:
 };
 
 inline core::ControllerManagerRegistry LaserCubeUsbManager::registrar{
-    [] { return std::make_unique<LaserCubeUsbManager>(); }
+    core::ControllerManagerRegistration{
+        core::ControllerManagerInfo{
+            std::string(LaserCubeUsbControllerInfo::controllerType()),
+            "LaserCube USB",
+            "LaserCube controllers connected by USB.",
+        },
+        [] { return std::make_unique<LaserCubeUsbManager>(); },
+    }
 };
 
 } // namespace libera::lasercubeusb

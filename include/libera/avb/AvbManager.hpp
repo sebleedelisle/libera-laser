@@ -57,7 +57,14 @@ public:
 };
 
 inline core::ControllerManagerRegistry AvbManager::registrar{
-    [] { return std::make_unique<AvbManager>(); }
+    core::ControllerManagerRegistration{
+        core::ControllerManagerInfo{
+            std::string(AvbControllerInfo::controllerType()),
+            "AVB",
+            "Audio interface backed AVB controller outputs.",
+        },
+        [] { return std::make_unique<AvbManager>(); },
+    }
 };
 
 } // namespace libera::avb

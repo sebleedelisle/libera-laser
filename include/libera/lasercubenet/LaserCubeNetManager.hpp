@@ -61,7 +61,14 @@ private:
 };
 
 inline core::ControllerManagerRegistry LaserCubeNetManager::registrar{
-    [] { return std::make_unique<LaserCubeNetManager>(); }
+    core::ControllerManagerRegistration{
+        core::ControllerManagerInfo{
+            std::string(LaserCubeNetControllerInfo::controllerType()),
+            "LaserCube Net",
+            "Network LaserCube controllers discovered by broadcast.",
+        },
+        [] { return std::make_unique<LaserCubeNetManager>(); },
+    }
 };
 
 } // namespace libera::lasercubenet

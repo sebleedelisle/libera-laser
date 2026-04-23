@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -74,21 +75,41 @@ public:
 
 using ControllerManagerFactory = std::function<std::unique_ptr<AbstractControllerManager>()>;
 
+struct ControllerManagerInfo {
+    std::string type;
+    std::string displayName;
+    std::string description;
+};
+
+struct ControllerManagerRegistration {
+    ControllerManagerInfo info;
+    ControllerManagerFactory factory;
+};
+
 std::vector<ControllerManagerFactory>& getControllerManagerFactories();
+std::vector<ControllerManagerRegistration>& getControllerManagerRegistrations();
+std::vector<ControllerManagerInfo> registeredControllerManagers();
 
 struct ControllerManagerRegistry {
     explicit ControllerManagerRegistry(ControllerManagerFactory factory);
+    explicit ControllerManagerRegistry(ControllerManagerRegistration registration);
 };
 
 void AddControllerManager(ControllerManagerFactory factory);
+void AddControllerManager(ControllerManagerRegistration registration);
 
 } // namespace libera::core
 
 namespace libera {
 
+struct SystemOptions {
+    std::set<std::string> disabledControllerTypes;
+};
+
 class System {
 public:
     System();
+    explicit System(SystemOptions options);
     ~System();
 
     /// Replace the default plugin search paths with one directory.
@@ -107,6 +128,7 @@ public:
     /// the executable directory first, then the current working directory.
     static void addPluginDirectory(const std::string& path);
     static const std::vector<std::string>& pluginDirectories();
+    static std::vector<core::ControllerManagerInfo> availableControllerManagers();
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info);

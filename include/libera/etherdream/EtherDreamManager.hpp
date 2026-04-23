@@ -57,7 +57,14 @@ private:
 };
 
 inline core::ControllerManagerRegistry EtherDreamManager::registrar{
-    [] { return std::make_unique<EtherDreamManager>(); }
+    core::ControllerManagerRegistration{
+        core::ControllerManagerInfo{
+            std::string(EtherDreamControllerInfo::controllerType()),
+            "Ether Dream",
+            "Network DACs discovered from Ether Dream broadcasts.",
+        },
+        [] { return std::make_unique<EtherDreamManager>(); },
+    }
 };
 
 } // namespace libera::etherdream

@@ -40,6 +40,7 @@ public:
 private:
     std::shared_ptr<LoadedPlugin> plugin;
 
+    bool ensureBackend();
     ControllerPtr createController(const PluginControllerInfo& info) override;
     NewControllerDisposition prepareNewController(PluginController& controller,
                                                   const PluginControllerInfo& info) override;
