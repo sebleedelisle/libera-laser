@@ -15,6 +15,8 @@ namespace {
 struct DiscoveredIdnService {
     std::string unitId;
     core::ControllerInfo::NetworkInfo networkInfo;
+    std::string hostName;
+    std::string serviceName;
 };
 
 // Snapshot of one raw discovery pass. The same unit can be looked up either by
@@ -45,10 +47,18 @@ std::string truncateToSdkNameLength(std::string value) {
     return value;
 }
 
-std::string makeServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
-                             const IDNSL_SERVICE_INFO& serviceInfo) {
+std::string makeSdkServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
+                                const IDNSL_SERVICE_INFO& serviceInfo) {
     return truncateToSdkNameLength(
         std::string(serverInfo.hostName).append(" - ").append(serviceInfo.serviceName));
+}
+
+std::string makeDisplayServiceLabel(const IDNSL_SERVICE_INFO& serviceInfo,
+                                    const std::string& fallbackLabel) {
+    if (serviceInfo.serviceName[0] != '\0') {
+        return serviceInfo.serviceName;
+    }
+    return fallbackLabel;
 }
 
 std::string ipv4ToString(const in_addr& addr) {
@@ -107,9 +117,14 @@ IdnDiscoverySnapshot discoverIdnServices() {
 
         const std::string unitId = encodeUnitIdHex(serverInfo->unitID);
         for (unsigned int i = 0; i < serverInfo->serviceCount; ++i) {
-            const auto label = makeServiceLabel(*serverInfo, serverInfo->serviceTable[i]);
-            DiscoveredIdnService service{unitId, *endpoint};
-            snapshot.servicesByLabel[label].push_back(service);
+            const auto sdkLabel = makeSdkServiceLabel(*serverInfo, serverInfo->serviceTable[i]);
+            DiscoveredIdnService service{
+                unitId,
+                *endpoint,
+                serverInfo->hostName,
+                makeDisplayServiceLabel(serverInfo->serviceTable[i], sdkLabel),
+            };
+            snapshot.servicesByLabel[sdkLabel].push_back(service);
             snapshot.servicesByIp[endpoint->ip].push_back(std::move(service));
         }
     }
@@ -237,12 +252,13 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
         seenIndices.insert(index);
 
         char name[32] = {};
-        std::string label;
+        std::string sdkLabel;
         if (sdk->GetName(index, name) == HELIOS_SUCCESS) {
-            label = name;
+            sdkLabel = name;
         } else {
-            label = makeFallbackLabel(index);
+            sdkLabel = makeFallbackLabel(index);
         }
+        std::string label = sdkLabel;
 
         const int firmware = sdk->GetFirmwareVersion(index);
         const auto stableUnitIdIt = stableUnitIdByIndex.find(index);
@@ -254,25 +270,32 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
         // SDK index as the transient runtime handle for this specific snapshot.
         std::optional<DiscoveredIdnService> matchedService =
             matchDiscoveredService(discoverySnapshot.servicesByLabel,
-                                   truncateToSdkNameLength(label),
+                                   truncateToSdkNameLength(sdkLabel),
                                    preferredUnitId,
                                    usedUnitIds);
 
         std::optional<core::ControllerInfo::NetworkInfo> networkInfo;
         static constexpr const char* idnIpPrefix = "IDN: ";
-        if (!matchedService && label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
+        if (!matchedService && sdkLabel.rfind(idnIpPrefix, 0) == 0 && sdkLabel.size() > 5) {
             // Some SDK fallback names only expose the IP address. Use that as a
             // second lookup path so we can still recover the stable unit ID.
             matchedService = matchDiscoveredService(discoverySnapshot.servicesByIp,
-                                                    label.substr(5),
+                                                    sdkLabel.substr(5),
                                                     preferredUnitId,
                                                     usedUnitIds);
         }
 
         std::string unitId;
+        std::string hostName;
+        std::string serviceName;
         if (matchedService) {
             unitId = matchedService->unitId;
             networkInfo = matchedService->networkInfo;
+            hostName = matchedService->hostName;
+            serviceName = matchedService->serviceName;
+            if (!serviceName.empty()) {
+                label = serviceName;
+            }
         } else if (stableUnitIdIt != stableUnitIdByIndex.end()) {
             unitId = stableUnitIdIt->second;
         } else {
@@ -295,9 +318,9 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
             }
         }
 
-        if (!networkInfo && label.rfind(idnIpPrefix, 0) == 0 && label.size() > 5) {
+        if (!networkInfo && sdkLabel.rfind(idnIpPrefix, 0) == 0 && sdkLabel.size() > 5) {
             networkInfo = core::ControllerInfo::NetworkInfo{
-                label.substr(5),
+                sdkLabel.substr(5),
                 static_cast<std::uint16_t>(IDN_PORT)};
         }
         std::string id = makeControllerIdFromUnitId(unitId);
@@ -309,7 +332,9 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
             HELIOS_MAX_PPS_IDN,
             index,
             firmware,
-            std::move(networkInfo)));
+            std::move(networkInfo),
+            std::move(hostName),
+            std::move(serviceName)));
     }
 
     for (auto it = stableUnitIdByIndex.begin(); it != stableUnitIdByIndex.end();) {

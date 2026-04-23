@@ -69,7 +69,7 @@ inline core::ControllerManagerRegistry HeliosManager::registrar{
         core::ControllerManagerInfo{
             std::string(HeliosControllerInfo::controllerType()),
             "Helios",
-            "Helios USB and IDN controllers.",
+            "Helios USB controllers.",
         },
         [] { return std::make_unique<HeliosManager>(); },
     }
