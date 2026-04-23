@@ -19,19 +19,19 @@ class UdpSocket {
 public:
     explicit UdpSocket(asio::io_context& io) : sock(io) {}
 
-    std::error_code open_v4() {
+    std::error_code open_v4(bool logFailure = true) {
         std::error_code ec;
         sock.open(udp::v4(), ec);
-        if (ec) {
+        if (ec && logFailure) {
             logError("[UdpSocket] open_v4 failed", ec.message());
         }
         return ec;
     }
 
-    std::error_code bind_any(uint16_t port) {
+    std::error_code bind_any(uint16_t port, bool logFailure = true) {
         std::error_code ec;
         sock.bind(udp::endpoint(udp::v4(), port), ec);
-        if (ec) {
+        if (ec && logFailure) {
             logError("[UdpSocket] bind_any failed on port", port, ec.message());
         }
         return ec;

@@ -24,6 +24,14 @@ struct LaserCubeNetConfig {
     static constexpr std::size_t SAFETY_HEADROOM_POINTS =
         MAX_POINTS_PER_PACKET * SAFETY_HEADROOM_PACKETS;
 
+    // Discovery runs in short bursts so background instances do not hold the
+    // command port continuously when they are only browsing devices.
+    static constexpr auto DISCOVERY_RECV_TIMEOUT = std::chrono::milliseconds(250);
+    static constexpr auto DISCOVERY_PROBE_INTERVAL = std::chrono::milliseconds(500);
+    static constexpr auto DISCOVERY_LISTEN_WINDOW = std::chrono::milliseconds(1500);
+    static constexpr auto DISCOVERY_IDLE_INTERVAL = std::chrono::seconds(8);
+    static constexpr auto DISCOVERY_STALE_AFTER = std::chrono::seconds(15);
+
     static std::uint32_t clampPointRate(std::uint32_t pointRate, std::uint32_t maxPointRate) {
         if (maxPointRate > 0 && pointRate > maxPointRate) {
             return maxPointRate;

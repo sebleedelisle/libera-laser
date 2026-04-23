@@ -11,8 +11,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -37,13 +40,22 @@ private:
     };
 
     void threadedFunction();
+    bool openDiscoverySession();
+    void closeDiscoverySession();
+    void runDiscoverySession();
+    bool waitForNextDiscoveryBurst(std::chrono::steady_clock::duration delay);
     void pruneStaleUnlocked(Clock::time_point now);
+    void updateSocketErrorState(const char* action, const std::error_code& ec);
 
     std::shared_ptr<asio::io_context> io;
-    std::unique_ptr<net::UdpSocket> socket;
+    std::shared_ptr<net::UdpSocket> socket;
+    std::mutex socketMutex;
     std::thread listener;
     std::atomic<bool> running{false};
     std::atomic<bool> listenerFinished{false};
+    std::mutex waitMutex;
+    std::condition_variable waitCondition;
+    std::optional<std::string> lastSocketError;
 
     std::mutex controllersMutex;
     std::unordered_map<std::string, ControllerEntry> controllers;

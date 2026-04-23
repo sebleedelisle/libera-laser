@@ -202,6 +202,13 @@ typedef struct {
     /*
      * Optional: called before discover() when the host wants fresh state.
      * Useful for network discovery plugins.
+     *
+     * Recommended pattern:
+     * - perform one bounded discovery pass here
+     * - update the backend's cached device list
+     * - return without leaving discovery sockets open unnecessarily
+     *
+     * Then discover() can simply emit that cached state.
      */
     void  (*rescan)(void* backend);
 

@@ -15,7 +15,13 @@ namespace libera::etherdream::config {
 // Networking ------------------------------------------------------------------
 constexpr unsigned short ETHERDREAM_DAC_PORT_DEFAULT = 7765;
 constexpr unsigned short ETHERDREAM_DISCOVERY_PORT = 7654;
-constexpr std::chrono::seconds ETHERDREAM_DISCOVERY_TIMEOUT{3};
+// Discovery runs in bounded background bursts so idle apps do not hold the
+// well-known UDP discovery port continuously.
+constexpr std::chrono::milliseconds ETHERDREAM_DISCOVERY_RECV_TIMEOUT{250};
+constexpr std::chrono::seconds ETHERDREAM_DISCOVERY_LISTEN_WINDOW{3};
+constexpr std::chrono::seconds ETHERDREAM_DISCOVERY_IDLE_INTERVAL{7};
+// Keep controllers visible across the idle gap between discovery bursts.
+constexpr std::chrono::seconds ETHERDREAM_DISCOVERY_TIMEOUT{15};
 
 
 // Streaming behaviour ---------------------------------------------------------

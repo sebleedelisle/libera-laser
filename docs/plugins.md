@@ -157,6 +157,16 @@ from discovery time instead of re-looking everything up by string id.
 If the plugin provides `rescan()`, Libera calls it before each `discover()`
 pass so network or USB plugins can refresh cached state.
 
+For discovery-oriented plugins, the recommended lifecycle is:
+
+- `rescan()` does one bounded probe/listen pass
+- the backend updates a cached discovery list
+- any temporary discovery sockets are closed before `rescan()` returns
+- `discover()` just emits the cached list
+
+That keeps idle plugin instances from holding discovery ports or background
+scan threads indefinitely while still fitting the current plugin ABI.
+
 ## Properties
 
 Plugins do not need to implement both "list properties" and "get by key".
