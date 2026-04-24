@@ -16,6 +16,15 @@ This also enables developers of new protocols and controllers to add support for
 
 The project uses a permissive license and is intended for broad adoption in laser control software.
 
+## OMNIA LIBERA INTER SE
+### Any software. Any laser.
+
+Libera is part of the growing Libera ecosystem - interoperable tools designed
+to connect lasers and software without restriction.
+
+The laser industry has been held back by closed systems and vendor lock-in.
+Libera is built to break that cycle.
+
 ## Overview
 
 The library discovers laser controllers on the system and provides a list of available controllers. You can then instantiate one or more controllers and stream laser content either directly as a point stream or in frame mode with libera's frame queuing and scheduling system.
