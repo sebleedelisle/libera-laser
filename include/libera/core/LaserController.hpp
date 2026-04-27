@@ -171,6 +171,30 @@ protected:
     /// Drop any shared frame-transport backlog estimate on disconnect/reset.
     void clearFrameTransportSubmissionEstimate();
 
+    /**
+     * @brief Projected wall-clock time when the next write to this transport
+     *        will physically start rendering at the mirrors.
+     *
+     * Frame-ingester backends (Helios USB, IDN, AVB, LaserCubeNet, frame-first
+     * plugins, …) write into a small bounded device buffer; a newly-submitted
+     * frame plays after the currently buffered points drain. This returns
+     *
+     *     max( snapshotTime + snapshotPoints/snapshotPointRate,  now + writeLead )
+     *
+     * which is the value to pass as
+     * `FrameFillRequest::estimatedFirstPointRenderTime` so the FrameScheduler's
+     * due/stale logic agrees with reality and the application-level latency
+     * target (`LaserController::targetLatency()`) is honoured consistently
+     * across transports.
+     *
+     * Falls back to `now + writeLead` when no submission has been recorded yet
+     * (e.g. immediately after connect/reset or after
+     * `clearFrameTransportSubmissionEstimate()`).
+     */
+    std::chrono::steady_clock::time_point projectedNextWriteRenderTime(
+        std::chrono::steady_clock::time_point now,
+        std::chrono::steady_clock::duration writeLead) const;
+
 private:
     struct FrameTransportEstimate {
         std::size_t snapshotPoints = 0;

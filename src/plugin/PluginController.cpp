@@ -133,6 +133,7 @@ bool PluginController::open() {
 
     lastSentArmed = !isArmed();
     currentPointIndex = 0;
+    smoothedSendFrameMicros = 0;
     return true;
 }
 
@@ -294,6 +295,7 @@ void PluginController::run() {
 
             lastSentArmed = !isArmed();
             currentPointIndex = 0;
+            smoothedSendFrameMicros = 0;
             resetStartupBlank();
             clearFrameTransportSubmissionEstimate();
             connected.store(true, std::memory_order_relaxed);
@@ -357,12 +359,24 @@ void PluginController::run() {
                 request.blankFramePointCount = request.preferredPointCount;
             }
 
+            // Drive the FrameScheduler's due-time gate from the host's shared
+            // projection so the plugin path doesn't suffer the same "next frame
+            // not yet due → loop the current frame" failure mode that the
+            // built-in Helios USB path used to have.
+            //
+            // The plugin's `estimated_first_point_render_delay_ns` is treated
+            // as an *additive* hint for transport-private latency the host
+            // can't infer (e.g. deeper firmware FIFOs reported by the plugin).
+            // Plugins that report 0 — the common case — automatically benefit
+            // from the host projection without touching their ABI usage.
+            const auto now = std::chrono::steady_clock::now();
+            const auto sendLeadFloor = std::chrono::microseconds(smoothedSendFrameMicros);
+            auto projectedRender = projectedNextWriteRenderTime(now, sendLeadFloor);
             if (requirements.estimated_first_point_render_delay_ns > 0) {
-                request.estimatedFirstPointRenderTime =
-                    std::chrono::steady_clock::now() +
-                    std::chrono::nanoseconds(
-                        requirements.estimated_first_point_render_delay_ns);
+                projectedRender += std::chrono::nanoseconds(
+                    requirements.estimated_first_point_render_delay_ns);
             }
+            request.estimatedFirstPointRenderTime = projectedRender;
             request.currentPointIndex = currentPointIndex;
 
             core::Frame frameToSend;
@@ -373,14 +387,25 @@ void PluginController::run() {
 
             convertPoints(frameToSend.points, pluginPoints);
             const std::size_t sentPointCount = frameToSend.points.size();
+            const auto sendStart = std::chrono::steady_clock::now();
             const auto sendStatus = api->send_frame(
                 pluginHandle,
                 pluginPoints.data(),
                 static_cast<uint32_t>(pluginPoints.size()));
+            const auto sendDone = std::chrono::steady_clock::now();
             if (sendStatus != LIBERA_OK) {
                 handlePluginFailure(sendStatus, "send_frame", "plugin.send.");
                 continue;
             }
+
+            // Smooth send_frame duration so a single hiccup doesn't move the
+            // projected lead by a whole frame. Same blend the Helios path uses
+            // for its USB bulk-transfer estimate.
+            const auto measuredSendMicros = std::chrono::duration_cast<
+                std::chrono::microseconds>(sendDone - sendStart).count();
+            smoothedSendFrameMicros = (smoothedSendFrameMicros == 0)
+                ? measuredSendMicros
+                : (((smoothedSendFrameMicros * 3) + measuredSendMicros) / 4);
 
             noteFrameTransportSubmission(
                 sentPointCount,

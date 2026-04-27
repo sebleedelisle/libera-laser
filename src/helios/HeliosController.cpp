@@ -710,11 +710,20 @@ void HeliosController::run() {
         const std::size_t framePoints = targetFramePoints.load(std::memory_order_relaxed);
         const unsigned int pps = getPointRate();
 
+        // Use the shared projection from LaserController so the FrameScheduler's
+        // due-time gate fires when the just-submitted frame will *actually*
+        // start playing — not when the bulk USB transfer finishes. Without this
+        // a Liberation-side latency target of e.g. 150ms causes the scheduler
+        // to loop the current frame for ~one frame period whenever the upstream
+        // submission rate dips below the DAC's playback rate, because the next
+        // queued frame still looks "not yet due" relative to a now+writeLead
+        // estimate.
         const auto writeLead = detail::requestRenderLead(
             std::chrono::microseconds(
                 estimatedWriteLeadMicros.load(std::memory_order_relaxed)));
+        const auto now = std::chrono::steady_clock::now();
         const auto estimatedFirstRenderTime =
-            std::chrono::steady_clock::now() + writeLead;
+            projectedNextWriteRenderTime(now, writeLead);
         const auto pointIndex = currentPointIndex.load(std::memory_order_relaxed);
 
         core::Frame nativeFrame;

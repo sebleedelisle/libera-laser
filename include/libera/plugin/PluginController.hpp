@@ -70,6 +70,12 @@ private:
     // with built-in backends that pass a monotonic point index into the shared
     // scheduling helpers.
     std::uint64_t currentPointIndex = 0;
+
+    // Smoothed estimate of how long api->send_frame() takes to push a frame to
+    // the plugin. Feeds projectedNextWriteRenderTime() so the FrameScheduler's
+    // due-time gate uses the real play-time of the next-to-write frame, not
+    // an instant-now assumption.
+    std::int64_t smoothedSendFrameMicros = 0;
 };
 
 } // namespace libera::plugin

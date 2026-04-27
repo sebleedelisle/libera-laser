@@ -1,4 +1,5 @@
 #include "libera/core/LaserController.hpp"
+#include "libera/core/BufferEstimator.hpp"
 #include "libera/core/FrameScheduler.hpp"
 #include "libera/core/PointStreamFramer.hpp"
 #include "libera/log/Log.hpp"
@@ -427,24 +428,30 @@ void LaserController::noteFrameTransportSubmissionBounded(
     {
         std::lock_guard<std::mutex> lock(frameTransportEstimateMutex);
         if (frameTransportEstimate.valid) {
-            const int remainingPoints = calculateBufferFullnessFromSnapshot(
+            // Project remaining backlog forward to the *new* snapshotTime, not
+            // to now. The previous backlog drains continuously while the new
+            // frame waits for its render slot to open; by snapshotTime, only
+            // the portion that hasn't drained by then carries over. Without
+            // this, a frame-first transport with a small firmware buffer (like
+            // Helios USB) double-counts the currently-playing frame on every
+            // submission, and the projection of "when the next write will
+            // play" drifts further into the future on each iteration —
+            // breaking the latency target and making FrameScheduler's
+            // stale-skipping uneven.
+            const auto carryEstimate = BufferEstimator::estimateFromSnapshot(
                 clampPointCountToInt(frameTransportEstimate.snapshotPoints),
                 frameTransportEstimate.snapshotTime,
                 frameTransportEstimate.pointRate,
-                clampPointCountToInt(frameTransportEstimate.snapshotPoints));
+                /*now=*/snapshotTime);
+            const int remainingPoints = carryEstimate.projected
+                ? std::max(0, carryEstimate.bufferFullness)
+                : clampPointCountToInt(frameTransportEstimate.snapshotPoints);
 
             if (remainingPoints > 0) {
                 const auto carryOverPoints = std::min<std::size_t>(
                     static_cast<std::size_t>(remainingPoints),
                     maxCarryOverPoints);
                 totalBufferedPoints += carryOverPoints;
-                // Once playout has started we can collapse the aggregate
-                // backlog to "remaining points from now". If playout has not
-                // started yet, keep the future start time so the estimate does
-                // not begin draining early.
-                if (frameTransportEstimate.snapshotTime > now) {
-                    snapshotTime = frameTransportEstimate.snapshotTime;
-                }
             }
         }
 
@@ -471,6 +478,32 @@ void LaserController::clearFrameTransportSubmissionEstimate() {
         frameTransportEstimate = FrameTransportEstimate{};
     }
     clearEstimatedBufferState();
+}
+
+std::chrono::steady_clock::time_point
+LaserController::projectedNextWriteRenderTime(
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::duration writeLead) const {
+    // Floor: a write physically can't land in the past. Even with a stale or
+    // empty submission estimate the next write still needs at least writeLead
+    // to clear the bus.
+    const auto floorTime = now + writeLead;
+
+    std::lock_guard<std::mutex> lock(frameTransportEstimateMutex);
+    if (!frameTransportEstimate.valid || frameTransportEstimate.pointRate == 0) {
+        return floorTime;
+    }
+
+    // Project drain of the most recent submission snapshot. snapshotPoints is
+    // the total points buffered downstream as of snapshotTime (the just-written
+    // frame plus any carry-over from previous in-flight frames). When that
+    // backlog drains, the slot freed up is the one our next write will play in.
+    const auto playoutDuration = std::chrono::microseconds(
+        (static_cast<std::int64_t>(frameTransportEstimate.snapshotPoints) * 1'000'000)
+        / static_cast<std::int64_t>(frameTransportEstimate.pointRate));
+    const auto drainCompleteTime = frameTransportEstimate.snapshotTime + playoutDuration;
+
+    return std::max(drainCompleteTime, floorTime);
 }
 
 void LaserController::resetPointCallbackAdapterState() {
