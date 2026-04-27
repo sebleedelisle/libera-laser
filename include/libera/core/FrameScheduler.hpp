@@ -16,6 +16,15 @@ struct FramePullRequest {
     std::size_t blankFramePointCount = 0;
     std::chrono::steady_clock::time_point estimatedFirstPointRenderTime{};
     std::uint64_t currentPointIndex = 0;
+
+    // Frame-first transports (Helios USB, etc.) drain the queue in submitted
+    // order; per-frame `time` gating is already enforced as queue depth via
+    // isReadyForNewFrame(). When this flag is true:
+    //   - end-of-frame advance is unconditional whenever queue.size() > 1
+    //   - the front-due check (which would otherwise blank a freshly-popped
+    //     frame whose `time` is still in the future) is bypassed
+    // For streaming/scheduled-time transports leave this false.
+    bool advanceWhenAvailable = false;
 };
 
 class FrameScheduler {

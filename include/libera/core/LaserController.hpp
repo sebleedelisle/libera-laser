@@ -137,6 +137,12 @@ protected:
         std::size_t blankFramePointCount = 0;
         std::chrono::steady_clock::time_point estimatedFirstPointRenderTime{};
         std::uint64_t currentPointIndex = 0;
+
+        // See FramePullRequest::advanceWhenAvailable. Frame-first transports
+        // like Helios USB opt in so the scheduler drains the queue in
+        // submitted order without holding frames against per-frame `time`
+        // gates that fight queue depth as the latency mechanism.
+        bool advanceWhenAvailable = false;
     };
 
     bool requestPoints(const PointFillRequest& request);

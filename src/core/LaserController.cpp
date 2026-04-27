@@ -370,6 +370,7 @@ bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outpu
     schedulerRequest.blankFramePointCount = request.blankFramePointCount;
     schedulerRequest.estimatedFirstPointRenderTime = request.estimatedFirstPointRenderTime;
     schedulerRequest.currentPointIndex = request.currentPointIndex;
+    schedulerRequest.advanceWhenAvailable = request.advanceWhenAvailable;
     frameScheduler->fillFrame(
         schedulerRequest,
         maxFrameHoldTime(),

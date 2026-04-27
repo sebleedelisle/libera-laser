@@ -329,6 +329,7 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
 
         if (currentFrame->playCount == 0 &&
             currentFrame->nextPoint == 0 &&
+            !request.advanceWhenAvailable &&
             !frameIsDueAt(*currentFrame, estimatedFirstRenderTime)) {
             loadBlankFrame();
             return;
@@ -336,7 +337,8 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
 
         if (currentFrame->nextPoint >= currentFrame->points.size()) {
             if (state->frameQueue.size() > 1 &&
-                frameIsDueAt(*state->frameQueue[1], estimatedFirstRenderTime)) {
+                (request.advanceWhenAvailable ||
+                 frameIsDueAt(*state->frameQueue[1], estimatedFirstRenderTime))) {
                 const LaserPoint lastPoint = currentFrame->points.back();
                 state->frameQueue.pop_front();
 

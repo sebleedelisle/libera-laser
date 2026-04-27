@@ -737,6 +737,14 @@ void HeliosController::run() {
         req.blankFramePointCount = framePoints;
         req.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
         req.currentPointIndex = pointIndex;
+        // Helios drains the queue in submitted order — latency is enforced as
+        // queue depth via isReadyForNewFrame(), not as per-frame `time` gates.
+        // Without this, drift between Liberation's submission cadence and the
+        // DAC's playback period causes the scheduler to loop the current
+        // frame whenever queue[1] is "not yet due" relative to the projected
+        // render time, which the user reads as "frames replaying multiple
+        // times" / reduced effective frame rate.
+        req.advanceWhenAvailable = true;
 
         if (!requestFrame(req, nativeFrame)) {
             std::this_thread::sleep_for(5ms);
