@@ -390,7 +390,25 @@ std::size_t LaserController::queuedPointBudget() const {
         std::max(0, millisToPoints(targetLatency())));
     const auto nominalFramePoints =
         std::max<std::size_t>(frameScheduler->nominalFramePointCount(), 1);
-    return latencyPoints + nominalFramePoints;
+
+    // Frame-first transports (Helios USB, IDN, …) drain one frame per status
+    // tick. For configurations where one frame's playback time is comparable
+    // to or longer than the latency target, the latency-derived budget alone
+    // only admits 2 frames into the queue — too tight to absorb transient
+    // submission/playback rate variance, and any dip to queue.size()==1
+    // becomes a visible 1-frame replay (very obvious at 80 ms+ playback).
+    //
+    // Floor the budget at minimumFramesBuffered × frameSize so long-frame
+    // configs at non-zero latency keep enough headroom for the worker to
+    // ride out a hiccup. Skipped at zero latency so callers that explicitly
+    // ask for minimal queueing (point-mode tests, low-latency streaming
+    // patterns) still get tight backpressure.
+    constexpr std::size_t minimumFramesBuffered = 3;
+    const std::size_t framesFloor = (latencyPoints > 0)
+        ? nominalFramePoints * minimumFramesBuffered
+        : 0;
+
+    return std::max(latencyPoints + nominalFramePoints, framesFloor);
 }
 
 void LaserController::noteFrameTransportSubmission(

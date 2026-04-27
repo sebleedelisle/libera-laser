@@ -7,6 +7,7 @@ set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_advance.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_projected_render_time.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_queue_budget_floor.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_single_controller_manager_base.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_avb_backend_state.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_timing.cpp
