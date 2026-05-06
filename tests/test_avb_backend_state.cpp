@@ -71,6 +71,7 @@ class FakeAudioHost : public detail::AudioHost {
 public:
     std::vector<detail::AudioOutputDeviceInfo> devices;
     bool streamStartSucceeds = true;
+    int listCount = 0;
     int openCount = 0;
     int startCount = 0;
     int stopCount = 0;
@@ -78,6 +79,7 @@ public:
     std::vector<std::uint32_t> openedPointRates;
 
     std::vector<detail::AudioOutputDeviceInfo> listOutputDevices() override {
+        ++listCount;
         return devices;
     }
 
@@ -152,6 +154,21 @@ void testInjectedAudioHostControlsDiscoveryAndConfiguration() {
                 "first bank of 16-channel device starts at channel 0");
     ASSERT_TRUE(controllers[2].idValue() == "dev-b::ch-8",
                 "second bank of 16-channel device starts at channel 8");
+}
+
+void testEmptyAvbConfigurationDoesNotEnumerateAudioDevices() {
+    auto host = installFakeAudioHost();
+
+    AvbManager::setConfiguredDevices({});
+    ASSERT_EQ(host->listCount, 0,
+              "empty AVB configuration should not enumerate audio devices");
+
+    AvbManager manager;
+    const auto controllers = manager.discover();
+    ASSERT_TRUE(controllers.empty(),
+                "empty AVB configuration discovers no controllers");
+    ASSERT_EQ(host->listCount, 0,
+              "empty AVB discovery should not enumerate audio devices");
 }
 
 void testInjectedAudioHostPreservesSharedRuntimeReuse() {
@@ -276,6 +293,7 @@ void testSetConfiguredDevicesSkipsReopenWhenPointRateStaysTheSame() {
 
 int main() {
     testInjectedAudioHostControlsDiscoveryAndConfiguration();
+    testEmptyAvbConfigurationDoesNotEnumerateAudioDevices();
     testInjectedAudioHostPreservesSharedRuntimeReuse();
     testSetConfiguredDevicesReopensLiveRuntimeWhenPointRateChanges();
     testSetConfiguredDevicesSkipsReopenWhenPointRateStaysTheSame();

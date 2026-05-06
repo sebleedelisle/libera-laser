@@ -358,14 +358,22 @@ std::vector<AvbDeviceConfiguration> AvbBackendState::configuredDevices() {
 }
 
 std::vector<AvbControllerInfo> AvbBackendState::configuredControllers() {
-    return buildConfiguredControllers(availableDevices(), configuredDevices());
+    const auto configs = configuredDevices();
+    if (configs.empty()) {
+        return {};
+    }
+
+    return buildConfiguredControllers(availableDevices(), configs);
 }
 
 void AvbBackendState::setConfiguredDevices(
     const std::vector<AvbDeviceConfiguration>& configs) {
-    const auto devicesByUid = availableDeviceMap();
-    const auto normalizedConfigs =
-        normalizeConfigurations(configs, devicesByUid);
+    std::unordered_map<std::string, AvbAudioDeviceInfo> devicesByUid;
+    std::vector<AvbDeviceConfiguration> normalizedConfigs;
+    if (!configs.empty()) {
+        devicesByUid = availableDeviceMap();
+        normalizedConfigs = normalizeConfigurations(configs, devicesByUid);
+    }
 
     std::unordered_map<std::string, AvbDeviceConfiguration> newConfigsByUid;
     for (const auto& config : normalizedConfigs) {
