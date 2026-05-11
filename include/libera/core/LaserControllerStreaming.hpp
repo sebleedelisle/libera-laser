@@ -63,10 +63,24 @@ enum class ControllerStatus {
     Error
 };
 
+enum class ControllerEventSeverity {
+    None,
+    Warning,
+    Error
+};
+
 struct ControllerErrorInfo {
     std::string code;
     std::string label;
     std::uint64_t count = 0;
+};
+
+struct ControllerRecentEvent {
+    ControllerEventSeverity severity = ControllerEventSeverity::None;
+    std::string code;
+    std::string label;
+    std::chrono::milliseconds age{0};
+    std::chrono::milliseconds holdTime{0};
 };
 
 /**
@@ -153,6 +167,16 @@ public:
 
     /// Overall controller health.
     ControllerStatus getStatus() const noexcept;
+
+    /// Whether the transport currently considers the controller connected.
+    bool hasConnection() const noexcept;
+
+    /// Most recent warning/error event inside the configured hold window.
+    std::optional<ControllerRecentEvent> getRecentEvent() const;
+
+    /// Configure how long warning/error events affect status and UI presentation.
+    void setRecentEventHoldTime(std::chrono::milliseconds holdTime) noexcept;
+    std::chrono::milliseconds getRecentEventHoldTime() const noexcept;
 
     /// Aggregated controller errors since the last clear.
     std::vector<ControllerErrorInfo> getErrors() const;
@@ -314,13 +338,15 @@ private:
     using SteadyRep = std::chrono::steady_clock::duration::rep;
 
     static constexpr std::size_t latencySampleWindow = 512;
+    static constexpr std::int64_t defaultRecentEventHoldMillis = 4000;
     mutable std::mutex latencySamplesMutex;
     std::deque<double> latencySamplesMs;
     mutable std::uint64_t latencyMutationCount{0};
     mutable std::uint64_t cachedLatencyMutationCount{std::numeric_limits<std::uint64_t>::max()};
     mutable LatencyStats cachedLatencyStats{};
 
-    void incrementErrorCount(std::string_view errorType);
+    void recordRecentEvent(ControllerEventSeverity severity, std::string_view errorType);
+    ControllerEventSeverity recentEventSeverityNow(std::chrono::steady_clock::time_point now) const noexcept;
 
     std::atomic<int> estimatedBufferCapacity{0};
     std::atomic<int> estimatedBufferSnapshotFullness{0};
@@ -329,9 +355,13 @@ private:
     std::atomic<bool> estimatedBufferSnapshotValid{false};
 
     std::atomic<bool> controllerConnected{false};
-    std::atomic<bool> hasIntermittentErrors{false};
+    std::atomic<SteadyRep> lastWarningTick{0};
+    std::atomic<SteadyRep> lastErrorTick{0};
+    std::atomic<std::int64_t> recentEventHoldMillis{defaultRecentEventHoldMillis};
     mutable std::mutex errorCountsMutex;
     std::unordered_map<std::string, std::uint64_t> errorCounts;
+    std::string lastWarningCode;
+    std::string lastErrorCode;
 };
 
 } // namespace libera::core

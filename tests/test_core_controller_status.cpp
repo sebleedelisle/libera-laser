@@ -2,7 +2,9 @@
 #include "libera/log/Log.hpp"
 
 #include <cstdint>
+#include <chrono>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -108,6 +110,59 @@ void testClearErrorsResetsCounts() {
                 "status should be good after clear when connected");
 }
 
+void testIntermittentStatusExpiresWithoutClearingCounts() {
+    using namespace std::chrono_literals;
+
+    ControllerStatusHarness controller;
+    controller.setConnected(true);
+    controller.setRecentEventHoldTime(20ms);
+    controller.addIntermittent("network.packet_loss");
+
+    ASSERT_TRUE(controller.getStatus() == ControllerStatus::Issues,
+                "recent warning should make connected controller issues");
+    auto recent = controller.getRecentEvent();
+    ASSERT_TRUE(recent.has_value(), "recent warning event should be queryable");
+    ASSERT_TRUE(recent->severity == ControllerEventSeverity::Warning,
+                "recent warning severity");
+
+    std::this_thread::sleep_for(30ms);
+    ASSERT_TRUE(controller.getStatus() == ControllerStatus::Good,
+                "warning status should expire without clearErrors");
+
+    const auto counts = toMap(controller.getErrors());
+    ASSERT_EQ(counts.at("network.packet_loss"), static_cast<std::uint64_t>(1),
+              "warning count remains after status expires");
+}
+
+void testRecoveredConnectionErrorExpiresWithoutClearingCounts() {
+    using namespace std::chrono_literals;
+
+    ControllerStatusHarness controller;
+    controller.setConnected(true);
+    controller.setRecentEventHoldTime(20ms);
+    controller.addConnectionFailure("network.connection_lost");
+
+    ASSERT_TRUE(controller.getStatus() == ControllerStatus::Error,
+                "active connection failure should be error");
+
+    controller.setConnected(true);
+    ASSERT_TRUE(controller.getStatus() == ControllerStatus::Error,
+                "recovered connection error should stay recent error briefly");
+
+    auto recent = controller.getRecentEvent();
+    ASSERT_TRUE(recent.has_value(), "recent error event should be queryable");
+    ASSERT_TRUE(recent->severity == ControllerEventSeverity::Error,
+                "recent error severity");
+
+    std::this_thread::sleep_for(30ms);
+    ASSERT_TRUE(controller.getStatus() == ControllerStatus::Good,
+                "recovered error status should expire without clearErrors");
+
+    const auto counts = toMap(controller.getErrors());
+    ASSERT_EQ(counts.at("network.connection_lost"), static_cast<std::uint64_t>(1),
+              "connection error count remains after status expires");
+}
+
 void testArmRisingEdgeResetsStartupBlank() {
     ControllerStatusHarness controller;
     controller.setPointRate(1000);
@@ -151,6 +206,8 @@ int main() {
     testGreenOrangeTransitions();
     testConnectionFailureIsRedAndCounted();
     testClearErrorsResetsCounts();
+    testIntermittentStatusExpiresWithoutClearingCounts();
+    testRecoveredConnectionErrorExpiresWithoutClearingCounts();
     testArmRisingEdgeResetsStartupBlank();
 
     if (g_failures) {

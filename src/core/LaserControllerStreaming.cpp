@@ -342,10 +342,64 @@ ControllerStatus LaserControllerStreaming::getStatus() const noexcept {
     if (!controllerConnected.load(std::memory_order_relaxed)) {
         return ControllerStatus::Error;
     }
-    if (hasIntermittentErrors.load(std::memory_order_relaxed)) {
-        return ControllerStatus::Issues;
+
+    switch (recentEventSeverityNow(std::chrono::steady_clock::now())) {
+        case ControllerEventSeverity::Error:
+            return ControllerStatus::Error;
+        case ControllerEventSeverity::Warning:
+            return ControllerStatus::Issues;
+        case ControllerEventSeverity::None:
+            break;
     }
+
     return ControllerStatus::Good;
+}
+
+bool LaserControllerStreaming::hasConnection() const noexcept {
+    return controllerConnected.load(std::memory_order_relaxed);
+}
+
+std::optional<ControllerRecentEvent> LaserControllerStreaming::getRecentEvent() const {
+    const auto now = std::chrono::steady_clock::now();
+    const ControllerEventSeverity severity = recentEventSeverityNow(now);
+    if (severity == ControllerEventSeverity::None) {
+        return std::nullopt;
+    }
+
+    const SteadyRep eventTick =
+        severity == ControllerEventSeverity::Error
+            ? lastErrorTick.load(std::memory_order_relaxed)
+            : lastWarningTick.load(std::memory_order_relaxed);
+    const auto eventTime = std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration{eventTick}};
+    auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - eventTime);
+    if (age < std::chrono::milliseconds{0}) {
+        age = std::chrono::milliseconds{0};
+    }
+
+    std::string code;
+    {
+        std::lock_guard<std::mutex> lock(errorCountsMutex);
+        code = severity == ControllerEventSeverity::Error ? lastErrorCode : lastWarningCode;
+    }
+
+    ControllerRecentEvent event;
+    event.severity = severity;
+    event.code = code;
+    event.label = std::string(error_types::labelFor(code));
+    event.age = age;
+    event.holdTime = getRecentEventHoldTime();
+    return event;
+}
+
+void LaserControllerStreaming::setRecentEventHoldTime(std::chrono::milliseconds holdTime) noexcept {
+    const auto clamped = std::max<std::int64_t>(0, holdTime.count());
+    recentEventHoldMillis.store(clamped, std::memory_order_relaxed);
+}
+
+std::chrono::milliseconds LaserControllerStreaming::getRecentEventHoldTime() const noexcept {
+    return std::chrono::milliseconds{
+        std::max<std::int64_t>(0, recentEventHoldMillis.load(std::memory_order_relaxed))};
 }
 
 std::vector<ControllerErrorInfo> LaserControllerStreaming::getErrors() const {
@@ -372,9 +426,12 @@ std::vector<ControllerErrorInfo> LaserControllerStreaming::getErrors() const {
 }
 
 void LaserControllerStreaming::clearErrors() {
-    hasIntermittentErrors.store(false, std::memory_order_relaxed);
+    lastWarningTick.store(0, std::memory_order_relaxed);
+    lastErrorTick.store(0, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(errorCountsMutex);
     errorCounts.clear();
+    lastWarningCode.clear();
+    lastErrorCode.clear();
 }
 
 void LaserControllerStreaming::recordLatencySample(std::chrono::steady_clock::duration sample) {
@@ -501,22 +558,63 @@ void LaserControllerStreaming::setConnectionState(bool connected) noexcept {
 }
 
 void LaserControllerStreaming::recordIntermittentError(std::string_view errorType) {
-    incrementErrorCount(errorType);
-    hasIntermittentErrors.store(true, std::memory_order_relaxed);
+    recordRecentEvent(ControllerEventSeverity::Warning, errorType);
 }
 
 void LaserControllerStreaming::recordConnectionError(std::string_view errorType) {
-    incrementErrorCount(errorType);
+    recordRecentEvent(ControllerEventSeverity::Error, errorType);
     setConnectionState(false);
 }
 
-void LaserControllerStreaming::incrementErrorCount(std::string_view errorType) {
-    if (errorType.empty()) {
+void LaserControllerStreaming::recordRecentEvent(ControllerEventSeverity severity,
+                                                 std::string_view errorType) {
+    if (errorType.empty() || severity == ControllerEventSeverity::None) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(errorCountsMutex);
-    ++errorCounts[std::string(errorType)];
+    const std::string code(errorType);
+    {
+        std::lock_guard<std::mutex> lock(errorCountsMutex);
+        ++errorCounts[code];
+        if (severity == ControllerEventSeverity::Error) {
+            lastErrorCode = code;
+        } else {
+            lastWarningCode = code;
+        }
+    }
+
+    const SteadyRep nowTick = std::chrono::steady_clock::now().time_since_epoch().count();
+    if (severity == ControllerEventSeverity::Error) {
+        lastErrorTick.store(nowTick, std::memory_order_relaxed);
+    } else {
+        lastWarningTick.store(nowTick, std::memory_order_relaxed);
+    }
+}
+
+ControllerEventSeverity LaserControllerStreaming::recentEventSeverityNow(
+    std::chrono::steady_clock::time_point now) const noexcept {
+    const auto holdTime = getRecentEventHoldTime();
+    if (holdTime <= std::chrono::milliseconds{0}) {
+        return ControllerEventSeverity::None;
+    }
+
+    const SteadyRep warningTick = lastWarningTick.load(std::memory_order_relaxed);
+    const SteadyRep errorTick = lastErrorTick.load(std::memory_order_relaxed);
+    if (warningTick == 0 && errorTick == 0) {
+        return ControllerEventSeverity::None;
+    }
+
+    const SteadyRep latestTick = std::max(warningTick, errorTick);
+    const auto eventTime = std::chrono::steady_clock::time_point{
+        std::chrono::steady_clock::duration{latestTick}};
+    const auto eventAge = now - eventTime;
+    if (eventAge < std::chrono::steady_clock::duration{0} ||
+        eventAge > holdTime) {
+        return ControllerEventSeverity::None;
+    }
+
+    return latestTick == errorTick ? ControllerEventSeverity::Error
+                                   : ControllerEventSeverity::Warning;
 }
 
 void LaserControllerStreaming::resetStartupBlank() {
