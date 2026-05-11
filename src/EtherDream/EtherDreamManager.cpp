@@ -9,7 +9,6 @@
 #endif
 
 #include <array>
-#include <algorithm>
 #include <cstdio>
 #include <limits>
 
@@ -55,6 +54,31 @@ std::string format_display_id(std::uint64_t mac) {
 
 EtherDreamManager::EtherDreamManager() {
     io = net::shared_io_context();
+    socket = std::make_unique<net::UdpSocket>(*io);
+
+    std::error_code ec;
+    if ((ec = socket->open_v4())) {
+        logError("[EtherDreamManager] Failed to open UDP socket", ec.message());
+        socket.reset();
+        return;
+    }
+
+#if defined(_WIN32)
+    if (!ec) {
+        BOOL exclusive = FALSE;
+        ::setsockopt(socket->raw().native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+    }
+#endif
+
+    socket->raw().set_option(asio::socket_base::reuse_address(true), ec);
+    if ((ec = socket->bind_any(config::ETHERDREAM_DISCOVERY_PORT))) {
+        logError("[EtherDreamManager] Failed to bind UDP socket", ec.message());
+        socket->close();
+        socket.reset();
+        return;
+    }
+
     running.store(true);
     listenerFinished.store(false, std::memory_order_relaxed);
     listener = std::thread([this]{
@@ -69,7 +93,6 @@ EtherDreamManager::~EtherDreamManager() {
 
 std::vector<std::unique_ptr<core::ControllerInfo>>
 EtherDreamManager::discover() {
-    requestDiscoveryBurst();
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
     const auto now = Clock::now();
     std::lock_guard lock(controllersMutex);
@@ -100,8 +123,10 @@ EtherDreamManager::prepareNewController(EtherDreamController& controller,
 
 void EtherDreamManager::beforeCloseControllers() {
     running.store(false);
-    waitCondition.notify_all();
-    closeDiscoverySession();
+    if (socket) {
+        socket->close();
+        socket.reset();
+    }
     core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
                     "EtherDreamManager::listener");
 }
@@ -118,92 +143,17 @@ void EtherDreamManager::closeController(const std::string& key,
 }
 
 void EtherDreamManager::threadedFunction() {
-    while (running.load()) {
-        runDiscoverySession();
-        if (!running.load()) {
-            break;
-        }
-        if (!waitForNextDiscoveryBurst(config::ETHERDREAM_DISCOVERY_IDLE_INTERVAL)) {
-            break;
-        }
-    }
-    closeDiscoverySession();
-}
-
-bool EtherDreamManager::openDiscoverySession() {
-    auto sessionSocket = std::make_shared<net::UdpSocket>(*io);
-
-    std::error_code ec;
-    if ((ec = sessionSocket->open_v4(false))) {
-        updateSocketErrorState("open", ec);
-        return false;
-    }
-
-#if defined(_WIN32)
-    BOOL exclusive = FALSE;
-    ::setsockopt(sessionSocket->raw().native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-                 reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
-#endif
-
-    if ((ec = sessionSocket->bind_any(config::ETHERDREAM_DISCOVERY_PORT, false))) {
-        updateSocketErrorState("bind", ec);
-        return false;
-    }
-
-    if (lastSocketError) {
-        logInfo("[EtherDreamManager] discovery socket recovered");
-        lastSocketError.reset();
-    }
-
-    {
-        std::lock_guard lock(socketMutex);
-        socket = std::move(sessionSocket);
-    }
-    return true;
-}
-
-void EtherDreamManager::closeDiscoverySession() {
-    std::shared_ptr<net::UdpSocket> sessionSocket;
-    {
-        std::lock_guard lock(socketMutex);
-        sessionSocket = std::move(socket);
-    }
-    if (sessionSocket) {
-        sessionSocket->close();
-    }
-}
-
-void EtherDreamManager::runDiscoverySession() {
-    if (!openDiscoverySession()) {
-        std::lock_guard lock(controllersMutex);
-        pruneStaleUnlocked(Clock::now());
-        return;
-    }
-
-    std::shared_ptr<net::UdpSocket> sessionSocket;
-    {
-        std::lock_guard lock(socketMutex);
-        sessionSocket = socket;
-    }
-    if (!sessionSocket) {
+    if (!socket) {
         return;
     }
 
     std::array<std::uint8_t, 128> buffer{};
-    const auto deadline = Clock::now() + config::ETHERDREAM_DISCOVERY_LISTEN_WINDOW;
     while (running.load()) {
-        const auto now = Clock::now();
-        if (now >= deadline) {
-            break;
-        }
-
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-        const auto timeout = std::min(config::ETHERDREAM_DISCOVERY_RECV_TIMEOUT, remaining);
-
         asio::ip::udp::endpoint sender;
         std::size_t received = 0;
-        auto ec = sessionSocket->recv_from(buffer.data(), buffer.size(), sender, received, timeout, false);
-        const auto packetTime = Clock::now();
+        auto ec = socket->recv_from(buffer.data(), buffer.size(), sender, received,
+                                    std::chrono::milliseconds(1000), false);
+        auto now = Clock::now();
 
         if (!running.load()) {
             break;
@@ -214,6 +164,8 @@ void EtherDreamManager::runDiscoverySession() {
         }
 
         if (ec == asio::error::timed_out) {
+            std::lock_guard lock(controllersMutex);
+            pruneStaleUnlocked(now);
             continue;
         }
 
@@ -275,45 +227,9 @@ void EtherDreamManager::runDiscoverySession() {
 
         {
             std::lock_guard lock(controllersMutex);
-            controllers.insert_or_assign(id, ControllerEntry{info, packetTime});
-            pruneStaleUnlocked(packetTime);
+            controllers.insert_or_assign(id, ControllerEntry{info, now});
+            pruneStaleUnlocked(now);
         }
-    }
-
-    closeDiscoverySession();
-    {
-        std::lock_guard lock(controllersMutex);
-        pruneStaleUnlocked(Clock::now());
-    }
-}
-
-void EtherDreamManager::requestDiscoveryBurst() {
-    discoveryRequested.store(true, std::memory_order_relaxed);
-    waitCondition.notify_all();
-}
-
-bool EtherDreamManager::waitForNextDiscoveryBurst(std::chrono::steady_clock::duration delay) {
-    std::unique_lock lock(waitMutex);
-    waitCondition.wait_for(lock, delay, [this] {
-        return !running.load() || discoveryRequested.load(std::memory_order_relaxed);
-    });
-    if (!running.load()) {
-        return false;
-    }
-    discoveryRequested.store(false, std::memory_order_relaxed);
-    return true;
-}
-
-void EtherDreamManager::updateSocketErrorState(const char* action,
-                                               const std::error_code& ec) {
-    if (!ec) {
-        return;
-    }
-
-    const std::string message = std::string(action) + " failed: " + ec.message();
-    if (!lastSocketError || *lastSocketError != message) {
-        logError("[EtherDreamManager] discovery socket", message);
-        lastSocketError = message;
     }
 }
 
