@@ -1,7 +1,7 @@
 #pragma once
 
 #include "libera/core/LaserController.hpp"
-#include "HeliosDac.h"
+#include "../../../libs/helios_dac/sdk/cpp/HeliosDac.h"
 
 #include <atomic>
 #include <chrono>

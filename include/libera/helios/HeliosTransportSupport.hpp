@@ -1,7 +1,7 @@
 #pragma once
 
 #include "libera/core/LaserPoint.hpp"
-#include "HeliosDac.h"
+#include "../../../libs/helios_dac/sdk/cpp/HeliosDac.h"
 
 #include <algorithm>
 #include <chrono>
