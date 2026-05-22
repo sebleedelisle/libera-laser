@@ -766,7 +766,11 @@ std::vector<std::unique_ptr<core::ControllerInfo>> HeliosManager::discover() {
 
 std::string
 HeliosManager::controllerKey(const HeliosControllerInfo& info) const {
-    return info.labelValue();
+    // The persistent name is the user's saved assignment identity, but the live
+    // controller cache must key by physical USB path. If two DACs still report
+    // the same name because hardware auto-rename failed, a label key would make
+    // the second row reuse the first DAC's controller.
+    return info.portPath();
 }
 
 std::shared_ptr<HeliosController>
