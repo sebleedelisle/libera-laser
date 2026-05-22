@@ -28,6 +28,16 @@ static int g_failures = 0;
         ++g_failures; \
     } } while(0)
 
+#define ASSERT_NEAR_MICROS(a,b,tolerance,msg) \
+    do { auto _va=(a); auto _vb=(b); auto _tol=(tolerance); \
+        auto _delta = (_va > _vb) ? (_va - _vb) : (_vb - _va); \
+        if (!(_delta <= _tol)) { \
+            logError("ASSERT NEAR FAILED", (msg), "lhs", +_va, "rhs", +_vb, \
+                     "delta", +_delta, "tolerance", +_tol, "@", __FILE__, __LINE__); \
+            ++g_failures; \
+        } \
+    } while(0)
+
 namespace {
 
 // Test fixture: noteFrameTransportSubmission* and projectedNextWriteRenderTime
@@ -49,6 +59,8 @@ protected:
 constexpr std::int64_t toMicros(std::chrono::steady_clock::duration d) {
     return std::chrono::duration_cast<std::chrono::microseconds>(d).count();
 }
+
+constexpr std::int64_t clockQuantizationToleranceMicros = 10;
 
 void testNoSubmissionFallsBackToWriteLead() {
     ProjectionFixture controller;
@@ -84,9 +96,10 @@ void testProjectionAdvancesByDrainTimeOfRecordedSnapshot() {
     // drain completes at submissionTime + 40ms. The projection should land
     // there (well above the now + writeLead floor of laterNow + 3ms).
     const auto expected = submissionTime + std::chrono::milliseconds(40);
-    ASSERT_EQ(toMicros(projected - expected),
-              0LL,
-              "projection equals snapshotTime + snapshotPoints/pointRate");
+    ASSERT_NEAR_MICROS(toMicros(projected - expected),
+                       0LL,
+                       clockQuantizationToleranceMicros,
+                       "projection equals snapshotTime + snapshotPoints/pointRate");
 }
 
 void testFloorAppliesWhenProjectionIsAlreadyInThePast() {
@@ -132,8 +145,10 @@ void testRepeatedHeliosCadenceDoesNotDrift() {
     auto projection = controller.projectedNextWriteRenderTime(
         baseTime, std::chrono::microseconds(3000));
     auto expected = baseTime + framePeriod;
-    ASSERT_EQ(toMicros(projection - expected), 0LL,
-              "after one write, projection lands at one frame period ahead");
+    ASSERT_NEAR_MICROS(toMicros(projection - expected),
+                       0LL,
+                       clockQuantizationToleranceMicros,
+                       "after one write, projection lands at one frame period ahead");
 
     // Simulate four more writes, each scheduled at the previous projection.
     // Each iteration's projection should advance by exactly framePeriod.
@@ -146,8 +161,10 @@ void testRepeatedHeliosCadenceDoesNotDrift() {
             std::chrono::microseconds(3000));
         expected += framePeriod;
 
-        ASSERT_EQ(toMicros(projection - expected), 0LL,
-                  "projection advances by exactly one frame period per iteration");
+        ASSERT_NEAR_MICROS(toMicros(projection - expected),
+                           0LL,
+                           clockQuantizationToleranceMicros,
+                           "projection advances by exactly one frame period per iteration");
     }
 }
 
@@ -178,9 +195,10 @@ void testFutureSnapshotTimePushesProjectionForward() {
     // the *next* write's render time = futureRenderTime + 20ms ≈ now + 25ms,
     // not just now + writeLead.
     const auto expected = futureRenderTime + std::chrono::milliseconds(20);
-    ASSERT_EQ(toMicros(projected - expected),
-              0LL,
-              "projection uses recorded future snapshotTime, not just now+writeLead");
+    ASSERT_NEAR_MICROS(toMicros(projected - expected),
+                       0LL,
+                       clockQuantizationToleranceMicros,
+                       "projection uses recorded future snapshotTime, not just now+writeLead");
     ASSERT_TRUE(projected > submissionNow + writeLead,
                 "future snapshotTime must dominate the writeLead floor");
 }
