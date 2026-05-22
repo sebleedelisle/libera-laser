@@ -50,6 +50,11 @@ void LaserCubeNetController::updateDiscoveredStatus(const LaserCubeNetStatus& st
     }
 }
 
+std::optional<LaserCubeNetStatus> LaserCubeNetController::getLatestStatus() const {
+    std::lock_guard<std::mutex> lock(latestStatusMutex);
+    return latestStatus;
+}
+
 libera::expected<void> LaserCubeNetController::connect(const LaserCubeNetControllerInfo& info) {
     updateDiscoveredStatus(info.status());
     return connectToStatus(info.status());

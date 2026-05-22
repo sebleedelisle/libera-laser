@@ -28,6 +28,7 @@ public:
     void close();
     std::optional<core::BufferState> getBufferState() const override;
     void updateDiscoveredStatus(const LaserCubeNetStatus& status);
+    std::optional<LaserCubeNetStatus> getLatestStatus() const;
 
 protected:
     void run() override;

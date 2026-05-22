@@ -129,6 +129,27 @@ void testParsesBasicFields() {
     ASSERT_TRUE(s.ipAddress == "192.168.1.100", "IP address");
     ASSERT_EQ(s.modelNumber, static_cast<std::uint8_t>(3), "model number");
     ASSERT_TRUE(s.modelName == "LaserCube", "model name");
+    ASSERT_TRUE(!s.isPluggedIn(), "85% battery should not mean plugged in");
+    ASSERT_EQ(static_cast<int>(s.batteryLevel() * 100.0f), 85, "battery level helper");
+}
+
+void testPluggedInBatterySentinel() {
+    const std::uint8_t serial[6] = {};
+    auto packet = makeStatusPacket(
+        1, 5,
+        0x01,
+        30000, 40000,
+        500, 2000,
+        255, 42, 1,
+        serial,
+        192, 168, 1, 100,
+        3, "LaserCube");
+
+    auto result = LaserCubeNetStatus::parse(packet.data(), packet.size());
+    ASSERT_TRUE(result.has_value(), "parse should succeed");
+    ASSERT_EQ(result->batteryPercent, static_cast<std::uint8_t>(255), "plugged in sentinel");
+    ASSERT_TRUE(result->isPluggedIn(), "255 battery should mean plugged in");
+    ASSERT_EQ(static_cast<int>(result->batteryLevel() * 100.0f), 100, "plugged in battery level clamps full");
 }
 
 void testOutputEnabledFlag() {
@@ -186,6 +207,7 @@ int main() {
     testRejectsShort();
     testRejectsUnknownPayloadVersion();
     testParsesBasicFields();
+    testPluggedInBatterySentinel();
     testOutputEnabledFlag();
     testNewFlagLayout();
     testOldFlagLayout();

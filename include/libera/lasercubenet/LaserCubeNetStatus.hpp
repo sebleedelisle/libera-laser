@@ -34,6 +34,17 @@ struct LaserCubeNetStatus {
 
     std::chrono::steady_clock::time_point lastSeen{};
 
+    bool isPluggedIn() const noexcept {
+        return batteryPercent == 255;
+    }
+
+    float batteryLevel() const noexcept {
+        if (batteryPercent > 100) {
+            return 1.0f;
+        }
+        return static_cast<float>(batteryPercent) / 100.0f;
+    }
+
     static std::optional<LaserCubeNetStatus> parse(const std::uint8_t* data, std::size_t size);
 };
 
