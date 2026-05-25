@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstdio>
+#include <exception>
 #include <limits>
 
 namespace libera::etherdream {
@@ -82,7 +83,15 @@ EtherDreamManager::EtherDreamManager() {
     running.store(true);
     listenerFinished.store(false, std::memory_order_relaxed);
     listener = std::thread([this]{
-        threadedFunction();
+        try {
+            threadedFunction();
+        } catch (const std::exception& e) {
+            logError("[EtherDreamManager] uncaught exception in discovery thread", e.what());
+            running.store(false);
+        } catch (...) {
+            logError("[EtherDreamManager] uncaught unknown exception in discovery thread");
+            running.store(false);
+        }
         listenerFinished.store(true, std::memory_order_release);
     });
 }

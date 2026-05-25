@@ -50,7 +50,7 @@ public:
         auto ex = sock.get_executor();
         return with_deadline(ex, timeout,
             [&](auto cb){ sock.async_send_to(asio::buffer(data, n), ep, 0, cb); },
-            [&]{ sock.cancel(); },
+            [&]{ cancelNoThrow(); },
             "udp_send", logTimeout);
     }
 
@@ -72,7 +72,7 @@ public:
                         cb(ec);
                     });
             },
-            [&]{ sock.cancel(); },
+            [&]{ cancelNoThrow(); },
             "udp_recv", logTimeout);
 
         // Copy back results for the caller.
@@ -85,6 +85,8 @@ public:
     void close() { std::error_code ignore; sock.close(ignore); }
 
 private:
+    void cancelNoThrow() { std::error_code ignore; sock.cancel(ignore); }
+
     udp::socket sock;
 };
 

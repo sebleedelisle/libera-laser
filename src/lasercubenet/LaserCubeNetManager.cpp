@@ -4,6 +4,7 @@
 #include "libera/log/Log.hpp"
 
 #include <array>
+#include <exception>
 
 namespace libera::lasercubenet {
 
@@ -19,7 +20,15 @@ LaserCubeNetManager::LaserCubeNetManager() {
     listenerFinished.store(false, std::memory_order_relaxed);
     // Dedicated discovery thread so controller scanning never blocks the caller.
     listener = std::thread([this]{
-        discoveryThread();
+        try {
+            discoveryThread();
+        } catch (const std::exception& e) {
+            logError("[LaserCubeNetManager] uncaught exception in discovery thread", e.what());
+            running.store(false);
+        } catch (...) {
+            logError("[LaserCubeNetManager] uncaught unknown exception in discovery thread");
+            running.store(false);
+        }
         listenerFinished.store(true, std::memory_order_release);
     });
 }

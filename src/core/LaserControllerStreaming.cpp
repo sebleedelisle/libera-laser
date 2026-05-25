@@ -5,6 +5,7 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <cstring>
 
@@ -200,8 +201,18 @@ void LaserControllerStreaming::startThread() {
     workerFinished.store(false, std::memory_order_relaxed);
     running = true;
     worker = std::thread([this] {
-        elevateWorkerThreadPriority();
-        this->run();
+        try {
+            elevateWorkerThreadPriority();
+            this->run();
+        } catch (const std::exception& e) {
+            logError("[LaserControllerStreaming] uncaught exception in worker thread", e.what());
+            running.store(false);
+            recordConnectionError(error_types::network::connectionLost);
+        } catch (...) {
+            logError("[LaserControllerStreaming] uncaught unknown exception in worker thread");
+            running.store(false);
+            recordConnectionError(error_types::network::connectionLost);
+        }
         workerFinished.store(true, std::memory_order_release);
     });
 }

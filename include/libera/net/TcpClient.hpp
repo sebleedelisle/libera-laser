@@ -121,7 +121,7 @@ public:
                         completion(op_ec);
                     });
             },
-            [&]{ socket.cancel(); },
+            [this]{ cancel(); },
             "tcp_read"
         );
         if (bytesTransferredOut) {
@@ -140,7 +140,7 @@ public:
                         completion(op_ec);
                     });
             },
-            [&]{ socket.cancel(); },
+            [this]{ cancel(); },
             "tcp_write"
         );
         return ec;
@@ -202,7 +202,7 @@ private:
         const auto effectiveTimeout = sanitize(timeout);
         return with_deadline(ex, effectiveTimeout,
             [&](auto completion){ socket.async_connect(ep, completion); },
-            [&]{ socket.cancel(); },
+            [this]{ cancel(); },
             "tcp_connect"
         );
     }

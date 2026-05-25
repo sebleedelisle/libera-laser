@@ -4,8 +4,10 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <exception>
 #include <mutex>
 #include <memory>
+#include <system_error>
 
 /**
  * @brief Run an async operation with a deadline enforced by an Asio timer.
@@ -25,8 +27,8 @@
  *   destroyed synchronisation primitives even if they run after this function
  *   returns. This avoids a common use-after-free race in naive implementations.
  * - The `cancel()` functor must cancel the same socket or timer that launched
- *   the operation; callers supply it so they can call `socket.cancel()` and
- *   keep ownership decisions at the call site.
+ *   the operation. It is invoked behind a catch boundary so a cancellation
+ *   failure cannot escape the Asio handler thread.
  *
  * Requirements:
  * - The associated `asio::io_context` must already be running while we block.
@@ -63,11 +65,28 @@ std::error_code with_deadline(
             st->done = true;
         }
         st->cv.notify_one();                // wake waiter first...
-        timer->cancel();                    // ...then cancel timer (handler must be benign)
+        try {
+            timer->cancel();                // ...then cancel timer behind a catch boundary.
+        } catch (const std::exception& e) {
+            logError("[with_deadline] timer cancel failed", e.what());
+        } catch (...) {
+            logError("[with_deadline] timer cancel failed", "unknown exception");
+        }
     };
 
-    // Kick off the async operation (it must call our op_handler)
-    start_async(op_handler);
+    // Kick off the async operation (it must call our op_handler).
+    try {
+        start_async(op_handler);
+    } catch (const std::system_error& e) {
+        logError("[with_deadline] async start failed", label, e.what());
+        return e.code();
+    } catch (const std::exception& e) {
+        logError("[with_deadline] async start failed", label, e.what());
+        return asio::error::operation_aborted;
+    } catch (...) {
+        logError("[with_deadline] async start failed", label, "unknown exception");
+        return asio::error::operation_aborted;
+    }
 
     // Arm the deadline
     timer->expires_after(timeout);
@@ -90,7 +109,13 @@ std::error_code with_deadline(
             if (logTimeout) {
                 logInfo("[with_deadline] timeout fired after", timeout.count(), "ms", label);
             }
-            cancel();
+            try {
+                cancel();
+            } catch (const std::exception& e) {
+                logError("[with_deadline] cancel failed", label, e.what());
+            } catch (...) {
+                logError("[with_deadline] cancel failed", label, "unknown exception");
+            }
             st->cv.notify_one();
         }
     });
