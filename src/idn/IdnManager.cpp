@@ -17,6 +17,7 @@ struct DiscoveredIdnService {
     core::ControllerInfo::NetworkInfo networkInfo;
     std::string hostName;
     std::string serviceName;
+    std::string displayLabel;
 };
 
 // Snapshot of one raw discovery pass. The same unit can be looked up either by
@@ -53,10 +54,21 @@ std::string makeSdkServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
         std::string(serverInfo.hostName).append(" - ").append(serviceInfo.serviceName));
 }
 
-std::string makeDisplayServiceLabel(const IDNSL_SERVICE_INFO& serviceInfo,
+// IDN hosts can expose several services, and service names are often generic
+// ("Main"). Show both parts so the user sees the named hardware plus output.
+std::string makeDisplayServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
+                                    const IDNSL_SERVICE_INFO& serviceInfo,
                                     const std::string& fallbackLabel) {
-    if (serviceInfo.serviceName[0] != '\0') {
-        return serviceInfo.serviceName;
+    const std::string hostName = serverInfo.hostName;
+    const std::string serviceName = serviceInfo.serviceName;
+    if (!hostName.empty() && !serviceName.empty()) {
+        return hostName + " - " + serviceName;
+    }
+    if (!hostName.empty()) {
+        return hostName;
+    }
+    if (!serviceName.empty()) {
+        return serviceName;
     }
     return fallbackLabel;
 }
@@ -122,7 +134,8 @@ IdnDiscoverySnapshot discoverIdnServices() {
                 unitId,
                 *endpoint,
                 serverInfo->hostName,
-                makeDisplayServiceLabel(serverInfo->serviceTable[i], sdkLabel),
+                serverInfo->serviceTable[i].serviceName,
+                makeDisplayServiceLabel(*serverInfo, serverInfo->serviceTable[i], sdkLabel),
             };
             snapshot.servicesByLabel[sdkLabel].push_back(service);
             snapshot.servicesByIp[endpoint->ip].push_back(std::move(service));
@@ -293,8 +306,8 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
             networkInfo = matchedService->networkInfo;
             hostName = matchedService->hostName;
             serviceName = matchedService->serviceName;
-            if (!serviceName.empty()) {
-                label = serviceName;
+            if (!matchedService->displayLabel.empty()) {
+                label = matchedService->displayLabel;
             }
         } else if (stableUnitIdIt != stableUnitIdByIndex.end()) {
             unitId = stableUnitIdIt->second;
