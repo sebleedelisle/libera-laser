@@ -1,5 +1,7 @@
 #include "libera/idn/IdnManager.hpp"
 
+#include "libera/log/Log.hpp"
+
 #include <algorithm>
 #include <cstdint>
 #include <unordered_map>
@@ -146,6 +148,15 @@ IdnDiscoverySnapshot discoverIdnServices() {
     return snapshot;
 }
 
+std::size_t countDiscoveredServices(const IdnDiscoverySnapshot& snapshot) {
+    std::size_t count = 0;
+    for (const auto& [label, services] : snapshot.servicesByLabel) {
+        (void)label;
+        count += services.size();
+    }
+    return count;
+}
+
 std::optional<DiscoveredIdnService> matchDiscoveredService(
     const std::unordered_map<std::string, std::vector<DiscoveredIdnService>>& servicesByKey,
     const std::string& key,
@@ -243,22 +254,39 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     // transient SDK index it came back on.
     const auto count = refreshControllerCount(!hasActive || hasDisconnectedActive);
     if (!sdk || count == 0) {
+        if (emptySdkDiagnosticCountdown == 0) {
+            const auto rawDiscoverySnapshot = discoverIdnServices();
+            const auto rawServiceCount = countDiscoveredServices(rawDiscoverySnapshot);
+            if (rawServiceCount > 0) {
+                logError("[IdnManager] raw IDN discovery found",
+                         rawServiceCount,
+                         "service(s), but the Helios SDK returned no network devices");
+            }
+            emptySdkDiagnosticCountdown = 5;
+        } else {
+            --emptySdkDiagnosticCountdown;
+        }
         return results;
     }
 
+    emptySdkDiagnosticCountdown = 0;
     const auto discoverySnapshot = discoverIdnServices();
     std::unordered_set<std::string> usedUnitIds;
     std::unordered_set<unsigned int> seenIndices;
+    std::size_t closedSlotCount = 0;
+    std::size_t usbSlotCount = 0;
 
     results.reserve(count);
     for (unsigned int index = 0; index < count; ++index) {
         const int closed = sdk->GetIsClosed(index);
         if (closed > 0) {
+            ++closedSlotCount;
             continue;
         }
 
         const int isUsb = sdk->GetIsUsb(index);
         if (isUsb != 0) {
+            ++usbSlotCount;
             continue;
         }
 
@@ -350,6 +378,21 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
             std::move(serviceName)));
     }
 
+    if (results.empty()) {
+        if (!reportedSdkSlotsWithoutResults) {
+            logInfo("[IdnManager] SDK reported",
+                    count,
+                    "network slot(s), but none produced a usable IDN controller",
+                    "closed",
+                    closedSlotCount,
+                    "usb",
+                    usbSlotCount);
+            reportedSdkSlotsWithoutResults = true;
+        }
+    } else {
+        reportedSdkSlotsWithoutResults = false;
+    }
+
     for (auto it = stableUnitIdByIndex.begin(); it != stableUnitIdByIndex.end();) {
         // Drop cached slot-to-unit bindings for SDK indices that no longer
         // exist in the latest snapshot. Fresh discoveries will rebuild them.
@@ -401,6 +444,8 @@ void IdnManager::afterCloseControllers() {
 
     opened = false;
     controllerCount = 0;
+    emptySdkDiagnosticCountdown = 0;
+    reportedSdkSlotsWithoutResults = false;
     stableUnitIdByIndex.clear();
 }
 

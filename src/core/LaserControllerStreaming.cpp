@@ -65,6 +65,19 @@ double percentileFromSortedSamples(const std::vector<double>& sorted, double per
     const double weight = rawIndex - static_cast<double>(lower);
     return sorted[lower] + ((sorted[upper] - sorted[lower]) * weight);
 }
+
+const char* controllerEventSeverityLabel(ControllerEventSeverity severity) {
+    switch (severity) {
+        case ControllerEventSeverity::Warning:
+            return "warning";
+        case ControllerEventSeverity::Error:
+            return "error";
+        case ControllerEventSeverity::None:
+            break;
+    }
+
+    return "none";
+}
 } // namespace
 
 LaserControllerStreaming::LaserControllerStreaming() {
@@ -584,9 +597,10 @@ void LaserControllerStreaming::recordRecentEvent(ControllerEventSeverity severit
     }
 
     const std::string code(errorType);
+    std::uint64_t count = 0;
     {
         std::lock_guard<std::mutex> lock(errorCountsMutex);
-        ++errorCounts[code];
+        count = ++errorCounts[code];
         if (severity == ControllerEventSeverity::Error) {
             lastErrorCode = code;
         } else {
@@ -599,6 +613,24 @@ void LaserControllerStreaming::recordRecentEvent(ControllerEventSeverity severit
         lastErrorTick.store(nowTick, std::memory_order_relaxed);
     } else {
         lastWarningTick.store(nowTick, std::memory_order_relaxed);
+    }
+
+    const char* severityLabel = controllerEventSeverityLabel(severity);
+    const std::string_view eventLabel = error_types::labelFor(code);
+    if (severity == ControllerEventSeverity::Error) {
+        logError("[LaserControllerStreaming] controller event",
+                 severityLabel,
+                 code,
+                 eventLabel,
+                 "count",
+                 count);
+    } else {
+        logInfo("[LaserControllerStreaming] controller event",
+                severityLabel,
+                code,
+                eventLabel,
+                "count",
+                count);
     }
 }
 

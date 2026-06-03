@@ -27,6 +27,8 @@ private:
     std::shared_ptr<HeliosDac> sdk;
     bool opened = false;
     std::size_t controllerCount = 0;
+    std::size_t emptySdkDiagnosticCountdown = 0;
+    bool reportedSdkSlotsWithoutResults = false;
     std::unordered_map<unsigned int, std::string> stableUnitIdByIndex;
 
     std::string controllerKey(const IdnControllerInfo& info) const override;
