@@ -180,14 +180,23 @@ EtherDreamController::waitForResponse(char command) {
             return unexpected(make_error_code(std::errc::protocol_error));
         }
 
-        // The DAC can reply with 'I' when it has dropped back to idle (e.g., frame ended)
-        // and the command we sent is no longer valid. Treat this as an idle/NACK and
-        // request a new prepare/begin rather than waiting for an ACK that will never come.
+        // 'I' is a NAK for an invalid command. The accompanying status tells us
+        // which recovery command should come next.
         if (response.response == 'I' && static_cast<char>(response.command) == command) {
             updatePlaybackRequirements(response.status, /*commandAcked*/ false);
-            logError("[EtherDream] received 'I' (invalid/idle) for command", command,
-                     "sts", response.status.describe());
+            logError("[EtherDream] NAK invalid command", command,
+                     "sts", response.status.describe(),
+                     "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
             recordIntermittentError(error_types::network::protocolError);
+            return unexpected(make_error_code(std::errc::operation_canceled));
+        }
+
+        if (response.response == 'F' && static_cast<char>(response.command) == command) {
+            updatePlaybackRequirements(response.status, /*commandAcked*/ false);
+            logError("[EtherDream] NAK buffer full for command", command,
+                     "sts", response.status.describe(),
+                     "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()));
+            recordIntermittentError(error_types::network::bufferOverrun);
             return unexpected(make_error_code(std::errc::operation_canceled));
         }
 
@@ -198,10 +207,6 @@ EtherDreamController::waitForResponse(char command) {
 
         logInfoVerbose("[EtherDream] RX", static_cast<char>(response.response),
                        "cmd", command, "sts", response.status.describe());
-
-        if (response.response == 'I') {
-            continue; // status frame only; wait for actual ACK
-        }
 
         if (!ackMatched) {
             logError("[EtherDream] unexpected ACK expected", command,
@@ -330,26 +335,28 @@ void EtherDreamController::handleNetworkFailure(std::string_view where,
 
 
 void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked) {
-    const bool wasUnderflow = (lastKnownStatus.playbackFlags & 0x04u) != 0;
+    const bool wasUnderflow = lastKnownStatus.hasPlaybackUnderflow();
     lastKnownStatus = status;
     lastReceiveTime = std::chrono::steady_clock::now();
     lastEstimatedBufferFullness.store(status.bufferFullness, std::memory_order_relaxed);
     lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
     
 
-    const bool estop = status.lightEngineState == LightEngineState::Estop;
-    const bool underflow = (status.playbackFlags & 0x04u) != 0;
+    const bool lightEngineEstop = status.lightEngineState == LightEngineState::Estop;
+    const bool playbackEndedByEstop = status.hasPlaybackEstop();
+    const bool underflow = status.hasPlaybackUnderflow();
     if (underflow && !wasUnderflow) {
         recordIntermittentError(error_types::network::bufferUnderflow);
     }
-    clearRequired = estop || underflow || !commandAcked;
+    clearRequired = lightEngineEstop;
 
     prepareRequired = !clearRequired
         && status.lightEngineState == LightEngineState::Ready
-        && status.playbackState == PlaybackState::Idle;
+        && (status.playbackState == PlaybackState::Idle || underflow || playbackEndedByEstop);
 
     const std::size_t bufferFullness = static_cast<std::size_t>(status.bufferFullness);
     beginRequired = !clearRequired
+        && commandAcked
         && status.playbackState == PlaybackState::Prepared
         && bufferFullness >= config::ETHERDREAM_MIN_PACKET_POINTS;
 }
@@ -361,11 +368,12 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
 
     const auto bufferCapacity = getBufferSize();
     const auto freeSpace = bufferCapacity > bufferFullness ? bufferCapacity - bufferFullness : 0;
+    const auto packetSpace = std::min<std::size_t>(freeSpace, config::ETHERDREAM_MAX_PACKET_POINTS);
     const auto minimumPointsRequired =
-    std::min<std::size_t>(calculateMinimumPoints(), freeSpace);
+        std::min<std::size_t>(calculateMinimumPoints(), packetSpace);
     
     core::PointFillRequest req;
-    req.maximumPointsRequired = freeSpace;
+    req.maximumPointsRequired = packetSpace;
     req.minimumPointsRequired = minimumPointsRequired;
     // Convert queue depth (points) into time so scheduled frame callbacks can
     // place new content close to the moment it will actually appear.

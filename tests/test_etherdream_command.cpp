@@ -1,8 +1,10 @@
 #include "libera/etherdream/EtherDreamCommand.hpp"
 #include "libera/core/ByteRead.hpp"
+#include "libera/etherdream/EtherDreamConfig.hpp"
 #include "libera/log/Log.hpp"
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 using namespace libera;
@@ -180,6 +182,28 @@ static void testMultiplePoints() {
     ASSERT_EQ(cmd.size(), static_cast<std::size_t>(57), "header + 3 points");
 }
 
+static void testMaxPacketPointConstantFitsProtocol() {
+    EtherDreamCommand cmd;
+    cmd.setDataCommand(static_cast<std::uint16_t>(config::ETHERDREAM_MAX_PACKET_POINTS));
+
+    core::LaserPoint point{};
+    for (std::size_t i = 0; i < config::ETHERDREAM_MAX_PACKET_POINTS; ++i) {
+        cmd.addPoint(point, false);
+    }
+
+    constexpr std::size_t headerBytes = 3;
+    constexpr std::size_t pointBytes = 18;
+    constexpr std::size_t maxTcpPayloadBytes = 65535;
+    const std::size_t expectedSize =
+        headerBytes + (config::ETHERDREAM_MAX_PACKET_POINTS * pointBytes);
+
+    ASSERT_EQ(cmd.size(), expectedSize, "max data command size");
+    ASSERT_TRUE(cmd.size() <= maxTcpPayloadBytes, "max packet fits protocol payload");
+    ASSERT_TRUE(headerBytes + ((config::ETHERDREAM_MAX_PACKET_POINTS + 1) * pointBytes) >
+                    maxTcpPayloadBytes,
+                "one more point would exceed protocol payload");
+}
+
 // ── Reset ────────────────────────────────────────────────────────────
 
 static void testReset() {
@@ -212,6 +236,7 @@ int main() {
     testPointEncodingClamps();
     testRateChangeFlag();
     testMultiplePoints();
+    testMaxPacketPointConstantFitsProtocol();
     testReset();
     testResetBetweenCommands();
 

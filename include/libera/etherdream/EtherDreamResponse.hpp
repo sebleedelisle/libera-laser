@@ -21,6 +21,10 @@ enum class PlaybackState : std::uint8_t {
 };
 
 struct EtherDreamStatus {
+    static constexpr std::uint16_t PlaybackFlagShutterOpen = 0x01u;
+    static constexpr std::uint16_t PlaybackFlagUnderflow = 0x02u;
+    static constexpr std::uint16_t PlaybackFlagEstop = 0x04u;
+
     std::uint8_t protocol = 0;
     LightEngineState lightEngineState = LightEngineState::Ready;
     PlaybackState playbackState = PlaybackState::Idle;
@@ -34,6 +38,8 @@ struct EtherDreamStatus {
 
     static const char* toString(LightEngineState state);
     static const char* toString(PlaybackState state);
+    bool hasPlaybackUnderflow() const noexcept;
+    bool hasPlaybackEstop() const noexcept;
     std::string describe() const;
     static std::string toHexLine(const std::uint8_t* data, std::size_t size);
 };

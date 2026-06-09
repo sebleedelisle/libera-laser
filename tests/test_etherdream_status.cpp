@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 using namespace libera;
 using namespace libera::etherdream;
@@ -49,6 +50,33 @@ static void testDecode() {
     ASSERT_TRUE(response.status.playbackState == PlaybackState::Prepared, "playback state prepared");
 }
 
+static void testPlaybackFlags() {
+    auto raw = makeAck('d', 128, 30000);
+    raw[8] = static_cast<std::uint8_t>(EtherDreamStatus::PlaybackFlagUnderflow);
+
+    EtherDreamResponse response;
+    ASSERT_TRUE(response.decode(raw.data(), raw.size()), "decode underflow status");
+    ASSERT_TRUE(response.status.hasPlaybackUnderflow(), "underflow flag is bit 1");
+    ASSERT_TRUE(!response.status.hasPlaybackEstop(), "underflow flag is not playback e-stop");
+
+    raw[8] = static_cast<std::uint8_t>(EtherDreamStatus::PlaybackFlagEstop);
+    ASSERT_TRUE(response.decode(raw.data(), raw.size()), "decode playback e-stop status");
+    ASSERT_TRUE(!response.status.hasPlaybackUnderflow(), "playback e-stop flag is not underflow");
+    ASSERT_TRUE(response.status.hasPlaybackEstop(), "playback e-stop flag is bit 2");
+}
+
+static void testDescribeIncludesDiagnostics() {
+    auto raw = makeAck('p', 512, 30000);
+    raw[8] = static_cast<std::uint8_t>(EtherDreamStatus::PlaybackFlagUnderflow);
+
+    EtherDreamResponse response;
+    ASSERT_TRUE(response.decode(raw.data(), raw.size()), "decode diagnostic status");
+    const std::string description = response.status.describe();
+    ASSERT_TRUE(description.find("rate=30000") != std::string::npos, "description includes rate");
+    ASSERT_TRUE(description.find("flags{") != std::string::npos, "description includes flags");
+    ASSERT_TRUE(description.find("pb=0x2") != std::string::npos, "description includes playback flags");
+}
+
 static void testRejectShort() {
     EtherDreamResponse response;
     ASSERT_TRUE(!response.decode(nullptr, 0), "decode rejects short buffer");
@@ -56,6 +84,8 @@ static void testRejectShort() {
 
 int main() {
     testDecode();
+    testPlaybackFlags();
+    testDescribeIncludesDiagnostics();
     testRejectShort();
 
     if (g_failures) {

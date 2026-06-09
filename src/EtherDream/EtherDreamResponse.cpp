@@ -49,11 +49,24 @@ const char* EtherDreamStatus::toString(PlaybackState state) {
     return "unknown";
 }
 
+bool EtherDreamStatus::hasPlaybackUnderflow() const noexcept {
+    return (playbackFlags & PlaybackFlagUnderflow) != 0;
+}
+
+bool EtherDreamStatus::hasPlaybackEstop() const noexcept {
+    return (playbackFlags & PlaybackFlagEstop) != 0;
+}
+
 std::string EtherDreamStatus::describe() const {
     std::ostringstream os;
     os << "lt=" << toString(lightEngineState)
        << " pb=" << toString(playbackState)
-       << " buffer=" << bufferFullness;
+       << " buffer=" << bufferFullness
+       << " rate=" << pointRate
+       << " count=" << pointCount
+       << " flags{le=0x" << std::hex << std::uppercase << lightEngineFlags
+       << " pb=0x" << playbackFlags
+       << " src=0x" << sourceFlags << std::dec << std::nouppercase << "}";
     return os.str();
 }
 
