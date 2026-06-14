@@ -14,6 +14,8 @@ set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_buffer_target.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_point_rate.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_status.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_buffer_target.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_buffer_projection.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_encoding.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_byte_buffer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_command.cpp
@@ -25,6 +27,7 @@ set(LIBERA_UNIT_TESTS
 
 set(LIBERA_INTEGRATION_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_reconnect.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_stream_order.cpp
 )
 
 set(LIBERA_HARDWARE_TESTS

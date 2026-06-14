@@ -119,10 +119,10 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
   
     assert(pointsToSend.size() <= request.maximumPointsRequired &&
                "Callback produced more points than allowed by maximumPointsRequired.");
-    if(pointsToSend.size()>request.maximumPointsRequired) { 
-        // get rid of extra points
-        logError("[LaserControllerStreaming::requestPoints] - too many points sent! Maximum :", request.maximumPointsRequired, " actual :", pointsToSend.size()); 
-        logError("[LaserControllerStreaming::requestPoints] - removing additional points"); 
+    if(pointsToSend.size()>request.maximumPointsRequired) {
+        logInfo("[LaserControllerStreaming::requestPoints] clamped oversized point request",
+                "maximum", request.maximumPointsRequired,
+                "actual", pointsToSend.size());
         pointsToSend.resize(request.maximumPointsRequired); 
 
     } else if(pointsToSend.size()<request.minimumPointsRequired) {

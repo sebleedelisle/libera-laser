@@ -276,11 +276,9 @@ bool LaserController::requestPoints(const PointFillRequest& request) {
            "Frame queue produced more points than allowed by maximumPointsRequired.");
 
     if (pointsToSend.size() > request.maximumPointsRequired) {
-        logError("[LaserController::requestPoints] - too many points sent! Maximum :",
-                 request.maximumPointsRequired,
-                 " actual :",
-                 pointsToSend.size());
-        logError("[LaserController::requestPoints] - removing additional points");
+        logInfo("[LaserController::requestPoints] clamped oversized point request",
+                "maximum", request.maximumPointsRequired,
+                "actual", pointsToSend.size());
         pointsToSend.resize(request.maximumPointsRequired);
     } else if (pointsToSend.size() < request.minimumPointsRequired) {
         const std::size_t missing = request.minimumPointsRequired - pointsToSend.size();

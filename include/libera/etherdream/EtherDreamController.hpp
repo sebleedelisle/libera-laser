@@ -7,10 +7,14 @@
 #include "libera/etherdream/EtherDreamCommand.hpp"
 #include "libera/etherdream/EtherDreamResponse.hpp"
 #include "libera/etherdream/EtherDreamControllerInfo.hpp"
+#include <array>
+#include <cstddef>
 #include <memory>
 #include <string_view>
+#include <string>
 #include <optional>
 #include <chrono>
+#include <cstdint>
 
 namespace libera::etherdream {
 
@@ -58,26 +62,27 @@ public:
     /// Returns true when the TCP link is up and no network failure is recorded.
     bool hasActiveConnection() const;
     std::optional<core::BufferState> getBufferState() const override;
+    void setPointRate(std::uint32_t pointRateValue) override;
 
     
 protected:
     void run() override;
 
 private:
-    /// Push the desired point rate to the DAC if it differs from the last-sent
-    /// value, or if a forced re-push is pending (e.g. after reconnect). Called
-    /// once per run-loop tick. Retries on send failure by leaving the
-    /// pointRatePushNeeded flag set for the next tick.
+    /// Push the desired point rate to the DAC only when playback is already
+    /// running and the requested rate has changed. Initial/reconnect rate
+    /// selection is carried by the begin command.
     void syncPointRate();
 
 
     /// Wait for the response frame to a specific command.
     expected<Ack>
-    waitForResponse(char command);
+    waitForResponse(char command,
+                    bool allowWhileStopping = false,
+                    std::uint64_t sequence = 0);
 
     /// Send the prepared command stored in commandBuffer and wait for its ACK.
-    expected<Ack>
-    sendCommand();
+    expected<Ack> sendCommand(bool allowWhileStopping = false);
 
     /// Issue the point-rate command ('q') and return the associated ACK.
     expected<Ack>
@@ -90,16 +95,32 @@ private:
                               const std::error_code& ec);
 
     void resetPoints();
+    void resetProtocolStateForConnection();
+    void recordProtocolTx(std::uint64_t sequence, char opcode);
+    void logProtocolRx(std::uint64_t sequence,
+                       char expectedCommand,
+                       const EtherDreamResponse& response,
+                       const std::uint8_t* raw,
+                       std::size_t rawSize) const;
+    std::string describeProtocolTx(std::uint64_t sequence) const;
 
     int estimateBufferFullness() const;
+    std::uint32_t maxSafePointRate() const;
+    bool statusPointRateIsImplausible(const EtherDreamStatus& status) const;
 
-    void updatePlaybackRequirements(const EtherDreamStatus& status, bool commandAcked);
+    void updatePlaybackRequirements(const EtherDreamStatus& status);
+    void applyFreshConnectionStatus(const EtherDreamStatus& status);
     core::PointFillRequest getFillRequest();
+    bool shouldRequestPoints(const core::PointFillRequest& request) const;
+    bool canSendData() const;
     void sendPoints();
+    void sendStop(bool allowWhileStopping = false);
     void sendClear();
     void sendPrepare();
     void sendBegin();
     expected<Ack> sendPing();
+    void pollStatus();
+    void sendOrderlyStopBeforeClose();
 
     bool ensureConnected();
     bool performHandshake();
@@ -110,12 +131,34 @@ private:
     void clearNetworkError();
     EtherDreamCommand commandBuffer;
 
+    struct ProtocolTxSnapshot {
+        bool valid = false;
+        std::chrono::steady_clock::time_point timestamp{};
+        std::uint64_t sequence = 0;
+        char opcode = 0;
+        std::size_t bytes = 0;
+        std::uint16_t pointCount = 0;
+        std::uint16_t firstControl = 0;
+        bool rateChangeBit = false;
+        std::uint16_t beginFlags = 0;
+        std::uint32_t commandRate = 0;
+        std::size_t pendingRateChangeCount = 0;
+        std::uint32_t localRate = 0;
+        std::uint32_t lastSentRate = 0;
+        EtherDreamStatus status{};
+        std::string hex;
+    };
+
+    static constexpr std::size_t PROTOCOL_TX_HISTORY_SIZE = 8;
+    const ProtocolTxSnapshot* findProtocolTxSnapshot(std::uint64_t sequence) const;
+
     EtherDreamStatus lastKnownStatus{};
     std::chrono::steady_clock::time_point lastReceiveTime{};
     libera::net::TcpClient tcpClient;
     std::optional<EtherDreamControllerInfo> controllerInfo;
 
     bool clearRequired = false;
+    bool stopRequired = false;
     bool prepareRequired = false;
     bool beginRequired = false;
     bool connectionActive = false;
@@ -125,13 +168,13 @@ private:
     size_t pendingRateChangeCount = 0;
 
     // Tracks the rate we've successfully told the DAC about. Only touched from
-    // the worker thread, so it doesn't need to be atomic. Starts at 0 so the
-    // first tick always pushes the desired rate.
+    // the worker thread, so it doesn't need to be atomic. Reset to 0 on each
+    // connection because the DAC's own state is unknown.
     std::uint32_t lastSentPointRate = 0;
-    // Latched true on (re)connect so the next syncPointRate() tick force-sends
-    // the rate even if it matches lastSentPointRate (which is stale after a
-    // reconnect because the DAC's own state has been lost).
-    bool pointRatePushNeeded = true;
+    std::uint64_t connectionGeneration = 0;
+    std::uint64_t nextCommandSequence = 0;
+    std::array<ProtocolTxSnapshot, PROTOCOL_TX_HISTORY_SIZE> protocolTxHistory{};
+    std::size_t nextProtocolTxHistoryIndex = 0;
 
     mutable std::atomic<int> lastEstimatedBufferFullness{0};
     mutable std::atomic<int> lastKnownBufferCapacity{0};
