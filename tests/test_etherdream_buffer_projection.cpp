@@ -13,9 +13,9 @@
 #include <optional>
 #include <string_view>
 
-#define private public
+#define LIBERA_ENABLE_TEST_HOOKS 1
 #include "libera/etherdream/EtherDreamController.hpp"
-#undef private
+#undef LIBERA_ENABLE_TEST_HOOKS
 
 #include "libera/log/Log.hpp"
 
@@ -33,6 +33,65 @@ static int g_failures = 0;
         logError("ASSERT EQ FAILED", (msg), "lhs", +_va, "rhs", +_vb, "@", __FILE__, __LINE__); \
         ++g_failures; \
     } } while(0)
+
+namespace libera::etherdream {
+
+class EtherDreamControllerTestAccess {
+public:
+    static void setStatus(EtherDreamController& controller,
+                          LightEngineState lightEngineState,
+                          PlaybackState playbackState,
+                          std::uint16_t bufferFullness,
+                          std::uint32_t reportedPointRate,
+                          std::chrono::steady_clock::time_point receivedAt) {
+        controller.lastKnownStatus.lightEngineState = lightEngineState;
+        controller.lastKnownStatus.playbackState = playbackState;
+        controller.lastKnownStatus.bufferFullness = bufferFullness;
+        controller.lastKnownStatus.pointRate = reportedPointRate;
+        controller.lastReceiveTime = receivedAt;
+    }
+
+    static int estimateBufferFullness(const EtherDreamController& controller) {
+        return controller.estimateBufferFullness();
+    }
+
+    static void updatePlaybackRequirements(EtherDreamController& controller,
+                                           const EtherDreamStatus& status) {
+        controller.updatePlaybackRequirements(status);
+    }
+
+    static void syncPointRate(EtherDreamController& controller) {
+        controller.syncPointRate();
+    }
+
+    static void setLastSentPointRate(EtherDreamController& controller,
+                                     std::uint32_t pointRate) {
+        controller.lastSentPointRate = pointRate;
+    }
+
+    static void setPendingRateChangeCount(EtherDreamController& controller,
+                                          std::size_t count) {
+        controller.pendingRateChangeCount = count;
+    }
+
+    static bool stopRequired(const EtherDreamController& controller) {
+        return controller.stopRequired;
+    }
+
+    static bool prepareRequired(const EtherDreamController& controller) {
+        return controller.prepareRequired;
+    }
+
+    static bool beginRequired(const EtherDreamController& controller) {
+        return controller.beginRequired;
+    }
+
+    static std::size_t pendingRateChangeCount(const EtherDreamController& controller) {
+        return controller.pendingRateChangeCount;
+    }
+};
+
+} // namespace libera::etherdream
 
 namespace {
 
@@ -56,18 +115,19 @@ void setStatus(EtherDreamController& controller,
                std::uint16_t bufferFullness,
                std::uint32_t reportedPointRate,
                std::chrono::milliseconds age) {
-    controller.lastKnownStatus.lightEngineState = LightEngineState::Ready;
-    controller.lastKnownStatus.playbackState = playbackState;
-    controller.lastKnownStatus.bufferFullness = bufferFullness;
-    controller.lastKnownStatus.pointRate = reportedPointRate;
-    controller.lastReceiveTime = std::chrono::steady_clock::now() - age;
+    EtherDreamControllerTestAccess::setStatus(controller,
+                                             LightEngineState::Ready,
+                                             playbackState,
+                                             bufferFullness,
+                                             reportedPointRate,
+                                             std::chrono::steady_clock::now() - age);
 }
 
 void testPlayingProjectionUsesConfiguredPointRate() {
     auto controller = makeController();
     setStatus(*controller, PlaybackState::Playing, 4095, 108000000, 10ms);
 
-    const int estimated = controller->estimateBufferFullness();
+    const int estimated = EtherDreamControllerTestAccess::estimateBufferFullness(*controller);
 
     ASSERT_TRUE(estimated > 3500,
                 "bogus DAC status rate must not make a full FIFO look empty");
@@ -79,7 +139,7 @@ void testPreparedProjectionDoesNotDrainBuffer() {
     auto controller = makeController();
     setStatus(*controller, PlaybackState::Prepared, 3906, 108000000, 1s);
 
-    const int estimated = controller->estimateBufferFullness();
+    const int estimated = EtherDreamControllerTestAccess::estimateBufferFullness(*controller);
 
     ASSERT_EQ(estimated, 3906,
               "non-playing Ether Dream states should use reported fullness without drain projection");
@@ -101,44 +161,45 @@ void testImplausibleReportedPointRateForcesReset() {
     status.bufferFullness = 4095;
     status.pointRate = 108000000;
 
-    controller->updatePlaybackRequirements(status);
+    EtherDreamControllerTestAccess::updatePlaybackRequirements(*controller, status);
 
-    ASSERT_TRUE(controller->stopRequired,
+    ASSERT_TRUE(EtherDreamControllerTestAccess::stopRequired(*controller),
                 "implausible active point rate should force stop/re-prepare instead of more data");
-    ASSERT_TRUE(!controller->prepareRequired,
+    ASSERT_TRUE(!EtherDreamControllerTestAccess::prepareRequired(*controller),
                 "implausible active point rate reset should not prepare until stop completes");
-    ASSERT_TRUE(!controller->beginRequired,
+    ASSERT_TRUE(!EtherDreamControllerTestAccess::beginRequired(*controller),
                 "implausible active point rate reset should not begin until stream is rebuilt");
 }
 
 void testPointRateChangeWhilePlayingSchedulesRestart() {
     auto controller = makeController();
     setStatus(*controller, PlaybackState::Playing, 1000, 30000, 0ms);
-    controller->lastSentPointRate = 30000;
-    controller->pendingRateChangeCount = 1;
+    EtherDreamControllerTestAccess::setLastSentPointRate(*controller, 30000);
+    EtherDreamControllerTestAccess::setPendingRateChangeCount(*controller, 1);
 
     controller->setPointRate(20000);
-    controller->syncPointRate();
+    EtherDreamControllerTestAccess::syncPointRate(*controller);
 
-    ASSERT_TRUE(controller->stopRequired,
+    ASSERT_TRUE(EtherDreamControllerTestAccess::stopRequired(*controller),
                 "active Ether Dream point-rate changes should restart playback");
-    ASSERT_TRUE(!controller->prepareRequired,
+    ASSERT_TRUE(!EtherDreamControllerTestAccess::prepareRequired(*controller),
                 "rate-change restart should stop before preparing");
-    ASSERT_TRUE(!controller->beginRequired,
+    ASSERT_TRUE(!EtherDreamControllerTestAccess::beginRequired(*controller),
                 "rate-change restart should not begin until data is prepared again");
-    ASSERT_EQ(controller->pendingRateChangeCount, static_cast<std::size_t>(0),
+    ASSERT_EQ(EtherDreamControllerTestAccess::pendingRateChangeCount(*controller),
+              static_cast<std::size_t>(0),
               "rate-change restart should discard queued q/control-bit changes");
 }
 
 void testPointRateChangeBeforeBeginWaitsForBeginRate() {
     auto controller = makeController();
     setStatus(*controller, PlaybackState::Prepared, 1000, 0, 0ms);
-    controller->lastSentPointRate = 0;
+    EtherDreamControllerTestAccess::setLastSentPointRate(*controller, 0);
 
     controller->setPointRate(20000);
-    controller->syncPointRate();
+    EtherDreamControllerTestAccess::syncPointRate(*controller);
 
-    ASSERT_TRUE(!controller->stopRequired,
+    ASSERT_TRUE(!EtherDreamControllerTestAccess::stopRequired(*controller),
                 "before playback starts, begin command will carry the requested rate");
 }
 

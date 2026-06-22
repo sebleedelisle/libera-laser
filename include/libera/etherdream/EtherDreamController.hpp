@@ -22,6 +22,10 @@ namespace libera::etherdream {
 using libera::expected;
 namespace ip = libera::net::asio::ip;
 
+#ifdef LIBERA_ENABLE_TEST_HOOKS
+class EtherDreamControllerTestAccess;
+#endif
+
 /**
  * @brief Streaming controller that talks to an EtherDream DAC.
  *
@@ -72,6 +76,10 @@ protected:
     void run() override;
 
 private:
+#ifdef LIBERA_ENABLE_TEST_HOOKS
+    friend class EtherDreamControllerTestAccess;
+#endif
+
     /// If the desired point rate changes while playback is running, restart the
     /// stream so the new rate is carried by a fresh begin command. Initial and
     /// reconnect rate selection is also carried by begin.
