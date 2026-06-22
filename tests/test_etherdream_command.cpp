@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 using namespace libera;
 using namespace libera::etherdream;
@@ -156,6 +157,34 @@ static void testPointEncodingClamps() {
     ASSERT_EQ(core::bytes::readLe16(p + 8), static_cast<std::uint16_t>(0), "g clamped to 0");
 }
 
+static void testPointEncodingNonFiniteValues() {
+    EtherDreamCommand cmd;
+    cmd.setDataCommand(1);
+
+    core::LaserPoint point{};
+    point.x = std::numeric_limits<float>::quiet_NaN();
+    point.y = std::numeric_limits<float>::infinity();
+    point.r = std::numeric_limits<float>::quiet_NaN();
+    point.g = std::numeric_limits<float>::infinity();
+    point.b = -std::numeric_limits<float>::infinity();
+    point.i = std::numeric_limits<float>::quiet_NaN();
+    point.u1 = std::numeric_limits<float>::infinity();
+    point.u2 = 2.0f;
+    cmd.addPoint(point, false);
+
+    const auto* p = cmd.data() + 3;
+    auto xVal = static_cast<std::int16_t>(core::bytes::readLe16(p + 2));
+    auto yVal = static_cast<std::int16_t>(core::bytes::readLe16(p + 4));
+    ASSERT_EQ(xVal, static_cast<std::int16_t>(0), "non-finite x encodes to centre");
+    ASSERT_EQ(yVal, static_cast<std::int16_t>(0), "non-finite y encodes to centre");
+    ASSERT_EQ(core::bytes::readLe16(p + 6), static_cast<std::uint16_t>(0), "NaN r encodes to 0");
+    ASSERT_EQ(core::bytes::readLe16(p + 8), static_cast<std::uint16_t>(0), "infinite g encodes to 0");
+    ASSERT_EQ(core::bytes::readLe16(p + 10), static_cast<std::uint16_t>(0), "infinite b encodes to 0");
+    ASSERT_EQ(core::bytes::readLe16(p + 12), static_cast<std::uint16_t>(0), "NaN i encodes to 0");
+    ASSERT_EQ(core::bytes::readLe16(p + 14), static_cast<std::uint16_t>(0), "infinite u1 encodes to 0");
+    ASSERT_EQ(core::bytes::readLe16(p + 16), static_cast<std::uint16_t>(65535), "finite u2 still clamps high");
+}
+
 static void testRateChangeFlag() {
     EtherDreamCommand cmd;
     cmd.setDataCommand(1);
@@ -234,6 +263,7 @@ int main() {
     testPointEncodingOriginBlack();
     testPointEncodingFullBright();
     testPointEncodingClamps();
+    testPointEncodingNonFiniteValues();
     testRateChangeFlag();
     testMultiplePoints();
     testMaxPacketPointConstantFitsProtocol();

@@ -98,6 +98,8 @@ bool LaserController::sendFrame(Frame&& frame) {
         return false;
     }
 
+    sanitizeLaserPoints(frame.points);
+
     // Auto-stamp unscheduled frames to now + global target latency so callers
     // can queue frames without manually setting Frame::time each time.
     if (frame.time == std::chrono::steady_clock::time_point{}) {
@@ -258,6 +260,7 @@ bool LaserController::requestPoints(const PointFillRequest& request) {
     }
 
     if (source != ContentSource::FrameQueue) {
+        recordPointRequestMetrics(request, false, 0, 0);
         return false;
     }
 
@@ -267,6 +270,7 @@ bool LaserController::requestPoints(const PointFillRequest& request) {
                                maxFrameHoldTime(),
                                pointsToSend,
                                isVerbose());
+    const auto generatedPointCount = pointsToSend.size();
 
     // Keep the point-stream contract identical to LaserControllerStreaming so
     // existing controllers and tests continue to see the same behaviour.
@@ -287,6 +291,7 @@ bool LaserController::requestPoints(const PointFillRequest& request) {
     }
 
     postProcessOutputPoints(pointsToSend);
+    recordPointRequestMetrics(request, true, generatedPointCount, pointsToSend.size());
     return true;
 }
 

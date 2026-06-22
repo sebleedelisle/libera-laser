@@ -181,6 +181,7 @@ void PointStreamFramer::pullPoints(const RequestPointsCallback& callback,
     std::vector<LaserPoint> batch;
     batch.reserve(count);
     callback(req, batch);
+    sanitizeLaserPoints(batch);
 
     accumulator.insert(accumulator.end(), batch.begin(), batch.end());
     totalPointsConsumed += batch.size();

@@ -26,12 +26,16 @@ set(LIBERA_UNIT_TESTS
 )
 
 set(LIBERA_INTEGRATION_TESTS
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_begin_timeout_reconnect.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_firmware_probe.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_reconnect.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_stream_order.cpp
 )
 
 set(LIBERA_HARDWARE_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_packet_latency.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_protocol_probe.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_underflow_probe.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_usb_stream.cpp
 )
 

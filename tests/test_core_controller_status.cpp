@@ -1,9 +1,12 @@
+#include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/core/LaserControllerStreaming.hpp"
 #include "libera/log/Log.hpp"
 
 #include <cstdint>
 #include <chrono>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -94,6 +97,18 @@ void testConnectionFailureIsRedAndCounted() {
               "underflow count");
     ASSERT_EQ(counts.at("network.connection_lost"), static_cast<std::uint64_t>(1),
               "connection lost count");
+}
+
+void testEtherDreamPlaybackIdleHasDisplayLabel() {
+    const auto label = error_types::labelFor(error_types::etherdream::playbackIdle);
+    ASSERT_TRUE(label == std::string_view("Ether Dream playback idle"),
+                "Ether Dream playback idle label");
+}
+
+void testEtherDreamStopConditionHasDisplayLabel() {
+    const auto label = error_types::labelFor(error_types::etherdream::stopCondition);
+    ASSERT_TRUE(label == std::string_view("Ether Dream stop condition"),
+                "Ether Dream stop condition label");
 }
 
 void testClearErrorsResetsCounts() {
@@ -199,16 +214,67 @@ void testArmRisingEdgeResetsStartupBlank() {
     ASSERT_EQ(controller.lastBatch()[0].r, 0.0f, "re-arming should reset startup blank");
 }
 
+void testPointCallbackSanitizesNonFinitePoints() {
+    ControllerStatusHarness controller;
+    controller.setPointRate(0);
+    controller.setArmed(true);
+    controller.setRequestPointsCallback(
+        [](const PointFillRequest&, std::vector<LaserPoint>& out) {
+            LaserPoint badPosition{};
+            badPosition.x = std::numeric_limits<float>::quiet_NaN();
+            badPosition.y = 0.25f;
+            badPosition.r = 1.0f;
+            badPosition.g = 1.0f;
+            badPosition.b = 1.0f;
+            badPosition.i = 1.0f;
+            out.push_back(badPosition);
+
+            LaserPoint clamped{};
+            clamped.x = 2.0f;
+            clamped.y = -2.0f;
+            clamped.r = std::numeric_limits<float>::quiet_NaN();
+            clamped.g = 2.0f;
+            clamped.b = 0.5f;
+            clamped.i = std::numeric_limits<float>::infinity();
+            out.push_back(clamped);
+        });
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 2;
+    request.maximumPointsRequired = 2;
+
+    ASSERT_TRUE(controller.requestPoints(request), "requestPoints should run callback");
+    const auto& points = controller.lastBatch();
+    ASSERT_EQ(points.size(), static_cast<std::size_t>(2), "sanitized batch keeps point count");
+
+    ASSERT_EQ(points[0].x, 0.0f, "non-finite position moves to centre x");
+    ASSERT_EQ(points[0].y, 0.0f, "non-finite position moves to centre y");
+    ASSERT_EQ(points[0].r, 0.0f, "non-finite position blanks red");
+    ASSERT_EQ(points[0].g, 0.0f, "non-finite position blanks green");
+    ASSERT_EQ(points[0].b, 0.0f, "non-finite position blanks blue");
+    ASSERT_EQ(points[0].i, 0.0f, "non-finite position blanks intensity");
+
+    ASSERT_EQ(points[1].x, 2.0f, "finite x passes through at core ingress");
+    ASSERT_EQ(points[1].y, -2.0f, "finite y passes through at core ingress");
+    ASSERT_EQ(points[1].r, 0.0f, "non-finite red channel blanks");
+    ASSERT_EQ(points[1].g, 2.0f, "finite green passes through at core ingress");
+    ASSERT_EQ(points[1].b, 0.5f, "finite blue passes through");
+    ASSERT_EQ(points[1].i, 0.0f, "non-finite intensity blanks");
+}
+
 } // namespace
 
 int main() {
     testDefaultStatusIsRed();
     testGreenOrangeTransitions();
     testConnectionFailureIsRedAndCounted();
+    testEtherDreamPlaybackIdleHasDisplayLabel();
+    testEtherDreamStopConditionHasDisplayLabel();
     testClearErrorsResetsCounts();
     testIntermittentStatusExpiresWithoutClearingCounts();
     testRecoveredConnectionErrorExpiresWithoutClearingCounts();
     testArmRisingEdgeResetsStartupBlank();
+    testPointCallbackSanitizesNonFinitePoints();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

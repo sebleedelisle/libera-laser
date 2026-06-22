@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 using namespace libera;
 using namespace libera::core;
@@ -59,6 +60,15 @@ void testU16Signed_ClampsBelow() {
               "values below -1.0 clamp to 0");
 }
 
+void testU16Signed_NonFiniteMapsToCentre() {
+    ASSERT_EQ(EncodingHarness::u16FromSigned(std::numeric_limits<float>::quiet_NaN()),
+              static_cast<std::uint16_t>(32768),
+              "NaN signed value maps to midpoint");
+    ASSERT_EQ(EncodingHarness::u16FromSigned(std::numeric_limits<float>::infinity()),
+              static_cast<std::uint16_t>(32768),
+              "infinite signed value maps to midpoint");
+}
+
 // ── encodeUnsigned16FromUnit ─────────────────────────────────────────
 
 void testU16Unit_Zero() {
@@ -86,6 +96,15 @@ void testU16Unit_ClampsAbove() {
               "values above 1.0 clamp to 65535");
 }
 
+void testU16Unit_NonFiniteMapsToZero() {
+    ASSERT_EQ(EncodingHarness::u16FromUnit(std::numeric_limits<float>::quiet_NaN()),
+              static_cast<std::uint16_t>(0),
+              "NaN unit value maps to 0");
+    ASSERT_EQ(EncodingHarness::u16FromUnit(std::numeric_limits<float>::infinity()),
+              static_cast<std::uint16_t>(0),
+              "infinite unit value maps to 0");
+}
+
 // ── encodeUnsigned12FromSignedUnit ───────────────────────────────────
 
 void testU12Signed_Zero() {
@@ -108,6 +127,15 @@ void testU12Signed_ClampsAbove() {
               "values above 1.0 clamp to 4095");
 }
 
+void testU12Signed_NonFiniteMapsToCentre() {
+    ASSERT_EQ(EncodingHarness::u12FromSigned(std::numeric_limits<float>::quiet_NaN()),
+              static_cast<std::uint16_t>(2048),
+              "NaN signed 12-bit value maps to midpoint");
+    ASSERT_EQ(EncodingHarness::u12FromSigned(std::numeric_limits<float>::infinity()),
+              static_cast<std::uint16_t>(2048),
+              "infinite signed 12-bit value maps to midpoint");
+}
+
 // ── encodeUnsigned12FromUnit ─────────────────────────────────────────
 
 void testU12Unit_Zero() {
@@ -128,6 +156,15 @@ void testU12Unit_Half() {
 void testU12Unit_ClampsNegative() {
     ASSERT_EQ(EncodingHarness::u12FromUnit(-1.0f), static_cast<std::uint16_t>(0),
               "negative values clamp to 0");
+}
+
+void testU12Unit_NonFiniteMapsToZero() {
+    ASSERT_EQ(EncodingHarness::u12FromUnit(std::numeric_limits<float>::quiet_NaN()),
+              static_cast<std::uint16_t>(0),
+              "NaN unit 12-bit value maps to 0");
+    ASSERT_EQ(EncodingHarness::u12FromUnit(std::numeric_limits<float>::infinity()),
+              static_cast<std::uint16_t>(0),
+              "infinite unit 12-bit value maps to 0");
 }
 
 // ── encodeUnsigned8FromUnit ──────────────────────────────────────────
@@ -157,6 +194,15 @@ void testU8Unit_ClampsAbove() {
               "values above 1.0 clamp to 255");
 }
 
+void testU8Unit_NonFiniteMapsToZero() {
+    ASSERT_EQ(EncodingHarness::u8FromUnit(std::numeric_limits<float>::quiet_NaN()),
+              static_cast<std::uint8_t>(0),
+              "NaN unit 8-bit value maps to 0");
+    ASSERT_EQ(EncodingHarness::u8FromUnit(std::numeric_limits<float>::infinity()),
+              static_cast<std::uint8_t>(0),
+              "infinite unit 8-bit value maps to 0");
+}
+
 } // namespace
 
 int main() {
@@ -165,28 +211,33 @@ int main() {
     testU16Signed_Pos1();
     testU16Signed_ClampsAbove();
     testU16Signed_ClampsBelow();
+    testU16Signed_NonFiniteMapsToCentre();
 
     testU16Unit_Zero();
     testU16Unit_One();
     testU16Unit_Half();
     testU16Unit_ClampsNegative();
     testU16Unit_ClampsAbove();
+    testU16Unit_NonFiniteMapsToZero();
 
     testU12Signed_Zero();
     testU12Signed_Neg1();
     testU12Signed_Pos1();
     testU12Signed_ClampsAbove();
+    testU12Signed_NonFiniteMapsToCentre();
 
     testU12Unit_Zero();
     testU12Unit_One();
     testU12Unit_Half();
     testU12Unit_ClampsNegative();
+    testU12Unit_NonFiniteMapsToZero();
 
     testU8Unit_Zero();
     testU8Unit_One();
     testU8Unit_Half();
     testU8Unit_ClampsNegative();
     testU8Unit_ClampsAbove();
+    testU8Unit_NonFiniteMapsToZero();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

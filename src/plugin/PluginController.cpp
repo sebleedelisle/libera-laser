@@ -37,14 +37,14 @@ void convertPoints(const std::vector<core::LaserPoint>& src,
     for (std::size_t i = 0; i < src.size(); ++i) {
         const auto& point = src[i];
         auto& out = dst[i];
-        out.x = static_cast<int16_t>(std::clamp(point.x, -1.0f, 1.0f) * 32767.0f);
-        out.y = static_cast<int16_t>(std::clamp(point.y, -1.0f, 1.0f) * 32767.0f);
-        out.r = static_cast<uint16_t>(std::clamp(point.r, 0.0f, 1.0f) * 65535.0f);
-        out.g = static_cast<uint16_t>(std::clamp(point.g, 0.0f, 1.0f) * 65535.0f);
-        out.b = static_cast<uint16_t>(std::clamp(point.b, 0.0f, 1.0f) * 65535.0f);
-        out.i = static_cast<uint16_t>(std::clamp(point.i, 0.0f, 1.0f) * 65535.0f);
-        out.u1 = static_cast<uint16_t>(std::clamp(point.u1, 0.0f, 1.0f) * 65535.0f);
-        out.u2 = static_cast<uint16_t>(std::clamp(point.u2, 0.0f, 1.0f) * 65535.0f);
+        out.x = static_cast<int16_t>(core::sanitizeSignedUnitValue(point.x) * 32767.0f);
+        out.y = static_cast<int16_t>(core::sanitizeSignedUnitValue(point.y) * 32767.0f);
+        out.r = static_cast<uint16_t>(core::sanitizeUnitValue(point.r) * 65535.0f);
+        out.g = static_cast<uint16_t>(core::sanitizeUnitValue(point.g) * 65535.0f);
+        out.b = static_cast<uint16_t>(core::sanitizeUnitValue(point.b) * 65535.0f);
+        out.i = static_cast<uint16_t>(core::sanitizeUnitValue(point.i) * 65535.0f);
+        out.u1 = static_cast<uint16_t>(core::sanitizeUnitValue(point.u1) * 65535.0f);
+        out.u2 = static_cast<uint16_t>(core::sanitizeUnitValue(point.u2) * 65535.0f);
     }
 }
 

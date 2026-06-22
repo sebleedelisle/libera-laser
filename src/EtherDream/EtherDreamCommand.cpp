@@ -58,7 +58,7 @@ void EtherDreamCommand::reset() {
 }
 
 std::int16_t EtherDreamCommand::encodeCoordinate(float value) noexcept {
-    float clamped = std::clamp(value, -1.0f, 1.0f);
+    float clamped = core::sanitizeSignedUnitValue(value);
     float scaled = clamped * COORD_SCALE;
     auto rounded = static_cast<std::int32_t>(scaled >= 0.f ? scaled + 0.5f : scaled - 0.5f);
     auto signedWord = static_cast<std::int16_t>(std::clamp(rounded, -32768, 32767));
@@ -66,7 +66,7 @@ std::int16_t EtherDreamCommand::encodeCoordinate(float value) noexcept {
 }
 
 std::uint16_t EtherDreamCommand::encodeChannel(float value) noexcept {
-    float clamped = std::clamp(value, 0.0f, 1.0f);
+    float clamped = core::sanitizeUnitValue(value);
     float scaled = clamped * CHANNEL_SCALE;
     auto rounded = static_cast<std::int32_t>(scaled + 0.5f);
     auto limited = static_cast<std::uint16_t>(std::clamp(rounded, 0, 65535));

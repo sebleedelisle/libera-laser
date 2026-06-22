@@ -61,14 +61,29 @@ std::uint16_t readLe16(const std::uint8_t* data) {
         | static_cast<std::uint16_t>(data[1] << 8);
 }
 
+std::uint32_t readLe32(const std::uint8_t* data) {
+    return static_cast<std::uint32_t>(data[0])
+        | (static_cast<std::uint32_t>(data[1]) << 8)
+        | (static_cast<std::uint32_t>(data[2]) << 16)
+        | (static_cast<std::uint32_t>(data[3]) << 24);
+}
+
 class EtherDreamLoopbackServer {
 public:
     explicit EtherDreamLoopbackServer(
         libera::etherdream::PlaybackState initialPlaybackState =
             libera::etherdream::PlaybackState::Idle,
-        std::uint16_t preparedBufferAfterPrepare = 0)
+        std::uint16_t preparedBufferAfterPrepare = 0,
+        bool injectUnderflowAfterFirstBegin = false,
+        bool injectPlaybackIdleNakAfterFirstBegin = false,
+        bool injectBufferFullNakAfterFirstBegin = false,
+        bool injectStopConditionOnFirstClear = false)
     : initialPlaybackState(initialPlaybackState)
-    , preparedBufferAfterPrepare(preparedBufferAfterPrepare) {
+    , preparedBufferAfterPrepare(preparedBufferAfterPrepare)
+    , injectUnderflowAfterFirstBegin(injectUnderflowAfterFirstBegin)
+    , injectPlaybackIdleNakAfterFirstBegin(injectPlaybackIdleNakAfterFirstBegin)
+    , injectBufferFullNakAfterFirstBegin(injectBufferFullNakAfterFirstBegin)
+    , injectStopConditionOnFirstClear(injectStopConditionOnFirstClear) {
         listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
         ASSERT_TRUE(listenFd >= 0, "socket");
 
@@ -122,10 +137,15 @@ public:
     }
 
     bool waitForBegin(std::chrono::milliseconds timeout) {
+        return waitForBeginCount(1, timeout);
+    }
+
+    bool waitForBeginCount(std::size_t expectedBeginCount,
+                           std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(mutex);
-        return condition.wait_for(lock, timeout, [this] {
-            return beginSeen || !violationMessage.empty();
-        }) && beginSeen && violationMessage.empty();
+        return condition.wait_for(lock, timeout, [this, expectedBeginCount] {
+            return beginCount >= expectedBeginCount || !violationMessage.empty();
+        }) && beginCount >= expectedBeginCount && violationMessage.empty();
     }
 
     std::string violation() const {
@@ -136,6 +156,11 @@ public:
     std::vector<char> commands() const {
         std::lock_guard<std::mutex> lock(mutex);
         return commandLog;
+    }
+
+    std::vector<std::uint32_t> beginRates() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return beginRateLog;
     }
 
 private:
@@ -181,16 +206,20 @@ private:
                  char command,
                  libera::etherdream::PlaybackState playbackState,
                  std::uint16_t bufferFullness,
-                 std::uint32_t pointRate) {
+                 std::uint32_t pointRate,
+                 std::uint16_t playbackFlags = 0,
+                 libera::etherdream::LightEngineState lightEngineState =
+                     libera::etherdream::LightEngineState::Ready,
+                 std::uint16_t lightEngineFlags = 0) {
         std::array<std::uint8_t, 22> data{};
         data[0] = static_cast<std::uint8_t>(response);
         data[1] = static_cast<std::uint8_t>(command);
         data[2] = 0; // protocol
-        data[3] = static_cast<std::uint8_t>(libera::etherdream::LightEngineState::Ready);
+        data[3] = static_cast<std::uint8_t>(lightEngineState);
         data[4] = static_cast<std::uint8_t>(playbackState);
         data[5] = 0; // source
-        putLe16(data, 6, 0); // light engine flags
-        putLe16(data, 8, 0); // playback flags
+        putLe16(data, 6, lightEngineFlags);
+        putLe16(data, 8, playbackFlags);
         putLe16(data, 10, 0); // source flags
         putLe16(data, 12, bufferFullness);
         putLe32(data, 14, pointRate);
@@ -230,15 +259,34 @@ private:
 
         const std::uint16_t initialBuffer =
             initialPlaybackState == libera::etherdream::PlaybackState::Prepared ? 1000 : 0;
-        if (!sendAck(client, 'a', '?', initialPlaybackState, initialBuffer, 0)) {
+        const bool stopConditionInitiallyActive = injectStopConditionOnFirstClear;
+        if (!sendAck(client,
+                     'a',
+                     '?',
+                     initialPlaybackState,
+                     initialBuffer,
+                     0,
+                     stopConditionInitiallyActive
+                         ? libera::etherdream::EtherDreamStatus::PlaybackFlagEstop
+                         : 0,
+                     stopConditionInitiallyActive
+                         ? libera::etherdream::LightEngineState::Estop
+                         : libera::etherdream::LightEngineState::Ready,
+                     stopConditionInitiallyActive ? 0x1u : 0u)) {
             return;
         }
 
         const bool startupResetRequired =
-            initialPlaybackState != libera::etherdream::PlaybackState::Idle;
+            initialPlaybackState != libera::etherdream::PlaybackState::Idle
+            && !stopConditionInitiallyActive;
         bool stopSeen = false;
         bool preparedSeen = false;
         bool firstDataSeen = false;
+        bool underflowInjected = false;
+        bool playbackIdleNakInjected = false;
+        bool bufferFullNakInjected = false;
+        bool stopConditionInjected = false;
+        std::size_t localBeginCount = 0;
         std::uint16_t bufferedPoints = 0;
 
         while (running.load()) {
@@ -264,6 +312,30 @@ private:
                 continue;
             }
 
+            if (command == 'c') {
+                if (injectStopConditionOnFirstClear && !stopConditionInjected) {
+                    stopConditionInjected = true;
+                    sendAck(client,
+                            '!',
+                            'c',
+                            libera::etherdream::PlaybackState::Idle,
+                            0,
+                            0,
+                            libera::etherdream::EtherDreamStatus::PlaybackFlagEstop,
+                            libera::etherdream::LightEngineState::Estop,
+                            0x1u);
+                    continue;
+                }
+
+                sendAck(client,
+                        'a',
+                        'c',
+                        libera::etherdream::PlaybackState::Idle,
+                        0,
+                        0);
+                continue;
+            }
+
             if (command == 'p') {
                 preparedSeen = true;
                 bufferedPoints = preparedBufferAfterPrepare;
@@ -286,12 +358,62 @@ private:
                     fail("data command arrived before prepare");
                     return;
                 }
+                if (injectUnderflowAfterFirstBegin
+                    && localBeginCount == 1
+                    && !underflowInjected) {
+                    underflowInjected = true;
+                    preparedSeen = false;
+                    firstDataSeen = false;
+                    bufferedPoints = 0;
+                    sendAck(client,
+                            'a',
+                            'd',
+                            libera::etherdream::PlaybackState::Idle,
+                            0,
+                            0,
+                            libera::etherdream::EtherDreamStatus::PlaybackFlagUnderflow);
+                    continue;
+                }
+                if (injectPlaybackIdleNakAfterFirstBegin
+                    && localBeginCount == 1
+                    && !playbackIdleNakInjected) {
+                    playbackIdleNakInjected = true;
+                    preparedSeen = false;
+                    firstDataSeen = false;
+                    bufferedPoints = 0;
+                    sendAck(client,
+                            'I',
+                            'd',
+                            libera::etherdream::PlaybackState::Idle,
+                            0,
+                            0);
+                    continue;
+                }
+                if (injectBufferFullNakAfterFirstBegin
+                    && localBeginCount == 1
+                    && !bufferFullNakInjected) {
+                    bufferFullNakInjected = true;
+                    preparedSeen = true;
+                    firstDataSeen = true;
+                    bufferedPoints = 4096;
+                    sendAck(client,
+                            'I',
+                            'd',
+                            libera::etherdream::PlaybackState::Prepared,
+                            bufferedPoints,
+                            0);
+                    continue;
+                }
                 if (firstDataSeen) {
                     fail("second data command arrived before begin");
                     return;
                 }
-                if (pointCount > libera::etherdream::config::ETHERDREAM_MIN_BUFFER_POINTS) {
-                    fail("first data command exceeded the latency/headroom target");
+                if (pointCount > libera::etherdream::config::ETHERDREAM_MAX_PACKET_POINTS) {
+                    fail("data command exceeded Ether Dream packet limit");
+                    return;
+                }
+                if (static_cast<std::size_t>(bufferedPoints) + pointCount > 4096u) {
+                    fail("data command exceeded simulated Ether Dream FIFO capacity");
                     return;
                 }
 
@@ -306,15 +428,23 @@ private:
                 if (!readExact(client, beginBytes.data(), beginBytes.size())) {
                     return;
                 }
+                const auto beginRate = readLe32(beginBytes.data() + 2);
                 if (!firstDataSeen) {
                     fail("begin command arrived before any data was buffered");
                     return;
                 }
                 {
                     std::lock_guard<std::mutex> lock(mutex);
-                    beginSeen = true;
+                    ++localBeginCount;
+                    beginCount = localBeginCount;
+                    beginRateLog.push_back(beginRate);
                 }
-                sendAck(client, 'a', 'b', libera::etherdream::PlaybackState::Playing, bufferedPoints, 30000);
+                sendAck(client,
+                        'a',
+                        'b',
+                        libera::etherdream::PlaybackState::Playing,
+                        bufferedPoints,
+                        beginRate);
                 condition.notify_all();
                 continue;
             }
@@ -345,10 +475,15 @@ private:
     std::thread serverThread;
     libera::etherdream::PlaybackState initialPlaybackState;
     std::uint16_t preparedBufferAfterPrepare = 0;
+    bool injectUnderflowAfterFirstBegin = false;
+    bool injectPlaybackIdleNakAfterFirstBegin = false;
+    bool injectBufferFullNakAfterFirstBegin = false;
+    bool injectStopConditionOnFirstClear = false;
     mutable std::mutex mutex;
     std::condition_variable condition;
     std::vector<char> commandLog;
-    bool beginSeen = false;
+    std::vector<std::uint32_t> beginRateLog;
+    std::size_t beginCount = 0;
     std::string violationMessage;
 };
 
@@ -370,8 +505,23 @@ libera::core::Frame makeFrame(std::size_t pointCount) {
 
 bool runStreamOrderScenario(libera::etherdream::PlaybackState initialPlaybackState,
                             const char* scenarioName,
-                            std::uint16_t preparedBufferAfterPrepare = 0) {
-    EtherDreamLoopbackServer server(initialPlaybackState, preparedBufferAfterPrepare);
+                            std::uint16_t preparedBufferAfterPrepare = 0,
+                            bool injectUnderflowAfterFirstBegin = false,
+                            std::size_t expectedBeginCount = 1,
+                            bool expectUnderflowRecorded = false,
+                            bool injectPlaybackIdleNakAfterFirstBegin = false,
+                            bool expectPlaybackIdleRecorded = false,
+                            bool injectBufferFullNakAfterFirstBegin = false,
+                            bool expectBufferOverrunRecorded = false,
+                            bool injectStopConditionOnFirstClear = false,
+                            bool expectStopConditionRecorded = false,
+                            bool changePointRateAfterFirstBegin = false) {
+    EtherDreamLoopbackServer server(initialPlaybackState,
+                                    preparedBufferAfterPrepare,
+                                    injectUnderflowAfterFirstBegin,
+                                    injectPlaybackIdleNakAfterFirstBegin,
+                                    injectBufferFullNakAfterFirstBegin,
+                                    injectStopConditionOnFirstClear);
     libera::core::LaserController::setTargetLatency(0ms);
 
     libera::etherdream::EtherDreamController controller;
@@ -393,7 +543,18 @@ bool runStreamOrderScenario(libera::etherdream::PlaybackState initialPlaybackSta
 
     controller.startThread();
 
-    const bool began = server.waitForBegin(2s);
+    bool began = false;
+    if (changePointRateAfterFirstBegin) {
+        began = server.waitForBeginCount(1, 2s);
+        if (began) {
+            controller.setPointRate(20000);
+            ASSERT_TRUE(controller.sendFrame(makeFrame(1000)),
+                        "second frame queued after point-rate change");
+            began = server.waitForBeginCount(expectedBeginCount, 2s);
+        }
+    } else {
+        began = server.waitForBeginCount(expectedBeginCount, 2s);
+    }
 
     controller.stopThread();
     controller.close();
@@ -417,6 +578,116 @@ bool runStreamOrderScenario(libera::etherdream::PlaybackState initialPlaybackSta
         return false;
     }
 
+    if (expectUnderflowRecorded) {
+        bool underflowRecorded = false;
+        for (const auto& error : controller.getErrors()) {
+            if (error.code == "network.buffer_underflow" && error.count > 0) {
+                underflowRecorded = true;
+                break;
+            }
+        }
+        if (!underflowRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): underflow was not recorded\n",
+                         scenarioName);
+            return false;
+        }
+    }
+
+    if (expectPlaybackIdleRecorded) {
+        bool playbackIdleRecorded = false;
+        bool protocolErrorRecorded = false;
+        for (const auto& error : controller.getErrors()) {
+            if (error.code == "etherdream.playback_idle" && error.count > 0) {
+                playbackIdleRecorded = true;
+            }
+            if (error.code == "network.protocol_error" && error.count > 0) {
+                protocolErrorRecorded = true;
+            }
+        }
+        if (!playbackIdleRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): playback idle was not recorded\n",
+                         scenarioName);
+            return false;
+        }
+        if (protocolErrorRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): playback idle was reported as protocol error\n",
+                         scenarioName);
+            return false;
+        }
+    }
+
+    if (expectBufferOverrunRecorded) {
+        bool bufferOverrunRecorded = false;
+        bool protocolErrorRecorded = false;
+        for (const auto& error : controller.getErrors()) {
+            if (error.code == "network.buffer_overrun" && error.count > 0) {
+                bufferOverrunRecorded = true;
+            }
+            if (error.code == "network.protocol_error" && error.count > 0) {
+                protocolErrorRecorded = true;
+            }
+        }
+        if (!bufferOverrunRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): buffer overrun was not recorded\n",
+                         scenarioName);
+            return false;
+        }
+        if (protocolErrorRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): full data rejection was reported as protocol error\n",
+                         scenarioName);
+            return false;
+        }
+    }
+
+    if (expectStopConditionRecorded) {
+        bool stopConditionRecorded = false;
+        bool protocolErrorRecorded = false;
+        for (const auto& error : controller.getErrors()) {
+            if (error.code == "etherdream.stop_condition" && error.count > 0) {
+                stopConditionRecorded = true;
+            }
+            if (error.code == "network.protocol_error" && error.count > 0) {
+                protocolErrorRecorded = true;
+            }
+        }
+        if (!stopConditionRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): stop condition was not recorded\n",
+                         scenarioName);
+            return false;
+        }
+        if (protocolErrorRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): stop condition was reported as protocol error\n",
+                         scenarioName);
+            return false;
+        }
+    }
+
+    if (changePointRateAfterFirstBegin) {
+        const auto commands = server.commands();
+        for (char command : commands) {
+            if (command == 'q') {
+                std::fprintf(stderr,
+                             "EtherDream stream order violation (%s): point-rate change used q instead of restart\n",
+                             scenarioName);
+                return false;
+            }
+        }
+        const auto beginRates = server.beginRates();
+        if (beginRates.size() < 2 || beginRates[0] != 30000u || beginRates[1] != 20000u) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): begin rates did not show restart at new rate\n",
+                         scenarioName);
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -431,6 +702,65 @@ int main() {
                                 "partial prepared buffer after prepare",
                                 static_cast<std::uint16_t>(
                                     libera::etherdream::config::ETHERDREAM_MIN_PACKET_POINTS - 1))) {
+        return 1;
+    }
+    if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,
+                                "underflow recovery",
+                                0,
+                                true,
+                                2,
+                                true)) {
+        return 1;
+    }
+    if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,
+                                "playback idle NAK recovery",
+                                0,
+                                false,
+                                2,
+                                false,
+                                true,
+                                true)) {
+        return 1;
+    }
+    if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,
+                                "full data NAK classification",
+                                0,
+                                false,
+                                2,
+                                false,
+                                false,
+                                false,
+                                true,
+                                true)) {
+        return 1;
+    }
+    if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,
+                                "stop condition recovery",
+                                0,
+                                false,
+                                1,
+                                false,
+                                false,
+                                false,
+                                false,
+                                false,
+                                true,
+                                true)) {
+        return 1;
+    }
+    if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,
+                                "point-rate change restart",
+                                0,
+                                false,
+                                2,
+                                false,
+                                false,
+                                false,
+                                false,
+                                false,
+                                false,
+                                false,
+                                true)) {
         return 1;
     }
 

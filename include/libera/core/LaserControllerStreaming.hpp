@@ -57,6 +57,16 @@ struct LatencyStats {
     std::size_t sampleCount = 0;
 };
 
+struct PointRequestMetrics {
+    bool requestRan = false;
+    std::size_t requestedMinimum = 0;
+    std::size_t requestedMaximum = 0;
+    std::size_t generatedPointCount = 0;
+    std::size_t finalPointCount = 0;
+    std::size_t blankPaddingPointCount = 0;
+    std::size_t clampedPointCount = 0;
+};
+
 enum class ControllerStatus {
     Good,
     Issues,
@@ -277,6 +287,15 @@ protected:
     /// internal frame scheduler.
     void postProcessOutputPoints(std::vector<LaserPoint>& points);
 
+    /// Metrics from the most recent requestPoints() call on this controller.
+    const PointRequestMetrics& lastPointRequestMetrics() const noexcept;
+
+    /// Store requestPoints() diagnostics without changing the callback API.
+    void recordPointRequestMetrics(const PointFillRequest& request,
+                                   bool requestRan,
+                                   std::size_t generatedPointCount,
+                                   std::size_t finalPointCount);
+
     /// Estimate current buffer fullness by projecting consumption from an snapshot.
     /// If projection is not possible, fallbackBufferFullness is returned.
     int calculateBufferFullnessFromSnapshot(
@@ -326,6 +345,7 @@ protected:
 
     /// Main buffer of points pending transmission to the controller.
     std::vector<LaserPoint> pointsToSend;
+    PointRequestMetrics pointRequestMetrics{};
     // Stores 1/10,000th of a second units so we match legacy colour-shift semantics.
     std::atomic<double> scannerSyncTime{2.0}; // in 1/10,000 of a second
     std::deque<LaserPoint> scannerSyncColourDelayLine;

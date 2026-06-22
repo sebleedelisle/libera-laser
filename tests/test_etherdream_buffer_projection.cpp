@@ -111,6 +111,37 @@ void testImplausibleReportedPointRateForcesReset() {
                 "implausible active point rate reset should not begin until stream is rebuilt");
 }
 
+void testPointRateChangeWhilePlayingSchedulesRestart() {
+    auto controller = makeController();
+    setStatus(*controller, PlaybackState::Playing, 1000, 30000, 0ms);
+    controller->lastSentPointRate = 30000;
+    controller->pendingRateChangeCount = 1;
+
+    controller->setPointRate(20000);
+    controller->syncPointRate();
+
+    ASSERT_TRUE(controller->stopRequired,
+                "active Ether Dream point-rate changes should restart playback");
+    ASSERT_TRUE(!controller->prepareRequired,
+                "rate-change restart should stop before preparing");
+    ASSERT_TRUE(!controller->beginRequired,
+                "rate-change restart should not begin until data is prepared again");
+    ASSERT_EQ(controller->pendingRateChangeCount, static_cast<std::size_t>(0),
+              "rate-change restart should discard queued q/control-bit changes");
+}
+
+void testPointRateChangeBeforeBeginWaitsForBeginRate() {
+    auto controller = makeController();
+    setStatus(*controller, PlaybackState::Prepared, 1000, 0, 0ms);
+    controller->lastSentPointRate = 0;
+
+    controller->setPointRate(20000);
+    controller->syncPointRate();
+
+    ASSERT_TRUE(!controller->stopRequired,
+                "before playback starts, begin command will carry the requested rate");
+}
+
 } // namespace
 
 int main() {
@@ -118,6 +149,8 @@ int main() {
     testPreparedProjectionDoesNotDrainBuffer();
     testRequestedPointRateClampsToControllerMaximum();
     testImplausibleReportedPointRateForcesReset();
+    testPointRateChangeWhilePlayingSchedulesRestart();
+    testPointRateChangeBeforeBeginWaitsForBeginRate();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

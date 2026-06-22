@@ -231,7 +231,9 @@ void EtherDreamManager::threadedFunction() {
             port,
             static_cast<int>(bufferCapacity),
             std::move(hardwareVersion),
-            maxPointRate};
+            maxPointRate,
+            hardwareRevision,
+            softwareRevision};
         info.setUsageState(usageState);
 
         {

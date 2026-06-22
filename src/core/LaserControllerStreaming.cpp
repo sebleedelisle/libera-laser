@@ -104,6 +104,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
 
     if (!callback) {
         // No callback set, so there is no way to produce points.
+        recordPointRequestMetrics(request, false, 0, 0);
         return false;
     }
 
@@ -112,6 +113,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
 
     // Ask the user-supplied callback to append new points.
     callback(request, pointsToSend);
+    const auto generatedPointCount = pointsToSend.size();
 
     // Debug-only: enforce the contract that the callback produced at least the requested minimum.
     assert(pointsToSend.size() >= request.minimumPointsRequired &&
@@ -132,7 +134,9 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
         pointsToSend.insert(pointsToSend.end(), missing, blankPoint);
     }
 
+    sanitizeLaserPoints(pointsToSend);
     postProcessOutputPoints(pointsToSend);
+    recordPointRequestMetrics(request, true, generatedPointCount, pointsToSend.size());
 
     return true;
 }
@@ -206,6 +210,35 @@ void LaserControllerStreaming::postProcessOutputPoints(std::vector<LaserPoint>& 
             point.b = colourPoint.b;
         }
     }
+}
+
+const PointRequestMetrics& LaserControllerStreaming::lastPointRequestMetrics() const noexcept {
+    return pointRequestMetrics;
+}
+
+void LaserControllerStreaming::recordPointRequestMetrics(const PointFillRequest& request,
+                                                         bool requestRan,
+                                                         std::size_t generatedPointCount,
+                                                         std::size_t finalPointCount) {
+    PointRequestMetrics metrics;
+    metrics.requestRan = requestRan;
+    metrics.requestedMinimum = request.minimumPointsRequired;
+    metrics.requestedMaximum = request.maximumPointsRequired;
+    metrics.generatedPointCount = generatedPointCount;
+    metrics.finalPointCount = finalPointCount;
+
+    if (requestRan) {
+        if (generatedPointCount < request.minimumPointsRequired) {
+            metrics.blankPaddingPointCount =
+                request.minimumPointsRequired - generatedPointCount;
+        }
+        if (generatedPointCount > request.maximumPointsRequired) {
+            metrics.clampedPointCount =
+                generatedPointCount - request.maximumPointsRequired;
+        }
+    }
+
+    pointRequestMetrics = metrics;
 }
 
 
@@ -529,29 +562,29 @@ int LaserControllerStreaming::calculateBufferFullnessFromSnapshot(
 }
 
 std::uint16_t LaserControllerStreaming::encodeUnsigned16FromSignedUnit(float value) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = sanitizeSignedUnitValue(value);
     const float normalized = (clamped * 0.5f) + 0.5f;
     return static_cast<std::uint16_t>(std::lround(normalized * 65535.0f));
 }
 
 std::uint16_t LaserControllerStreaming::encodeUnsigned16FromUnit(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    const float clamped = sanitizeUnitValue(value);
     return static_cast<std::uint16_t>(std::lround(clamped * 65535.0f));
 }
 
 std::uint16_t LaserControllerStreaming::encodeUnsigned12FromSignedUnit(float value) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = sanitizeSignedUnitValue(value);
     const float normalized = (clamped * 0.5f) + 0.5f;
     return static_cast<std::uint16_t>(std::lround(normalized * 4095.0f));
 }
 
 std::uint16_t LaserControllerStreaming::encodeUnsigned12FromUnit(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    const float clamped = sanitizeUnitValue(value);
     return static_cast<std::uint16_t>(std::lround(clamped * 4095.0f));
 }
 
 std::uint8_t LaserControllerStreaming::encodeUnsigned8FromUnit(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    const float clamped = sanitizeUnitValue(value);
     return static_cast<std::uint8_t>(std::lround(clamped * 255.0f));
 }
 

@@ -98,12 +98,56 @@ bool isLifecycleCommand(char opcode) {
     }
 }
 
+bool isPlaybackStateThatCanHoldBufferedData(PlaybackState state) {
+    return state == PlaybackState::Prepared || state == PlaybackState::Playing;
+}
+
+bool statusLooksFullForDataReject(const EtherDreamStatus& status, int bufferSize) {
+    if (bufferSize <= 0) {
+        return status.bufferFullness > 0;
+    }
+    const auto reportedFullness = static_cast<int>(status.bufferFullness);
+    // Real Ether Dreams have returned I d instead of F d for oversized packets.
+    // In those cases the status reports the advertised capacity or one less.
+    return reportedFullness >= std::max(0, bufferSize - 1);
+}
+
+double durationMillis(std::chrono::steady_clock::duration duration) {
+    return std::chrono::duration<double, std::milli>(duration).count();
+}
+
+double roundedMillis(double value) {
+    return std::round(value * 10.0) / 10.0;
+}
+
+std::string trimFirmwareString(std::string value) {
+    const auto isTrimSpace = [](unsigned char c) {
+        return std::isspace(c) != 0;
+    };
+
+    auto first = std::find_if_not(value.begin(), value.end(), [&](char c) {
+        return isTrimSpace(static_cast<unsigned char>(c));
+    });
+    auto last = std::find_if_not(value.rbegin(), value.rend(), [&](char c) {
+        return isTrimSpace(static_cast<unsigned char>(c));
+    }).base();
+
+    if (first >= last) {
+        return {};
+    }
+    return std::string(first, last);
+}
+
 } // namespace
 
 EtherDreamController::EtherDreamController() = default;
 
 EtherDreamController::EtherDreamController(EtherDreamControllerInfo info)
-: controllerInfo(std::move(info)) {}
+: controllerInfo(std::move(info)) {
+    if (controllerInfo) {
+        firmwareVersionString = controllerInfo->firmwareVersion();
+    }
+}
 
 EtherDreamController::~EtherDreamController() {
     // Orderly shutdown: stop the worker thread and close the TCP connection.
@@ -113,6 +157,10 @@ EtherDreamController::~EtherDreamController() {
 
 expected<void> EtherDreamController::connect(const EtherDreamControllerInfo& info) {
     controllerInfo = info;
+    {
+        std::scoped_lock<std::mutex> lock(firmwareMutex);
+        firmwareVersionString = info.firmwareVersion();
+    }
     return connect();
 }
 
@@ -162,17 +210,33 @@ expected<void> EtherDreamController::connect() {
 }
 
 void EtherDreamController::run() {
-    constexpr auto retryDelay = std::chrono::milliseconds(100);
+    auto retryDelay = config::ETHERDREAM_RECONNECT_INITIAL_DELAY;
+    const auto resetRetryDelay = [&] {
+        retryDelay = config::ETHERDREAM_RECONNECT_INITIAL_DELAY;
+    };
+    const auto sleepBeforeRetry = [&](bool increaseDelay) {
+        if (retryDelay > std::chrono::milliseconds::zero()) {
+            std::this_thread::sleep_for(retryDelay);
+        }
+        if (increaseDelay) {
+            if (retryDelay == std::chrono::milliseconds::zero()) {
+                retryDelay = config::ETHERDREAM_RECONNECT_BACKOFF_DELAY;
+            } else {
+                retryDelay = std::min(retryDelay * 2,
+                                      config::ETHERDREAM_RECONNECT_MAX_DELAY);
+            }
+        }
+    };
 
     while (running) {
         if (!controllerInfo) {
             setConnectionState(false);
-            std::this_thread::sleep_for(retryDelay);
+            std::this_thread::sleep_for(config::ETHERDREAM_RECONNECT_BACKOFF_DELAY);
             continue;
         }
 
         if (!ensureConnected()) {
-            std::this_thread::sleep_for(retryDelay);
+            sleepBeforeRetry(true);
             continue;
         }
 
@@ -181,9 +245,10 @@ void EtherDreamController::run() {
 
         if (!performHandshake()) {
             close();
-            std::this_thread::sleep_for(retryDelay);
+            sleepBeforeRetry(true);
             continue;
         }
+        const auto connectionStartedAt = std::chrono::steady_clock::now();
         // make sure to blank points if reconnecting
         resetStartupBlank();
 
@@ -209,6 +274,9 @@ void EtherDreamController::run() {
             }
 
             syncPointRate();
+            if (stopRequired || clearRequired || prepareRequired || beginRequired) {
+                continue;
+            }
 
             if (!canSendData()) {
                 pollStatus();
@@ -220,15 +288,30 @@ void EtherDreamController::run() {
 
             auto req = getFillRequest();
             if (shouldRequestPoints(req)) {
-                requestPoints(req);
-                sendPoints();
+                const auto requestStart = std::chrono::steady_clock::now();
+                const bool requestRan = requestPoints(req);
+                const auto requestDuration =
+                    std::chrono::steady_clock::now() - requestStart;
+                captureStreamHealthRequest(req, requestRan, requestDuration);
+                if (requestRan) {
+                    sendPoints();
+                } else {
+                    recordStreamHealthRequestMiss();
+                    resetPoints();
+                }
             }
         }
 
         sendOrderlyStopBeforeClose();
         close();
         if (running) {
-            std::this_thread::sleep_for(retryDelay);
+            const bool connectionWasStable =
+                std::chrono::steady_clock::now() - connectionStartedAt >=
+                config::ETHERDREAM_RECONNECT_STABLE_RESET_TIME;
+            if (connectionWasStable) {
+                resetRetryDelay();
+            }
+            sleepBeforeRetry(!connectionWasStable);
         }
     }
 }
@@ -284,10 +367,60 @@ EtherDreamController::waitForResponse(char command,
 
         logProtocolRx(sequence, command, response, raw.data(), raw.size());
 
+        if (response.response == '!' && static_cast<char>(response.command) == command) {
+            updatePlaybackRequirements(response.status);
+            logError("[EtherDream] stop condition active for command", command,
+                     "conn", connectionGeneration,
+                     "seq", sequence,
+                     "sts", response.status.describe(),
+                     "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
+                     "tx", describeProtocolTx(sequence));
+            recordIntermittentError(error_types::etherdream::stopCondition);
+            return unexpected(make_error_code(std::errc::operation_canceled));
+        }
+
         // 'I' is a NAK for an invalid command. The accompanying status tells us
         // which recovery command should come next.
         if (response.response == 'I' && static_cast<char>(response.command) == command) {
             updatePlaybackRequirements(response.status);
+            const bool dataRejectedBecausePlaybackIdle =
+                command == 'd'
+                && response.status.lightEngineState == LightEngineState::Ready
+                && response.status.playbackState == PlaybackState::Idle;
+            const bool dataRejectedBecauseBufferFull =
+                command == 'd'
+                && response.status.lightEngineState == LightEngineState::Ready
+                && isPlaybackStateThatCanHoldBufferedData(response.status.playbackState)
+                && statusLooksFullForDataReject(response.status, getBufferSize());
+            if (dataRejectedBecausePlaybackIdle) {
+                if (response.status.hasPlaybackUnderflow()) {
+                    logInfo("[EtherDream] data command rejected after playback underflow",
+                            "conn", connectionGeneration,
+                            "seq", sequence,
+                            "sts", response.status.describe(),
+                            "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
+                            "tx", describeProtocolTx(sequence));
+                } else {
+                    logInfo("[EtherDream] data command rejected because playback is idle",
+                            "conn", connectionGeneration,
+                            "seq", sequence,
+                            "sts", response.status.describe(),
+                            "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
+                            "tx", describeProtocolTx(sequence));
+                    recordIntermittentError(error_types::etherdream::playbackIdle);
+                }
+                return unexpected(make_error_code(std::errc::operation_canceled));
+            }
+            if (dataRejectedBecauseBufferFull) {
+                logError("[EtherDream] data command rejected because DAC buffer is full",
+                         "conn", connectionGeneration,
+                         "seq", sequence,
+                         "sts", response.status.describe(),
+                         "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
+                         "tx", describeProtocolTx(sequence));
+                recordIntermittentError(error_types::network::bufferOverrun);
+                return unexpected(make_error_code(std::errc::operation_canceled));
+            }
             logError("[EtherDream] NAK invalid command", command,
                      "conn", connectionGeneration,
                      "seq", sequence,
@@ -353,6 +486,18 @@ bool EtherDreamController::hasActiveConnection() const {
     return tcpClient.is_connected() && !lastNetworkError().has_value() && connectionActive;
 }
 
+std::string EtherDreamController::firmwareVersion() const {
+    std::scoped_lock<std::mutex> lock(firmwareMutex);
+    return firmwareVersionString;
+}
+
+std::string EtherDreamController::hardwareVersion() const {
+    if (!controllerInfo) {
+        return {};
+    }
+    return controllerInfo->hardwareVersion();
+}
+
 void EtherDreamController::setPointRate(std::uint32_t pointRateValue) {
     const std::uint32_t safeRate = maxSafePointRate();
     const std::uint32_t clampedRate =
@@ -371,18 +516,23 @@ void EtherDreamController::syncPointRate() {
     if (desired == lastSentPointRate) {
         return;
     }
+    if (lastSentPointRate == 0) {
+        return;
+    }
     if (lastKnownStatus.playbackState != PlaybackState::Playing) {
         return;
     }
 
-    auto ack = sendPointRate(desired);
-    if (ack) {
-        lastSentPointRate = desired;
-    } else {
-        if (ack.error() != std::errc::operation_canceled) {
-            handleNetworkFailure("point rate command", ack.error());
-        }
-    }
+    logInfo("[EtherDream] point rate changed while playing; restarting stream",
+            "from", lastSentPointRate,
+            "to", desired,
+            "sts", lastKnownStatus.describe());
+    stopRequired = true;
+    clearRequired = false;
+    prepareRequired = false;
+    beginRequired = false;
+    pendingRateChangeCount = 0;
+    resetPoints();
 }
 
 expected<Ack> EtherDreamController::sendCommand(bool allowWhileStopping) {
@@ -609,12 +759,7 @@ std::string EtherDreamController::describeProtocolTx(std::uint64_t sequence) con
 
 std::size_t EtherDreamController::calculateMinimumPoints() {
     const int bufferFullness = estimateBufferFullness();
-    const int minPoints = core::BufferEstimator::targetBufferPoints(
-        getPointRate(),
-        getBufferSize(),
-        targetLatency(),
-        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
-        static_cast<int>(config::ETHERDREAM_SAFETY_HEADROOM_POINTS));
+    const int minPoints = targetBufferPoints();
     if(bufferFullness>=minPoints) return 0;
     else return static_cast<std::size_t>(minPoints - bufferFullness);
 
@@ -627,6 +772,10 @@ void EtherDreamController::handleNetworkFailure(std::string_view where,
     connectionActive = false;
     lastError = ec;
     recordConnectionError(error_types::network::connectionLost);
+    // Once a command/ACK exchange fails, the TCP stream may be out of sync.
+    // Close immediately so the worker cannot send another command on stale
+    // socket state before the outer loop starts a clean connection.
+    tcpClient.close();
 }
 
 
@@ -732,6 +881,7 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
     // Build a "how many points do we need right now?" request using the latest
     // projected controller-buffer fullness.
     const auto bufferFullness = estimateBufferFullness();
+    const int targetPoints = targetBufferPoints();
 
     const auto bufferCapacity = getBufferSize();
     const auto freeSpace = bufferCapacity > bufferFullness ? bufferCapacity - bufferFullness : 0;
@@ -740,10 +890,10 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
         std::min<std::size_t>(calculateMinimumPoints(), packetSpace);
     
     core::PointFillRequest req;
-    // Ether Dreams are fragile when driven too close to full. Treat the
-    // latency/headroom deficit as both min and max so callbacks cannot top up
-    // beyond the safe target merely because there is raw FIFO space available.
-    req.maximumPointsRequired = targetDeficit;
+    // The latency target is the amount we require, not a hard cap on the
+    // current frame. If a frame is partly emitted and the Ether Dream has real
+    // FIFO space, allow the scheduler to send more of it in this packet.
+    req.maximumPointsRequired = packetSpace;
     req.minimumPointsRequired = targetDeficit;
     // Convert queue depth (points) into time so scheduled frame callbacks can
     // place new content close to the moment it will actually appear.
@@ -755,6 +905,9 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
 
     logInfoVerbose("[EtherDreamController :: getFillRequest]", "buffer :", bufferFullness, " | min :", req.minimumPointsRequired, " | max :", req.maximumPointsRequired); 
 
+    pendingStreamHealthRequest.estimatedBufferBeforeRequest = bufferFullness;
+    pendingStreamHealthRequest.targetBufferPointCount = targetPoints;
+    pendingStreamHealthRequest.freeSpace = freeSpace;
     pointsToSend.clear();
     return req;
 }
@@ -814,7 +967,9 @@ void EtherDreamController::sendPoints() {
         return;
     }
 
+    const auto sendStart = std::chrono::steady_clock::now();
     auto dataAck = sendCommand();
+    const auto sendDuration = std::chrono::steady_clock::now() - sendStart;
     if (!dataAck) {
         if (dataAck.error() != std::errc::operation_canceled) {
             handleNetworkFailure("data command", dataAck.error());
@@ -822,6 +977,8 @@ void EtherDreamController::sendPoints() {
         resetPoints();
         return;
     }
+
+    recordStreamHealthPacket(dataAck->status, sendDuration);
 
     if (injectRateChange) {
         pendingRateChangeCount--;
@@ -899,8 +1056,7 @@ void EtherDreamController::sendBegin() {
                      tcpClient.getDefaultTimeout().count(), "ms");
             recordIntermittentError(error_types::network::timeout);
         }
-        if (ack.error() != asio::error::timed_out &&
-            ack.error() != std::errc::operation_canceled) {
+        if (ack.error() != std::errc::operation_canceled) {
             handleNetworkFailure("begin command", ack.error());
         }
     }
@@ -936,6 +1092,252 @@ void EtherDreamController::sendOrderlyStopBeforeClose() {
     sendStop(/*allowWhileStopping*/ true);
 }
 
+void EtherDreamController::StreamHealthSamples::reset() {
+    count = 0;
+    next = 0;
+}
+
+void EtherDreamController::StreamHealthSamples::add(double value) {
+    values[next] = value;
+    next = (next + 1) % STREAM_HEALTH_SAMPLE_CAPACITY;
+    count = std::min<std::size_t>(count + 1, STREAM_HEALTH_SAMPLE_CAPACITY);
+}
+
+double EtherDreamController::StreamHealthSamples::percentile(double fraction) const {
+    if (count == 0) {
+        return 0.0;
+    }
+
+    std::array<double, STREAM_HEALTH_SAMPLE_CAPACITY> sorted = values;
+    std::sort(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(count));
+
+    const double clamped = std::clamp(fraction, 0.0, 1.0);
+    const double rawIndex = clamped * static_cast<double>(count - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(rawIndex));
+    const auto upper = static_cast<std::size_t>(std::ceil(rawIndex));
+    if (lower == upper) {
+        return sorted[lower];
+    }
+
+    const double weight = rawIndex - static_cast<double>(lower);
+    return sorted[lower] + ((sorted[upper] - sorted[lower]) * weight);
+}
+
+double EtherDreamController::StreamHealthSamples::max() const {
+    if (count == 0) {
+        return 0.0;
+    }
+    return *std::max_element(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(count));
+}
+
+void EtherDreamController::captureStreamHealthRequest(
+    const core::PointFillRequest& request,
+    bool requestRan,
+    std::chrono::steady_clock::duration requestDuration) {
+
+    pendingStreamHealthRequest.valid = true;
+    pendingStreamHealthRequest.requestRan = requestRan;
+    pendingStreamHealthRequest.request = request;
+    pendingStreamHealthRequest.metrics = lastPointRequestMetrics();
+    pendingStreamHealthRequest.requestDuration = requestDuration;
+    pendingStreamHealthRequest.requestCompletedAt = std::chrono::steady_clock::now();
+}
+
+void EtherDreamController::recordStreamHealthRequestMiss() {
+    if (!pendingStreamHealthRequest.valid) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (streamHealthWindow.startedAt == std::chrono::steady_clock::time_point{}) {
+        streamHealthWindow.startedAt = now;
+    }
+
+    streamHealthWindow.requestMisses++;
+    streamHealthWindow.requestSamplesMs.add(
+        durationMillis(pendingStreamHealthRequest.requestDuration));
+    streamHealthWindow.lastTargetBufferPoints =
+        pendingStreamHealthRequest.targetBufferPointCount;
+    streamHealthWindow.minEstimatedBuffer = std::min(
+        streamHealthWindow.minEstimatedBuffer,
+        pendingStreamHealthRequest.estimatedBufferBeforeRequest);
+
+    const int lowBufferThreshold = std::max<int>(
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
+        pendingStreamHealthRequest.targetBufferPointCount / 2);
+    if (pendingStreamHealthRequest.estimatedBufferBeforeRequest <= lowBufferThreshold) {
+        streamHealthWindow.lowBufferEvents++;
+        const bool shouldLogWarning =
+            isVerbose()
+            && (lastStreamHealthWarningTime == std::chrono::steady_clock::time_point{}
+                || now - lastStreamHealthWarningTime >= 500ms);
+        if (shouldLogWarning) {
+            lastStreamHealthWarningTime = now;
+            logInfo("[EtherDream starvation risk] point request did not produce data",
+                    "conn", connectionGeneration,
+                    "rate", getPointRate(),
+                    "est_buffer", pendingStreamHealthRequest.estimatedBufferBeforeRequest,
+                    "buffer_ms", roundedMillis(pointsToMillis(
+                        static_cast<std::size_t>(std::max(
+                            pendingStreamHealthRequest.estimatedBufferBeforeRequest, 0)))),
+                    "target", pendingStreamHealthRequest.targetBufferPointCount,
+                    "free_space", pendingStreamHealthRequest.freeSpace,
+                    "req_min", pendingStreamHealthRequest.request.minimumPointsRequired,
+                    "req_max", pendingStreamHealthRequest.request.maximumPointsRequired,
+                    "request_ms", roundedMillis(durationMillis(
+                        pendingStreamHealthRequest.requestDuration)));
+        }
+    }
+
+    pendingStreamHealthRequest.valid = false;
+    maybeLogStreamHealthSummary(now);
+}
+
+void EtherDreamController::recordStreamHealthPacket(
+    const EtherDreamStatus& ackStatus,
+    std::chrono::steady_clock::duration sendDuration) {
+
+    if (!pendingStreamHealthRequest.valid) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (streamHealthWindow.startedAt == std::chrono::steady_clock::time_point{}) {
+        streamHealthWindow.startedAt = now;
+    }
+
+    double dataGapMs = 0.0;
+    if (lastStreamHealthDataAckTime != std::chrono::steady_clock::time_point{}) {
+        dataGapMs = durationMillis(now - lastStreamHealthDataAckTime);
+        streamHealthWindow.dataGapSamplesMs.add(dataGapMs);
+    }
+    lastStreamHealthDataAckTime = now;
+
+    const auto& pending = pendingStreamHealthRequest;
+    const auto& metrics = pending.metrics;
+    streamHealthWindow.packetCount++;
+    streamHealthWindow.requestSamplesMs.add(durationMillis(pending.requestDuration));
+    streamHealthWindow.sendSamplesMs.add(durationMillis(sendDuration));
+    streamHealthWindow.lastTargetBufferPoints = pending.targetBufferPointCount;
+    streamHealthWindow.minEstimatedBuffer = std::min(
+        streamHealthWindow.minEstimatedBuffer,
+        pending.estimatedBufferBeforeRequest);
+    streamHealthWindow.minAckBuffer = std::min(
+        streamHealthWindow.minAckBuffer,
+        static_cast<int>(ackStatus.bufferFullness));
+
+    if (metrics.blankPaddingPointCount > 0) {
+        streamHealthWindow.paddedEvents++;
+        streamHealthWindow.paddedPoints += metrics.blankPaddingPointCount;
+    }
+    if (metrics.clampedPointCount > 0) {
+        streamHealthWindow.clampedEvents++;
+        streamHealthWindow.clampedPoints += metrics.clampedPointCount;
+    }
+
+    const int lowBufferThreshold = std::max<int>(
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
+        pending.targetBufferPointCount / 2);
+    const bool lowBuffer =
+        pending.estimatedBufferBeforeRequest <= lowBufferThreshold
+        || static_cast<int>(ackStatus.bufferFullness) <= lowBufferThreshold;
+    if (lowBuffer) {
+        streamHealthWindow.lowBufferEvents++;
+        const bool shouldLogWarning =
+            isVerbose()
+            && (lastStreamHealthWarningTime == std::chrono::steady_clock::time_point{}
+                || now - lastStreamHealthWarningTime >= 500ms);
+        if (shouldLogWarning) {
+            lastStreamHealthWarningTime = now;
+            logInfo("[EtherDream starvation risk]",
+                    "conn", connectionGeneration,
+                    "rate", getPointRate(),
+                    "est_buffer", pending.estimatedBufferBeforeRequest,
+                    "ack_buffer", ackStatus.bufferFullness,
+                    "buffer_ms", roundedMillis(pointsToMillis(
+                        static_cast<std::size_t>(std::max(
+                            pending.estimatedBufferBeforeRequest, 0)))),
+                    "ack_buffer_ms", roundedMillis(pointsToMillis(ackStatus.bufferFullness)),
+                    "target", pending.targetBufferPointCount,
+                    "free_space", pending.freeSpace,
+                    "req_min", pending.request.minimumPointsRequired,
+                    "req_max", pending.request.maximumPointsRequired,
+                    "generated", metrics.generatedPointCount,
+                    "final", metrics.finalPointCount,
+                    "padded", metrics.blankPaddingPointCount,
+                    "clamped", metrics.clampedPointCount,
+                    "request_ms", roundedMillis(durationMillis(pending.requestDuration)),
+                    "send_ms", roundedMillis(durationMillis(sendDuration)),
+                    "gap_ms", roundedMillis(dataGapMs),
+                    "sts", ackStatus.describe());
+        }
+    }
+
+    pendingStreamHealthRequest.valid = false;
+    maybeLogStreamHealthSummary(now);
+}
+
+void EtherDreamController::maybeLogStreamHealthSummary(
+    std::chrono::steady_clock::time_point now) {
+
+    if (streamHealthWindow.startedAt == std::chrono::steady_clock::time_point{}) {
+        streamHealthWindow.startedAt = now;
+        return;
+    }
+
+    const auto elapsed = now - streamHealthWindow.startedAt;
+    if (elapsed < 1s) {
+        return;
+    }
+
+    const bool hasActivity =
+        streamHealthWindow.packetCount > 0
+        || streamHealthWindow.requestMisses > 0
+        || streamHealthWindow.lowBufferEvents > 0;
+    if (hasActivity && isVerbose()) {
+        const int minEstimated =
+            streamHealthWindow.minEstimatedBuffer == std::numeric_limits<int>::max()
+                ? 0
+                : streamHealthWindow.minEstimatedBuffer;
+        const int minAck =
+            streamHealthWindow.minAckBuffer == std::numeric_limits<int>::max()
+                ? 0
+                : streamHealthWindow.minAckBuffer;
+
+        logInfo("[EtherDream health]",
+                "conn", connectionGeneration,
+                "rate", getPointRate(),
+                "target", streamHealthWindow.lastTargetBufferPoints,
+                "capacity", getBufferSize(),
+                "packets", streamHealthWindow.packetCount,
+                "request_misses", streamHealthWindow.requestMisses,
+                "min_est", minEstimated,
+                "min_ack", minAck,
+                "gap_p95_ms", roundedMillis(streamHealthWindow.dataGapSamplesMs.percentile(0.95)),
+                "gap_max_ms", roundedMillis(streamHealthWindow.dataGapSamplesMs.max()),
+                "request_p95_ms", roundedMillis(streamHealthWindow.requestSamplesMs.percentile(0.95)),
+                "request_max_ms", roundedMillis(streamHealthWindow.requestSamplesMs.max()),
+                "send_p95_ms", roundedMillis(streamHealthWindow.sendSamplesMs.percentile(0.95)),
+                "send_max_ms", roundedMillis(streamHealthWindow.sendSamplesMs.max()),
+                "padded_events", streamHealthWindow.paddedEvents,
+                "padded_points", streamHealthWindow.paddedPoints,
+                "clamped_events", streamHealthWindow.clampedEvents,
+                "clamped_points", streamHealthWindow.clampedPoints,
+                "low_buffer_events", streamHealthWindow.lowBufferEvents);
+    }
+
+    streamHealthWindow = StreamHealthWindow{};
+    streamHealthWindow.startedAt = now;
+}
+
+void EtherDreamController::resetStreamHealth() {
+    pendingStreamHealthRequest = PendingStreamHealthRequest{};
+    streamHealthWindow = StreamHealthWindow{};
+    streamHealthWindow.startedAt = std::chrono::steady_clock::now();
+    lastStreamHealthDataAckTime = {};
+    lastStreamHealthWarningTime = {};
+}
+
 int EtherDreamController::estimateBufferFullness() const {
     bool projected = false;
     const std::uint32_t projectionRate =
@@ -956,6 +1358,15 @@ int EtherDreamController::estimateBufferFullness() const {
     lastEstimatedBufferFullness.store(clamped, std::memory_order_relaxed);
     lastKnownBufferCapacity.store(bufferSize, std::memory_order_relaxed);
     return clamped;
+}
+
+int EtherDreamController::targetBufferPoints() const {
+    return core::BufferEstimator::targetBufferPoints(
+        getPointRate(),
+        getBufferSize(),
+        targetLatency(),
+        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
+        static_cast<int>(config::ETHERDREAM_SAFETY_HEADROOM_POINTS));
 }
 
 std::uint32_t EtherDreamController::maxSafePointRate() const {
@@ -981,12 +1392,7 @@ void EtherDreamController::sleepUntilNextPoints() {
     // 2) Estimate how long until the current buffer drains to that level.
     // 3) Sleep for that time, clamped to a small min/max window.
 
-    int minPointsInBuffer = core::BufferEstimator::targetBufferPoints(
-        getPointRate(),
-        getBufferSize(),
-        targetLatency(),
-        static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
-        static_cast<int>(config::ETHERDREAM_SAFETY_HEADROOM_POINTS));
+    int minPointsInBuffer = targetBufferPoints();
 
     // Estimate how long until the buffer drains to that minimum.
     const int fullness = static_cast<int>(estimateBufferFullness());
@@ -1024,6 +1430,7 @@ void EtherDreamController::resetProtocolStateForConnection() {
     nextCommandSequence = 0;
     protocolTxHistory = {};
     nextProtocolTxHistoryIndex = 0;
+    resetStreamHealth();
     lastEstimatedBufferFullness.store(0, std::memory_order_relaxed);
     lastKnownBufferCapacity.store(getBufferSize(), std::memory_order_relaxed);
     resetPoints();
@@ -1068,16 +1475,88 @@ bool EtherDreamController::ensureConnected() {
     return true;
 }
 
+bool EtherDreamController::shouldProbeFirmwareVersion() const {
+    if (firmwareProbeDisabledForSession || !controllerInfo) {
+        return false;
+    }
+
+    if (controllerInfo->hardwareRevision() == 0 || controllerInfo->softwareRevision() < 2) {
+        return false;
+    }
+
+    return firmwareVersion().empty();
+}
+
+expected<std::string> EtherDreamController::readFirmwareVersionString() {
+    constexpr char firmwareCommand = 'v';
+    if (auto ec = tcpClient.write_all(&firmwareCommand, 1); ec) {
+        logInfo("[EtherDream] firmware version query write failed; continuing without firmware version",
+                "conn", connectionGeneration,
+                "error", ec.value(), ec.category().name(), ec.message());
+        return unexpected(ec);
+    }
+
+    std::array<std::uint8_t, 32> raw{};
+    std::size_t bytesTransferred = 0;
+    if (auto ec = tcpClient.read_exact(raw.data(), raw.size(), &bytesTransferred); ec) {
+        const auto partialBytes = std::min<std::size_t>(bytesTransferred, raw.size());
+        logInfo("[EtherDream] firmware version query read failed; continuing without firmware version",
+                "conn", connectionGeneration,
+                "bytes", bytesTransferred,
+                "partial_hex", EtherDreamStatus::toHexLine(raw.data(), partialBytes),
+                "error", ec.value(), ec.category().name(), ec.message());
+        return unexpected(ec);
+    }
+
+    std::string text;
+    text.reserve(raw.size());
+    for (std::uint8_t byte : raw) {
+        const unsigned char c = static_cast<unsigned char>(byte);
+        text.push_back((byte == 0 || std::isprint(c) == 0) ? ' ' : static_cast<char>(byte));
+    }
+    return trimFirmwareString(std::move(text));
+}
+
+bool EtherDreamController::probeFirmwareVersionOnExistingConnection() {
+    if (!shouldProbeFirmwareVersion()) {
+        return true;
+    }
+
+    // This undocumented command comes from Jacob Potter's original sitter
+    // utility. Run it only on the already-owned TCP connection, before any
+    // stream commands, so we never create a second Ether Dream connection.
+    auto version = readFirmwareVersionString();
+    if (!version) {
+        firmwareProbeDisabledForSession = true;
+        return true;
+    }
+
+    if (!version->empty()) {
+        {
+            std::scoped_lock<std::mutex> lock(firmwareMutex);
+            firmwareVersionString = *version;
+        }
+        if (controllerInfo) {
+            controllerInfo->setFirmwareVersion(*version);
+        }
+        logInfo("[EtherDream] firmware version",
+                "conn", connectionGeneration,
+                "version", *version);
+    }
+
+    return true;
+}
+
 bool EtherDreamController::performHandshake() {
     if (auto initialAck = waitForResponse('?'); initialAck) {
         applyFreshConnectionStatus(initialAck->status);
-        return true;
+        return probeFirmwareVersionOnExistingConnection();
     }
 
     auto pingAck = sendPing();
     if (pingAck) {
         applyFreshConnectionStatus(pingAck->status);
-        return true;
+        return probeFirmwareVersionOnExistingConnection();
     }
 
     handleNetworkFailure("initial ping", pingAck.error());

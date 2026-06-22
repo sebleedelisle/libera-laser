@@ -38,13 +38,13 @@ inline std::size_t minimumRequestPoints(std::size_t maxFramePoints) {
 }
 
 inline std::uint16_t encodeUnsigned16FromSignedUnitValue(float value) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = core::sanitizeSignedUnitValue(value);
     const float normalized = (clamped * 0.5f) + 0.5f;
     return static_cast<std::uint16_t>(std::lround(normalized * 65535.0f));
 }
 
 inline std::uint16_t encodeUnsigned16FromUnitValue(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    const float clamped = core::sanitizeUnitValue(value);
     return static_cast<std::uint16_t>(std::lround(clamped * 65535.0f));
 }
 

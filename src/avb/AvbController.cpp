@@ -8,11 +8,11 @@ namespace libera::avb {
 namespace {
 
 float clampSignedSample(float value) {
-    return std::clamp(value, -1.0f, 1.0f);
+    return core::sanitizeSignedUnitValue(value);
 }
 
 float clampUnitSample(float value) {
-    return std::clamp(value, 0.0f, 1.0f);
+    return core::sanitizeUnitValue(value);
 }
 
 } // namespace

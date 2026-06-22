@@ -16,6 +16,11 @@ inline constexpr std::string_view bufferUnderflow = "network.buffer_underflow";
 inline constexpr std::string_view bufferOverrun = "network.buffer_overrun";
 } // namespace network
 
+namespace etherdream {
+inline constexpr std::string_view playbackIdle = "etherdream.playback_idle";
+inline constexpr std::string_view stopCondition = "etherdream.stop_condition";
+} // namespace etherdream
+
 namespace usb {
 inline constexpr std::string_view connectFailed = "usb.connect_failed";
 inline constexpr std::string_view connectionLost = "usb.connection_lost";
@@ -45,6 +50,9 @@ inline constexpr std::string_view labelFor(std::string_view code) {
     if (code == network::packetLoss) return "Network packet loss";
     if (code == network::bufferUnderflow) return "Network buffer underflow";
     if (code == network::bufferOverrun) return "Network buffer overrun";
+
+    if (code == etherdream::playbackIdle) return "Ether Dream playback idle";
+    if (code == etherdream::stopCondition) return "Ether Dream stop condition";
 
     if (code == usb::connectFailed) return "USB connect failed";
     if (code == usb::connectionLost) return "USB connection lost";

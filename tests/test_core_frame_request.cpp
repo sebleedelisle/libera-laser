@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <limits>
 
 using namespace libera;
 using namespace libera::core;
@@ -274,6 +275,55 @@ void testOversizedFrameFinishesItsLoopBeforeSwitchingFrames() {
     ASSERT_EQ(replacementOutput.points.front().r, 0.5f, "replacement frame content is emitted after the switch");
 }
 
+void testQueuedFrameSanitizesBeforeScheduler() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    prepareController(controller);
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame frame;
+
+    LaserPoint badPosition{};
+    badPosition.x = std::numeric_limits<float>::quiet_NaN();
+    badPosition.y = 0.25f;
+    badPosition.r = 1.0f;
+    badPosition.g = 1.0f;
+    badPosition.b = 1.0f;
+    badPosition.i = 1.0f;
+    frame.points.push_back(badPosition);
+
+    LaserPoint clamped{};
+    clamped.x = 2.0f;
+    clamped.y = -2.0f;
+    clamped.r = 2.0f;
+    clamped.g = std::numeric_limits<float>::quiet_NaN();
+    clamped.b = 0.5f;
+    clamped.i = std::numeric_limits<float>::infinity();
+    frame.points.push_back(clamped);
+
+    frame.time = now;
+    ASSERT_TRUE(controller.sendFrame(std::move(frame)), "frame with invalid values is accepted after sanitizing");
+
+    Frame output;
+    ASSERT_TRUE(controller.requestFrameNow(8, 2, now, output), "sanitized frame requested");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(2), "sanitized frame keeps point count");
+
+    ASSERT_EQ(output.points[0].x, 0.0f, "invalid queued position moves to centre x");
+    ASSERT_EQ(output.points[0].y, 0.0f, "invalid queued position moves to centre y");
+    ASSERT_EQ(output.points[0].r, 0.0f, "invalid queued position blanks red");
+    ASSERT_EQ(output.points[0].g, 0.0f, "invalid queued position blanks green");
+    ASSERT_EQ(output.points[0].b, 0.0f, "invalid queued position blanks blue");
+    ASSERT_EQ(output.points[0].i, 0.0f, "invalid queued position blanks intensity");
+
+    ASSERT_EQ(output.points[1].x, 2.0f, "queued finite x passes through at core ingress");
+    ASSERT_EQ(output.points[1].y, -2.0f, "queued finite y passes through at core ingress");
+    ASSERT_EQ(output.points[1].r, 2.0f, "queued finite red passes through at core ingress");
+    ASSERT_EQ(output.points[1].g, 0.0f, "queued non-finite green blanks");
+    ASSERT_EQ(output.points[1].b, 0.5f, "queued finite blue passes through");
+    ASSERT_EQ(output.points[1].i, 0.0f, "queued non-finite intensity blanks");
+}
+
 void testPointCallbackCanFillOneTransportFrame() {
     FrameRequestTestController controller;
     LaserController::setTargetLatency(std::chrono::milliseconds(0));
@@ -305,6 +355,51 @@ void testPointCallbackCanFillOneTransportFrame() {
     ASSERT_EQ(output.points.front().x, 40.0f, "callback frame keeps first callback point");
     ASSERT_EQ(output.points.back().x, 44.0f, "callback frame keeps exact callback batch size");
     ASSERT_EQ(output.points.front().i, 1.0f, "callback frame keeps content intensity");
+}
+
+void testPointCallbackFrameRequestSanitizesBeforeFramer() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    preparePointCallbackController(controller);
+
+    controller.setPointCallback(
+        [](const PointFillRequest& request, std::vector<LaserPoint>& out) {
+            for (std::size_t i = 0; i < request.maximumPointsRequired; ++i) {
+                LaserPoint point{};
+                point.r = 1.0f;
+                point.g = 1.0f;
+                point.b = 1.0f;
+                point.i = 1.0f;
+                if (i == 0) {
+                    point.x = std::numeric_limits<float>::quiet_NaN();
+                } else if (i == 1) {
+                    point.x = 2.0f;
+                    point.y = -2.0f;
+                    point.g = std::numeric_limits<float>::quiet_NaN();
+                }
+                out.push_back(point);
+            }
+        });
+
+    Frame output;
+    ASSERT_TRUE(controller.requestFrameNow(10,
+                                           2,
+                                           std::chrono::steady_clock::now(),
+                                           output,
+                                           2),
+                "requestFrame succeeds in point-callback mode");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(2), "preferred callback frame size is used");
+
+    ASSERT_EQ(output.points[0].x, 0.0f, "callback invalid position moves to centre x");
+    ASSERT_EQ(output.points[0].y, 0.0f, "callback invalid position moves to centre y");
+    ASSERT_EQ(output.points[0].r, 0.0f, "callback invalid position blanks red");
+    ASSERT_EQ(output.points[0].i, 0.0f, "callback invalid position blanks intensity");
+
+    ASSERT_EQ(output.points[1].x, 2.0f, "callback finite x passes through at core ingress");
+    ASSERT_EQ(output.points[1].y, -2.0f, "callback finite y passes through at core ingress");
+    ASSERT_EQ(output.points[1].r, 1.0f, "callback red stays lit");
+    ASSERT_EQ(output.points[1].g, 0.0f, "callback non-finite green blanks");
 }
 
 void testPointCallbackFrameRequestHonoursBackendMaximum() {
@@ -512,7 +607,9 @@ int main() {
     testTransitionBlankingIsPrependedToNextDistantFrame();
     testOversizedFrameIsDeliveredAcrossMultipleTransportFrames();
     testOversizedFrameFinishesItsLoopBeforeSwitchingFrames();
+    testQueuedFrameSanitizesBeforeScheduler();
     testPointCallbackCanFillOneTransportFrame();
+    testPointCallbackFrameRequestSanitizesBeforeFramer();
     testPointCallbackFrameRequestHonoursBackendMaximum();
     testPointCallbackBuildsSharedVirtualBuffer();
     testPointCallbackOnlyPullsRemainingHeadroomAboveTransportBacklog();
