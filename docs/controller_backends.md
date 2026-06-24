@@ -62,8 +62,8 @@ public:
 };
 ```
 
-This is already close to how Ether Dream, LaserCube USB, LaserCube Net, AVB,
-IDN, and point-ingester plugins currently behave.
+This is already close to how Ether Dream, LaserCube USB, LaserCube Net,
+AVB, IDN, and point-ingester plugins currently behave.
 
 ## Frame-ingester backend
 
@@ -107,7 +107,9 @@ public:
 ```
 
 Today this is the right mental model for native frame transports such as the
-direct Helios USB path.
+direct Helios USB path and LightSpace Net. LightSpace Net still uses UDP for
+discovery, but active playback uploads complete current-pattern packets over
+TCP.
 
 Out-of-tree plugins can now mirror this frame-ingester shape too via the ABI
 v2 `get_frame_requirements()` + `send_frame()` callbacks.

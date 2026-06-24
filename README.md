@@ -8,6 +8,7 @@ Libera aims to become a de facto standard for laser control, with support for a 
 - IDN (ILDA Digital Network, including Helios-network devices such as Helios Pro)
 - Laser Cube USB (LaserDock)
 - Laser Cube Network (for Wifi laser cubes - wired network strongly recommended!)
+- LightSpace Net (LS-Net protocol, UDP discovery with TCP pattern playback)
 - AVB/Audio (LA Sollinger lasers or any multichannel audio devices) 
 
 It also has a real-time plugin system so that hardware vendors can implement support for their own protocols without exposing the underlying details. Plugins can be developed and distributed by the vendors themselves, creating a bridge between open interoperability and proprietary systems, allowing both to coexist without compromise.

@@ -16,7 +16,7 @@ scanning mirrors. Libera gives you:
   visible on your machine and network, regardless of brand.
 - **A common API** - once you've connected to a controller, the rest of your
   code looks the same whether you're talking to an Ether Dream, a Helios, a
-  LaserCube, or anything else Libera supports.
+  LaserCube, a LightSpace Net controller, or anything else Libera supports.
 - **Streaming and frame buffering** - it handles the timing-sensitive work of
   keeping each controller's buffer topped up so the laser output stays smooth.
 
