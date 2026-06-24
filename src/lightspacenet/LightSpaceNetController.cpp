@@ -97,7 +97,7 @@ const char* coordinateByteOrderName(LightSpaceNetCoordinateByteOrder byteOrder) 
 LightSpaceNetCoordinateOptions coordinateOptionsFromEnvironment() {
     LightSpaceNetCoordinateOptions options;
     options.encoding = LightSpaceNetCoordinateEncoding::Unsigned12;
-    options.scale = 0.25f;
+    options.scale = 1.0f;
 
     const auto coordinateMode = normalizedEnvironmentValue("LIBERA_LIGHTSPACENET_COORDS");
     if (coordinateMode == "unsigned" || coordinateMode == "unsigned16") {
