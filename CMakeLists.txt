@@ -24,6 +24,7 @@ option(LIBERA_BUILD_TESTS "Build libera-core tests" ${BUILD_TESTING})
 option(LIBERA_BUILD_INTEGRATION_TESTS "Build integration tests (loopback/network)" OFF)
 option(LIBERA_BUILD_HARDWARE_TESTS "Build hardware tests (requires controller hardware)" OFF)
 option(LIBERA_BUILD_EXAMPLES "Build example applications" OFF)
+option(LIBERA_BUILD_LASER_TOOL "Build the GUI laser-tool example" ON)
 option(LIBERA_ENABLE_PLUGINS "Enable runtime plugin loading (disable to exclude all plugin code)" ON)
 
 # Optional: a few sensible warnings. Comment out if you prefer quiet builds.

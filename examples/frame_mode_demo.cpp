@@ -5,8 +5,10 @@
 #include "libera.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -20,6 +22,11 @@ using namespace libera;
 namespace {
 
 constexpr auto demoTargetLatency = std::chrono::milliseconds(100);
+std::atomic<bool> stopRequested{false};
+
+void handleSignal(int) {
+    stopRequested.store(true, std::memory_order_relaxed);
+}
 
 // function that creates a frame of points to draw a rainbow circle. The phase
 // value changes the colour shift. 
@@ -158,6 +165,8 @@ std::optional<std::error_code> getFatalTransportError(
 
 
 int main() {
+    std::signal(SIGINT, handleSignal);
+    std::signal(SIGTERM, handleSignal);
 
     System liberaSystem;
 
@@ -206,7 +215,7 @@ int main() {
     auto lastStatusPrint = std::chrono::steady_clock::now();
 
     const int totalFrames = 3000;
-    for (int i = 0; i < totalFrames; ++i) {
+    for (int i = 0; i < totalFrames && !stopRequested.load(std::memory_order_relaxed); ++i) {
         if (auto fatalError = getFatalTransportError(controller)) {
             std::cout << std::endl;
             libera::logError("Selected controller connection failed.", fatalError->message());
@@ -214,7 +223,8 @@ int main() {
             return 1;
         }
 
-        while (!controller->isReadyForNewFrame()){
+        while (!stopRequested.load(std::memory_order_relaxed) &&
+               !controller->isReadyForNewFrame()){
             if (auto fatalError = getFatalTransportError(controller)) {
                 std::cout << std::endl;
                 libera::logError("Selected controller connection failed.", fatalError->message());
@@ -250,6 +260,8 @@ int main() {
     }
     std::cout << std::endl;
 
+    controller->setArmed(false);
+    controller->clearFrameQueue();
     liberaSystem.shutdown();
     libera::logInfo("Done.");
 

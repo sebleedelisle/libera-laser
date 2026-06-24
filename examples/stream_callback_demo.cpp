@@ -1,15 +1,23 @@
 #include "libera.h"
+#include <atomic>
 #include <chrono>
-#include <thread>
 #include <cmath>
-#include <limits>
+#include <csignal>
 #include <iostream>
+#include <limits>
 #include <memory>
+#include <thread>
 #include <vector>
 
 using namespace libera;
 
 namespace {
+
+std::atomic<bool> stopRequested{false};
+
+void handleSignal(int) {
+    stopRequested.store(true, std::memory_order_relaxed);
+}
 
 void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& controller) {
     // Register a callback that continuously feeds a coloured circle to the controller.
@@ -107,6 +115,8 @@ void installCirclePointsCallback(const std::shared_ptr<core::LaserController>& c
 } // namespace
 
 int main() {
+    std::signal(SIGINT, handleSignal);
+    std::signal(SIGTERM, handleSignal);
 
     System liberaSystem;
 
@@ -165,7 +175,7 @@ int main() {
     constexpr float scannerSyncBaseUnits = 5.0f; // 0.5 ms expressed in 1/10,000 s units
     float phase = 0.f;
 
-    for (int i = 0; i < 300; ++i) {
+    for (int i = 0; i < 300 && !stopRequested.load(std::memory_order_relaxed); ++i) {
         controller->setScannerSync(scannerSyncBaseUnits * (std::sin(phase) + 1.f));
 
         phase += phaseStep;
@@ -176,6 +186,8 @@ int main() {
     
 
     // shutdown() stops the backend managers and closes all controllers safely.
+    controller->setArmed(false);
+    controller->clearPointCallback();
     liberaSystem.shutdown(); 
 
     logInfo("Done.");

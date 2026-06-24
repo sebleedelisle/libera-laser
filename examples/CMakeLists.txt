@@ -25,4 +25,6 @@ target_include_directories(example-plugin PRIVATE
 set_target_properties(example-plugin PROPERTIES PREFIX "" OUTPUT_NAME "example-plugin")
 libera_apply_warnings(example-plugin)
 
-add_subdirectory(laser_tool)
+if (LIBERA_BUILD_LASER_TOOL)
+    add_subdirectory(laser_tool)
+endif()
