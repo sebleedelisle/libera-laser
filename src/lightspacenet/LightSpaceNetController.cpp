@@ -441,8 +441,12 @@ void LightSpaceNetController::run() {
     while (running.load()) {
         if (!networkConnected.load(std::memory_order_relaxed) || !hasTcpConnection()) {
             setConnectionState(false);
-            if (reconnectRequested.exchange(false, std::memory_order_relaxed)) {
-                reconnectToLatestStatus();
+            networkConnected.store(false, std::memory_order_relaxed);
+            reconnectRequested.store(false, std::memory_order_relaxed);
+            if (!reconnectToLatestStatus()) {
+                reconnectRequested.store(true, std::memory_order_relaxed);
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
             }
             std::this_thread::sleep_for(reconnectRetryDelay);
             continue;
