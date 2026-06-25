@@ -91,11 +91,14 @@ private:
     std::chrono::milliseconds patternUpdateInterval{
         LightSpaceNetConfig::DEFAULT_PATTERN_UPDATE_INTERVAL};
     std::chrono::steady_clock::time_point lastPatternSentTime{};
+    std::chrono::steady_clock::time_point nextPatternSendTime{};
     std::chrono::steady_clock::time_point lastIncomingPollTime{};
 
     std::size_t patternPointLimit{LightSpaceNetConfig::DEFAULT_PATTERN_POINTS};
     std::size_t lastSentPacketPointCount{0};
     std::size_t lastSentPacketBytes{0};
+    std::size_t lastSubmittedPatternPoints{0};
+    std::chrono::microseconds estimatedWriteLead{0};
     std::uint64_t currentPointIndex{0};
 
     std::vector<std::uint8_t> tcpReceiveBuffer;

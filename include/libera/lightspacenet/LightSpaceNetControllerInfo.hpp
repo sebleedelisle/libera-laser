@@ -28,9 +28,16 @@ public:
     const LightSpaceNetStatus& status() const { return cachedStatus; }
     const std::string& ipAddress() const { return cachedStatus.ipAddress; }
     const std::string& macAddress() const { return cachedStatus.macAddressString; }
+    void setPreferredPointRate(std::uint32_t pointRate) {
+        preferredPointRateValue = pointRate;
+    }
+    std::uint32_t preferredPointRate() const {
+        return preferredPointRateValue;
+    }
 
 private:
     LightSpaceNetStatus cachedStatus;
+    std::uint32_t preferredPointRateValue = 0;
 };
 
 } // namespace libera::lightspacenet

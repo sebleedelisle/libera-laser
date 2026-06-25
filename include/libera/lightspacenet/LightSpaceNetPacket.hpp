@@ -68,6 +68,10 @@ std::vector<std::uint8_t> buildPointStreamPacket(
     const std::vector<core::LaserPoint>& points,
     const LightSpaceNetCoordinateOptions& coordinateOptions);
 
+std::vector<core::LaserPoint> fitCurrentPatternToPointLimit(
+    const std::vector<core::LaserPoint>& points,
+    std::size_t maximumPointCount);
+
 std::optional<LightSpaceNetPacket> parsePacket(const std::uint8_t* data,
                                                std::size_t size);
 

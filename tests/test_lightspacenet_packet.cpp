@@ -199,9 +199,9 @@ void testParsesObservedBroadcastNetworkLayout() {
     ASSERT_EQ(status->firmwareVersion, static_cast<std::uint16_t>(1), "observed firmware");
     ASSERT_EQ(status->hardwareVersion, static_cast<std::uint16_t>(30), "observed hardware byte");
     ASSERT_TRUE(status->ipAddress == "192.168.1.208", "observed ip address");
-    ASSERT_TRUE(status->stableId() == "device-508", "observed stable id");
-    ASSERT_TRUE(status->displayLabel() == "LightSpace 192.168.1.208",
-                "observed display label uses IP fallback");
+    ASSERT_TRUE(status->stableId() == "508", "observed stable id");
+    ASSERT_TRUE(status->displayLabel() == "LightSpace 508",
+                "observed display label uses stable id fallback");
 }
 
 void testScanFrequencyClampsToDocumentRange() {
@@ -212,8 +212,8 @@ void testScanFrequencyClampsToDocumentRange() {
               static_cast<std::uint8_t>(1),
               "low rate clamps to 1 kHz");
     ASSERT_EQ(LightSpaceNetConfig::scanFrequencyKilohertz(150000),
-              static_cast<std::uint8_t>(100),
-              "high rate clamps to 100 kHz");
+              static_cast<std::uint8_t>(30),
+              "high rate clamps to documented 30 kHz limit");
 }
 
 void testScanFrequencyPacketUsesKilohertzPayload() {
@@ -249,6 +249,115 @@ void testPointStreamPacketLengthForCompletePattern() {
               "point count is complete pattern size");
 }
 
+void testCurrentPatternFirmwareSafePacketLimit() {
+    ASSERT_EQ(LightSpaceNetConfig::MEASURED_MAX_SOURCE_FRAME_POINTS,
+              static_cast<std::size_t>(728),
+              "LightSpace current-pattern measured one-shot point cap");
+    ASSERT_EQ(LightSpaceNetConfig::MAX_SOURCE_FRAME_POINTS,
+              static_cast<std::size_t>(700),
+              "LightSpace current-pattern operational point cap");
+
+    std::vector<core::LaserPoint> maxPoints(
+        LightSpaceNetConfig::MEASURED_MAX_SOURCE_FRAME_POINTS);
+    const auto maxPacket = buildPointStreamPacket(maxPoints);
+    ASSERT_EQ(maxPacket.size(),
+              static_cast<std::size_t>(5118),
+              "728 points fits below the observed 5120-byte packet cap");
+
+    const auto nextPacketBytes =
+        LightSpaceNetConfig::CURRENT_PATTERN_PACKET_OVERHEAD +
+        ((LightSpaceNetConfig::MEASURED_MAX_SOURCE_FRAME_POINTS + 1) *
+         LightSpaceNetConfig::BYTES_PER_POINT);
+    ASSERT_TRUE(nextPacketBytes > LightSpaceNetConfig::MAX_CURRENT_PATTERN_PACKET_BYTES,
+                "729 points exceeds the observed 5120-byte packet cap");
+}
+
+void testOversizedCurrentPatternFitsWithBlankTravelTail() {
+    std::vector<core::LaserPoint> sourcePoints;
+    for (std::size_t i = 0; i < 10; ++i) {
+        core::LaserPoint point;
+        point.x = static_cast<float>(i) / 128.0f;
+        point.y = static_cast<float>(i) / 256.0f;
+        point.r = 1.0f;
+        point.g = 0.5f;
+        point.b = 0.25f;
+        point.i = 1.0f;
+        sourcePoints.push_back(point);
+    }
+
+    const auto fitted = fitCurrentPatternToPointLimit(sourcePoints, 6);
+    ASSERT_EQ(fitted.size(),
+              static_cast<std::size_t>(6),
+              "oversized LightSpace pattern is capped to requested size");
+
+    ASSERT_EQ(fitted[0].x, sourcePoints[0].x, "first prefix point is preserved");
+    ASSERT_EQ(fitted[2].x, sourcePoints[2].x, "visible prefix is preserved up to the tail");
+    ASSERT_EQ(fitted[2].r, 1.0f, "visible prefix colour is preserved");
+
+    ASSERT_EQ(fitted[3].x, sourcePoints[2].x, "blank tail starts from last retained point");
+    ASSERT_EQ(fitted[3].r, 0.0f, "blank tail clears red");
+    ASSERT_EQ(fitted[3].g, 0.0f, "blank tail clears green");
+    ASSERT_EQ(fitted[3].b, 0.0f, "blank tail clears blue");
+    ASSERT_EQ(fitted[3].i, 0.0f, "blank tail clears legacy intensity");
+
+    ASSERT_EQ(fitted.back().x, sourcePoints.back().x, "blank tail reaches original end x");
+    ASSERT_EQ(fitted.back().y, sourcePoints.back().y, "blank tail reaches original end y");
+    ASSERT_EQ(fitted.back().r, 0.0f, "original end point is blanked");
+
+    const auto packet = buildPointStreamPacket(fitted);
+    ASSERT_EQ(packet.size(),
+              static_cast<std::size_t>(20 + 2 + (6 * 7)),
+              "fitted pattern packet uses the capped point count");
+}
+
+void testOversizedCurrentPatternUsesFastBlankTravelSpacing() {
+    std::vector<core::LaserPoint> sourcePoints(600);
+    for (auto& point : sourcePoints) {
+        point.x = -1.0f;
+        point.y = 0.0f;
+        point.r = 1.0f;
+        point.i = 1.0f;
+    }
+    sourcePoints.back().x = 1.0f;
+
+    const auto fitted = fitCurrentPatternToPointLimit(sourcePoints, 100);
+    ASSERT_EQ(fitted.size(),
+              static_cast<std::size_t>(100),
+              "oversized LightSpace pattern is capped to requested size");
+    ASSERT_EQ(fitted[48].r, 1.0f,
+              "full-width blank travel at 2 percent spacing leaves 49 visible points");
+    ASSERT_EQ(fitted[49].r, 0.0f,
+              "remaining 51 points are the blank travel tail");
+    ASSERT_EQ(fitted.back().x, 1.0f, "blank tail reaches the full-width end point");
+    ASSERT_EQ(fitted.back().r, 0.0f, "blank tail endpoint remains blank");
+}
+
+void testOversizedCurrentPatternKeepsVisiblePrefixForOutOfRangeEndpoint() {
+    std::vector<core::LaserPoint> sourcePoints;
+    for (std::size_t i = 0; i < 1000; ++i) {
+        core::LaserPoint point;
+        point.x = static_cast<float>(i) / 1000.0f;
+        point.y = 0.0f;
+        point.r = 1.0f;
+        point.g = 0.25f;
+        point.b = 0.0f;
+        point.i = 1.0f;
+        sourcePoints.push_back(point);
+    }
+    sourcePoints.back().x = 100.0f;
+    sourcePoints.back().y = -100.0f;
+
+    const auto fitted = fitCurrentPatternToPointLimit(sourcePoints, 500);
+    ASSERT_EQ(fitted.size(),
+              static_cast<std::size_t>(500),
+              "out-of-range oversized pattern is capped to requested size");
+    ASSERT_TRUE(fitted[350].r > 0.0f,
+                "out-of-range endpoint cannot consume the whole packet as blank travel");
+    ASSERT_EQ(fitted.back().x, sourcePoints.back().x, "blank tail still targets original end x");
+    ASSERT_EQ(fitted.back().y, sourcePoints.back().y, "blank tail still targets original end y");
+    ASSERT_EQ(fitted.back().r, 0.0f, "tail endpoint remains blank");
+}
+
 } // namespace
 
 int main() {
@@ -265,6 +374,10 @@ int main() {
     testScanFrequencyClampsToDocumentRange();
     testScanFrequencyPacketUsesKilohertzPayload();
     testPointStreamPacketLengthForCompletePattern();
+    testCurrentPatternFirmwareSafePacketLimit();
+    testOversizedCurrentPatternFitsWithBlankTravelTail();
+    testOversizedCurrentPatternUsesFastBlankTravelSpacing();
+    testOversizedCurrentPatternKeepsVisiblePrefixForOutOfRangeEndpoint();
 
     if (g_failures) {
         logError("Tests failed", g_failures, "failure(s)");

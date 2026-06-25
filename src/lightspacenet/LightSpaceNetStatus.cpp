@@ -91,15 +91,12 @@ std::string LightSpaceNetStatus::stableId() const {
     if (hasMac) {
         return macAddressString;
     }
-    return "device-" + std::to_string(deviceId);
+    return std::to_string(deviceId);
 }
 
 std::string LightSpaceNetStatus::displayLabel() const {
     if (!deviceName.empty()) {
         return deviceName;
-    }
-    if (!ipAddress.empty()) {
-        return "LightSpace " + ipAddress;
     }
     return "LightSpace " + stableId();
 }

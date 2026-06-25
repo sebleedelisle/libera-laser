@@ -29,11 +29,23 @@ struct LightSpaceNetConfig {
     static constexpr std::uint32_t MAX_POINT_RATE = 100000;
 
     // The LS-Net point packet describes the "current pattern", so normal
-    // playback should send a complete pattern. The demo circle is 500 points,
-    // making this a useful default while still keeping packets modest.
-    static constexpr std::size_t DEFAULT_PATTERN_POINTS = 500;
-    static constexpr std::size_t MAX_SOURCE_FRAME_POINTS = 1200;
-    static constexpr auto DEFAULT_PATTERN_UPDATE_INTERVAL = std::chrono::milliseconds(33);
+    // playback should send one complete source frame per upload. Hardware
+    // probing showed the current firmware accepts a single 5118-byte pattern
+    // packet and stops answering at 5125 bytes, consistent with a 5120-byte
+    // packet cap. Repeated playback near that boundary is unreliable, so the
+    // operational cap leaves substantial margin below the measured one-shot
+    // limit. This is a hard transport cap, not a target size: oversized frames
+    // are fitted by preserving source prefix points and appending blank travel
+    // to the original frame end, not by resampling the whole frame.
+    static constexpr std::size_t MAX_CURRENT_PATTERN_PACKET_BYTES = 5120;
+    static constexpr std::size_t CURRENT_PATTERN_PACKET_OVERHEAD = 22;
+    static constexpr std::size_t BYTES_PER_POINT = 7;
+    static constexpr std::size_t MEASURED_MAX_SOURCE_FRAME_POINTS =
+        (MAX_CURRENT_PATTERN_PACKET_BYTES - CURRENT_PATTERN_PACKET_OVERHEAD) /
+        BYTES_PER_POINT;
+    static constexpr std::size_t MAX_SOURCE_FRAME_POINTS = 700;
+    static constexpr std::size_t DEFAULT_PATTERN_POINTS = MAX_SOURCE_FRAME_POINTS;
+    static constexpr auto DEFAULT_PATTERN_UPDATE_INTERVAL = std::chrono::milliseconds(40);
 
     static constexpr auto COMMAND_ACK_TIMEOUT = std::chrono::milliseconds(100);
     static constexpr int COMMAND_ACK_ATTEMPTS = 3;
@@ -61,7 +73,7 @@ struct LightSpaceNetConfig {
         const auto rounded = static_cast<std::uint32_t>(
             std::lround(static_cast<double>(clamped) / 1000.0));
         return static_cast<std::uint8_t>(
-            std::clamp<std::uint32_t>(rounded, 1, 100));
+            std::clamp<std::uint32_t>(rounded, 1, 30));
     }
 };
 

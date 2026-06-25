@@ -251,6 +251,9 @@ LightSpaceNetManager::prepareNewController(LightSpaceNetController& controller,
     // but repeated UDP discovery probes can still steal device attention on
     // some LS-Net firmware while the TCP pattern stream is running.
     stopDiscoveryThread();
+    if (info.preferredPointRate() > 0) {
+        static_cast<core::LaserController&>(controller).setPointRate(info.preferredPointRate());
+    }
     controller.updateDiscoveredStatus(info.status());
     if (auto result = controller.connect(info); !result) {
         logError("[LightSpaceNetManager] initial connect failed", result.error().message());
@@ -261,6 +264,9 @@ LightSpaceNetManager::prepareNewController(LightSpaceNetController& controller,
 
 void LightSpaceNetManager::prepareExistingController(LightSpaceNetController& controller,
                                                      const LightSpaceNetControllerInfo& info) {
+    if (info.preferredPointRate() > 0) {
+        static_cast<core::LaserController&>(controller).setPointRate(info.preferredPointRate());
+    }
     controller.updateDiscoveredStatus(info.status());
 }
 

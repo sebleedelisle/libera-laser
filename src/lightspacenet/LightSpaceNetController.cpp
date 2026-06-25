@@ -10,6 +10,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -66,6 +67,41 @@ std::string normalizedEnvironmentValue(const char* name) {
 bool environmentFlagEnabled(const char* name) {
     const auto value = normalizedEnvironmentValue(name);
     return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+std::chrono::microseconds nonNegativeMicros(std::chrono::microseconds value) {
+    return std::chrono::microseconds(std::max<std::int64_t>(0, value.count()));
+}
+
+std::chrono::microseconds smoothWriteLead(std::chrono::microseconds previous,
+                                          std::chrono::steady_clock::duration current) {
+    const auto previousMicros = std::max<std::int64_t>(0, previous.count());
+    const auto currentMicros = std::max<std::int64_t>(
+        0,
+        std::chrono::duration_cast<std::chrono::microseconds>(current).count());
+    if (previousMicros == 0) {
+        return std::chrono::microseconds(currentMicros);
+    }
+    return std::chrono::microseconds(((previousMicros * 3) + currentMicros) / 4);
+}
+
+std::chrono::steady_clock::duration pointPlaybackDuration(std::size_t pointCount,
+                                                          std::uint32_t pointRate) {
+    if (pointCount == 0 || pointRate == 0) {
+        return std::chrono::steady_clock::duration::zero();
+    }
+
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(
+            static_cast<double>(pointCount) / static_cast<double>(pointRate)));
+}
+
+std::vector<core::LaserPoint> makeBlankPatternPoints(std::size_t pointCount) {
+    std::vector<core::LaserPoint> blankPoints(pointCount);
+    for (auto& point : blankPoints) {
+        point.i = 0.0f;
+    }
+    return blankPoints;
 }
 
 const char* coordinateEncodingName(LightSpaceNetCoordinateEncoding encoding) {
@@ -230,36 +266,6 @@ std::chrono::milliseconds patternUpdateIntervalFromEnvironment() {
     return std::chrono::milliseconds(std::clamp<long>(parsed, 1, 1000));
 }
 
-std::vector<core::LaserPoint> reduceFrameToPointLimit(
-    const std::vector<core::LaserPoint>& points,
-    std::size_t maximumPoints) {
-    if (points.size() <= maximumPoints) {
-        return points;
-    }
-    if (maximumPoints == 0) {
-        return {};
-    }
-    if (maximumPoints == 1) {
-        return {points.front()};
-    }
-
-    std::vector<core::LaserPoint> reduced;
-    reduced.reserve(maximumPoints);
-
-    // The protocol packet is a whole current pattern. This reduction keeps a
-    // stable pattern size while preserving beginning/end coverage of the source
-    // frame instead of sending separate partial-pattern uploads.
-    const double lastSourceIndex = static_cast<double>(points.size() - 1);
-    const double lastOutputIndex = static_cast<double>(maximumPoints - 1);
-    for (std::size_t i = 0; i < maximumPoints; ++i) {
-        const auto sourceIndex = static_cast<std::size_t>(
-            std::llround((static_cast<double>(i) * lastSourceIndex) / lastOutputIndex));
-        reduced.push_back(points[std::min(sourceIndex, points.size() - 1)]);
-    }
-
-    return reduced;
-}
-
 } // namespace
 
 LightSpaceNetController::LightSpaceNetController() = default;
@@ -346,11 +352,15 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
     heartbeatTimeoutLogged = false;
     patternUpdateInterval = patternUpdateIntervalFromEnvironment();
     lastPatternSentTime = {};
+    nextPatternSendTime = {};
     lastIncomingPollTime = {};
     patternPointLimit = patternPointLimitFromEnvironment();
     lastSentPacketPointCount = 0;
     lastSentPacketBytes = 0;
+    lastSubmittedPatternPoints = 0;
+    estimatedWriteLead = std::chrono::microseconds(0);
     currentPointIndex = 0;
+    clearFrameTransportSubmissionEstimate();
     tcpReceiveBuffer.clear();
     timingLogWindowStart = {};
     timingLogPacketsSent = 0;
@@ -375,10 +385,10 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
             commandAckRequired ? "required" : "fire-and-forget");
     logInfo("[LightSpaceNetController] timing log",
             timingLogEnabled ? "enabled" : "disabled");
-    logInfo("[LightSpaceNetController] pattern points", patternPointLimit);
+    logInfo("[LightSpaceNetController] maximum frame points", patternPointLimit);
     logInfo("[LightSpaceNetController] heartbeat timeout",
             strictHeartbeat ? "disconnects" : "advisory");
-    logInfo("[LightSpaceNetController] pattern update interval",
+    logInfo("[LightSpaceNetController] minimum pattern update interval",
             patternUpdateInterval.count(),
             "ms");
 
@@ -451,10 +461,17 @@ void LightSpaceNetController::run() {
             lastIncomingPollTime = now;
         }
 
-        const int sleepMillis = std::clamp<int>(
-            static_cast<int>(patternUpdateInterval.count()),
-            1,
-            50);
+        const auto sleepStart = std::chrono::steady_clock::now();
+        int sleepMillis = 1;
+        if (nextPatternSendTime != std::chrono::steady_clock::time_point{} &&
+            nextPatternSendTime > sleepStart) {
+            const auto millisUntilNext = std::chrono::duration_cast<std::chrono::milliseconds>(
+                nextPatternSendTime - sleepStart).count();
+            sleepMillis = std::clamp<int>(
+                static_cast<int>(millisUntilNext),
+                1,
+                5);
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepMillis));
     }
 }
@@ -478,6 +495,7 @@ bool LightSpaceNetController::sendPacket(const std::vector<std::uint8_t>& packet
     if (!hasTcpConnection() || packet.empty()) {
         recordConnectionError(error_types::network::sendFailed);
         networkConnected.store(false, std::memory_order_relaxed);
+        reconnectRequested.store(true, std::memory_order_relaxed);
         return false;
     }
 
@@ -486,6 +504,7 @@ bool LightSpaceNetController::sendPacket(const std::vector<std::uint8_t>& packet
         logError("[LightSpaceNetController] send failed", ec.message());
         recordConnectionError(error_types::network::sendFailed);
         networkConnected.store(false, std::memory_order_relaxed);
+        reconnectRequested.store(true, std::memory_order_relaxed);
         setConnectionState(false);
         return false;
     }
@@ -660,6 +679,7 @@ bool LightSpaceNetController::pollTcpIncomingPackets(std::uint8_t expectedAckCom
             logError("[LightSpaceNetController] TCP available failed", ec.message());
             recordConnectionError(error_types::network::receiveFailed);
             networkConnected.store(false, std::memory_order_relaxed);
+            reconnectRequested.store(true, std::memory_order_relaxed);
             setConnectionState(false);
             return false;
         }
@@ -675,6 +695,7 @@ bool LightSpaceNetController::pollTcpIncomingPackets(std::uint8_t expectedAckCom
             logError("[LightSpaceNetController] TCP receive failed", ec.message());
             recordConnectionError(error_types::network::receiveFailed);
             networkConnected.store(false, std::memory_order_relaxed);
+            reconnectRequested.store(true, std::memory_order_relaxed);
             setConnectionState(false);
             return false;
         }
@@ -726,6 +747,7 @@ void LightSpaceNetController::sendHeartbeatIfDue() {
         logError("[LightSpaceNetController] heartbeat timed out");
         recordConnectionError(error_types::network::connectionLost);
         networkConnected.store(false, std::memory_order_relaxed);
+        reconnectRequested.store(true, std::memory_order_relaxed);
         setConnectionState(false);
     }
 }
@@ -790,11 +812,7 @@ void LightSpaceNetController::syncLaserState() {
 }
 
 void LightSpaceNetController::sendBlankPatternForShutdown() {
-    std::vector<core::LaserPoint> blankPoints(patternPointLimit);
-    for (auto& point : blankPoints) {
-        point.i = 0.0f;
-    }
-
+    const auto blankPoints = makeBlankPatternPoints(patternPointLimit);
     const auto packet = buildPointStreamPacket(blankPoints, coordinateOptions);
     for (int i = 0; i < 3; ++i) {
         (void)sendPacket(packet, std::chrono::milliseconds(50));
@@ -809,18 +827,20 @@ bool LightSpaceNetController::sendFramePattern() {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (lastPatternSentTime != std::chrono::steady_clock::time_point{} &&
-        now - lastPatternSentTime < patternUpdateInterval) {
+    if (nextPatternSendTime != std::chrono::steady_clock::time_point{} &&
+        now < nextPatternSendTime) {
         lastSentPacketPointCount = 0;
         return true;
     }
 
     core::Frame frame;
+    const auto estimatedFirstRenderTime =
+        projectedNextWriteRenderTime(now, nonNegativeMicros(estimatedWriteLead));
     FrameFillRequest request{};
-    request.maximumPointsRequired = patternPointLimit;
+    request.maximumPointsRequired = std::numeric_limits<std::size_t>::max();
     request.preferredPointCount = patternPointLimit;
     request.blankFramePointCount = patternPointLimit;
-    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+    request.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
     request.currentPointIndex = currentPointIndex;
     request.advanceWhenAvailable = true;
 
@@ -832,28 +852,62 @@ bool LightSpaceNetController::sendFramePattern() {
         return true;
     }
 
-    const auto packetPoints = reduceFrameToPointLimit(
-        frame.points,
-        patternPointLimit);
+    const auto& packetPoints = frame.points;
     if (packetPoints.empty()) {
         lastSentPacketPointCount = 0;
         return true;
     }
 
-    const auto packet = buildPointStreamPacket(packetPoints, coordinateOptions);
+    std::vector<core::LaserPoint> fittedPatternPoints;
+    const std::vector<core::LaserPoint>* pointsToSend = &packetPoints;
+    if (packetPoints.size() > patternPointLimit) {
+        if (isVerbose()) {
+            logInfo("[LightSpaceNetController] source frame exceeds packet cap; fitting with blank travel tail",
+                    "framePoints",
+                    packetPoints.size(),
+                    "cap",
+                    patternPointLimit);
+        }
+        fittedPatternPoints = fitCurrentPatternToPointLimit(packetPoints, patternPointLimit);
+        pointsToSend = &fittedPatternPoints;
+    }
+
+    const auto packet = buildPointStreamPacket(*pointsToSend, coordinateOptions);
+    if (packet.empty() ||
+        packet.size() > LightSpaceNetConfig::MAX_CURRENT_PATTERN_PACKET_BYTES) {
+        logError("[LightSpaceNetController] refusing oversized current-pattern packet",
+                 "points",
+                 pointsToSend->size(),
+                 "bytes",
+                 packet.size(),
+                 "maxBytes",
+                 LightSpaceNetConfig::MAX_CURRENT_PATTERN_PACKET_BYTES);
+        lastSentPacketPointCount = 0;
+        return true;
+    }
+
+    const auto sendStart = std::chrono::steady_clock::now();
     const bool sent = sendPacket(packet, std::chrono::milliseconds(50));
+    const auto sendDone = std::chrono::steady_clock::now();
     if (sent) {
-        lastPatternSentTime = now;
-        lastSentPacketPointCount = packetPoints.size();
+        lastPatternSentTime = sendDone;
+        lastSentPacketPointCount = pointsToSend->size();
         lastSentPacketBytes = packet.size();
+        const auto playbackDuration =
+            pointPlaybackDuration(lastSentPacketPointCount, activePointRate);
+        const auto minimumInterval =
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                patternUpdateInterval);
+        nextPatternSendTime = sendDone + std::max(playbackDuration, minimumInterval);
         currentPointIndex += lastSentPacketPointCount;
-        noteFrameTransportSubmission(
+        recordLatencySample(sendDone - sendStart);
+        estimatedWriteLead = smoothWriteLead(estimatedWriteLead, sendDone - sendStart);
+        noteFrameTransportSubmissionBounded(
             lastSentPacketPointCount,
             request.estimatedFirstPointRenderTime,
-            activePointRate);
-        updateEstimatedBufferSnapshotNow(
-            static_cast<int>(lastSentPacketPointCount),
-            activePointRate);
+            activePointRate,
+            lastSubmittedPatternPoints);
+        lastSubmittedPatternPoints = lastSentPacketPointCount;
         recordTimingSample(
             lastSentPacketPointCount,
             activePointRate);
