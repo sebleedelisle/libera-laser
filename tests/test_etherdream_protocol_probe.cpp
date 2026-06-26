@@ -48,6 +48,7 @@ struct Options {
     bool includeExclusive = false;
     bool stressRateQueue = false;
     bool probeDataFullThreshold = false;
+    bool badDataCrashProbe = false;
     std::uint16_t maxDataFullThresholdPoints = 8192;
 };
 
@@ -67,6 +68,12 @@ struct CommandResponse {
     std::error_code error;
     libera::etherdream::EtherDreamResponse response;
     std::chrono::steady_clock::duration elapsed{};
+};
+
+struct BadDataCase {
+    std::string name;
+    std::vector<std::uint8_t> payload;
+    bool prepareFirst = false;
 };
 
 std::string hexByte(std::uint8_t value) {
@@ -270,6 +277,15 @@ public:
 
         sendAndExpect("cleanup stop", singleByteCommand('s'), 's');
         client.close();
+
+        if (options.badDataCrashProbe) {
+            runBadDataCrashProbe();
+        } else {
+            add(ProbeStatus::Skipped,
+                "Bad data crash probe",
+                "Use --bad-data-crash-probe to send malformed TCP command streams to the DAC.");
+        }
+
         printSummary();
         return 0;
     }
@@ -429,12 +445,13 @@ private:
         return true;
     }
 
-    CommandResponse readResponse(std::chrono::milliseconds timeout) {
+    CommandResponse readResponseFrom(libera::net::TcpClient& target,
+                                     std::chrono::milliseconds timeout) {
         CommandResponse result;
         std::array<std::uint8_t, 22> raw{};
         const auto start = std::chrono::steady_clock::now();
         std::size_t bytes = 0;
-        result.error = client.read_exact(raw.data(), raw.size(), timeout, &bytes);
+        result.error = target.read_exact(raw.data(), raw.size(), timeout, &bytes);
         result.elapsed = std::chrono::steady_clock::now() - start;
         if (result.error) {
             return result;
@@ -443,6 +460,42 @@ private:
         if (!result.received) {
             result.error = std::make_error_code(std::errc::protocol_error);
         }
+        return result;
+    }
+
+    CommandResponse readResponse(std::chrono::milliseconds timeout) {
+        return readResponseFrom(client, timeout);
+    }
+
+    CommandResponse sendAndReadOn(libera::net::TcpClient& target,
+                                  const std::vector<std::uint8_t>& command,
+                                  std::uint8_t expectedCommand,
+                                  std::chrono::milliseconds timeout = 700ms) {
+        CommandResponse result;
+        if (command.empty()) {
+            result.error = std::make_error_code(std::errc::invalid_argument);
+            return result;
+        }
+
+        auto ec = target.write_all(command.data(), command.size(), timeout);
+        if (ec) {
+            result.error = ec;
+            return result;
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            result = readResponseFrom(target, timeout);
+            result.elapsed = std::chrono::steady_clock::now() - start;
+            if (!result.received) {
+                return result;
+            }
+            if (result.response.command == expectedCommand) {
+                return result;
+            }
+        }
+
+        result.error = std::make_error_code(std::errc::protocol_error);
         return result;
     }
 
@@ -973,6 +1026,171 @@ private:
                "Second TCP connection was accepted; read result=" + readError.message());
     }
 
+    bool connectProbeSession(libera::net::TcpClient& target,
+                             std::string& detail,
+                             std::chrono::milliseconds timeout = 900ms) {
+        std::error_code ec;
+        const auto address = libera::net::asio::ip::make_address(options.ip, ec);
+        if (ec) {
+            detail = "Invalid IP " + options.ip + ": " + ec.message();
+            return false;
+        }
+
+        target.setConnectTimeout(timeout);
+        target.setDefaultTimeout(timeout);
+        const libera::net::tcp::endpoint endpoint(
+            address,
+            libera::etherdream::config::ETHERDREAM_DAC_PORT_DEFAULT);
+        ec = target.connect(endpoint);
+        if (ec) {
+            detail = "connect failed: " + ec.message();
+            return false;
+        }
+        target.setLowLatency();
+
+        const auto initial = readResponseFrom(target, timeout);
+        if (!isAckFor(initial, '?')) {
+            detail = "connected, but initial status was " + responseName(initial) +
+                " error=" + initial.error.message();
+            return false;
+        }
+
+        detail = "connected; initial status={" + statusLine(initial.response.status) + "}";
+        return true;
+    }
+
+    bool prepareBadDataSession(libera::net::TcpClient& target,
+                               bool prepareFirst,
+                               std::string& detail) {
+        const auto stop = sendAndReadOn(target, singleByteCommand('s'), 's', 500ms);
+        detail += "; stop=" + responseName(stop);
+
+        if (!prepareFirst) {
+            return true;
+        }
+
+        const auto prepare = sendAndReadOn(target, singleByteCommand('p'), 'p', 500ms);
+        detail += "; prepare=" + responseName(prepare);
+        return isAckFor(prepare, 'p');
+    }
+
+    std::string readBadDataResponses(libera::net::TcpClient& target) {
+        std::ostringstream detail;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const auto response = readResponseFrom(target, 250ms);
+            if (attempt) {
+                detail << "; ";
+            }
+            if (!response.received) {
+                detail << "read" << attempt << "=none(" << response.error.message() << ")";
+                break;
+            }
+            detail << "read" << attempt << "=" << responseName(response)
+                   << " status={" << statusLine(response.response.status) << "}";
+        }
+        return detail.str();
+    }
+
+    bool verifyBadDataRecovery(const std::string& caseName, std::string& detail) {
+        std::this_thread::sleep_for(350ms);
+
+        libera::net::TcpClient recovery;
+        std::string connectDetail;
+        if (!connectProbeSession(recovery, connectDetail, 1200ms)) {
+            detail = connectDetail;
+            recovery.close();
+            return false;
+        }
+
+        const auto ping = sendAndReadOn(recovery, singleByteCommand('?'), '?', 700ms);
+        const bool recovered = isAckFor(ping, '?');
+        detail = connectDetail + "; recovery ping=" + responseName(ping) +
+            " status={" + (ping.received ? statusLine(ping.response.status) : std::string{}) + "}";
+        sendAndReadOn(recovery, singleByteCommand('s'), 's', 500ms);
+        recovery.close();
+
+        if (!recovered) {
+            detail += "; possible wedge after " + caseName;
+        }
+        return recovered;
+    }
+
+    void runOneBadDataCase(const BadDataCase& testCase) {
+        libera::net::TcpClient session;
+        std::string connectDetail;
+        if (!connectProbeSession(session, connectDetail)) {
+            add(ProbeStatus::Mismatch,
+                "Bad data " + testCase.name,
+                "Could not open isolated session: " + connectDetail);
+            session.close();
+            return;
+        }
+
+        std::string setupDetail = connectDetail;
+        if (!prepareBadDataSession(session, testCase.prepareFirst, setupDetail)) {
+            add(ProbeStatus::Skipped,
+                "Bad data " + testCase.name,
+                "Could not prepare isolated session: " + setupDetail);
+            session.close();
+            return;
+        }
+
+        const auto writeError = session.write_all(testCase.payload.data(),
+                                                  testCase.payload.size(),
+                                                  500ms);
+        std::string badDetail = setupDetail +
+            "; wrote=" + std::to_string(testCase.payload.size()) + " byte(s)";
+        if (writeError) {
+            badDetail += "; write_error=" + writeError.message();
+        } else {
+            badDetail += "; " + readBadDataResponses(session);
+        }
+
+        // Each malformed stream is deliberately isolated. Closing here tests
+        // whether the DAC can recover after the host abandons an invalid command.
+        session.close();
+
+        std::string recoveryDetail;
+        const bool recovered = verifyBadDataRecovery(testCase.name, recoveryDetail);
+        add(recovered ? ProbeStatus::Pass : ProbeStatus::Mismatch,
+            "Bad data " + testCase.name,
+            badDetail + "; recovery={" + recoveryDetail + "}");
+    }
+
+    std::vector<BadDataCase> badDataCases() const {
+        auto onePointMinusOneByte = dataCommand(1);
+        if (!onePointMinusOneByte.empty()) {
+            onePointMinusOneByte.pop_back();
+        }
+
+        auto zeroDataWithTrailingGarbage = dataCommand(0);
+        zeroDataWithTrailingGarbage.push_back(0xaa);
+
+        auto onePointWithTrailingGarbage = dataCommand(1);
+        onePointWithTrailingGarbage.push_back(0xaa);
+
+        return {
+            {"unknown opcode", {0x7eu}, false},
+            {"truncated begin", {'b', 0x00, 0x00}, true},
+            {"truncated point-rate", {'q', 0x80}, true},
+            {"truncated data header count=1", {'d', 0x01, 0x00}, true},
+            {"truncated one-point data", std::move(onePointMinusOneByte), true},
+            {"huge data count without payload", {'d', 0xff, 0xff}, true},
+            {"zero data with trailing garbage", std::move(zeroDataWithTrailingGarbage), true},
+            {"one-point data with trailing garbage", std::move(onePointWithTrailingGarbage), true}
+        };
+    }
+
+    void runBadDataCrashProbe() {
+        add(ProbeStatus::Observation,
+            "Bad data crash probe",
+            "Running isolated malformed-command cases. If a recovery check fails, the DAC may need a power cycle.");
+
+        for (const auto& testCase : badDataCases()) {
+            runOneBadDataCase(testCase);
+        }
+    }
+
     void printSummary() const {
         int pass = 0;
         int mismatch = 0;
@@ -1033,6 +1251,8 @@ Options parseOptions(int argc, char** argv) {
             options.stressRateQueue = true;
         } else if (arg == "--probe-data-full-threshold") {
             options.probeDataFullThreshold = true;
+        } else if (arg == "--bad-data-crash-probe") {
+            options.badDataCrashProbe = true;
         } else if (arg == "--max-data-points" && i + 1 < argc) {
             const auto parsed = std::strtoul(argv[++i], nullptr, 10);
             options.maxDataFullThresholdPoints =

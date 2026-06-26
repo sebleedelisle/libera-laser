@@ -117,8 +117,15 @@ private:
 
     int estimateBufferFullness() const;
     int targetBufferPoints() const;
+    int usableBufferFreeSpace(int bufferFullness) const;
+    bool dataPacketWouldOverflowBuffer(const EtherDreamStatus& status,
+                                       std::uint64_t sequence) const;
     std::uint32_t maxSafePointRate() const;
     bool statusPointRateIsImplausible(const EtherDreamStatus& status) const;
+    bool usesDmaBufferUnderrunThreshold() const;
+    std::size_t playingUnderrunBufferThreshold() const;
+    bool bufferIsBelowPlayingUnderrunThreshold(int bufferFullness) const;
+    bool statusReportsPlayingBufferUnderrun(const EtherDreamStatus& status) const;
 
     void updatePlaybackRequirements(const EtherDreamStatus& status);
     void applyFreshConnectionStatus(const EtherDreamStatus& status);
@@ -141,6 +148,9 @@ private:
                                   std::chrono::steady_clock::duration sendDuration);
     void maybeLogStreamHealthSummary(std::chrono::steady_clock::time_point now);
     void resetStreamHealth();
+    void recordComputerPerformanceUnderrun();
+    void recordBufferOverrun();
+    void applyUnderrunRecoveryBlankToCurrentPacket();
 
     bool ensureConnected();
     bool performHandshake();
@@ -190,6 +200,9 @@ private:
     struct PendingStreamHealthRequest {
         bool valid = false;
         bool requestRan = false;
+        bool playbackWasPlaying = false;
+        bool computerPerformanceUnderrun = false;
+        bool recoveryBlankApplied = false;
         int estimatedBufferBeforeRequest = 0;
         int targetBufferPointCount = 0;
         int freeSpace = 0;
@@ -203,6 +216,7 @@ private:
         std::chrono::steady_clock::time_point startedAt{};
         std::uint64_t packetCount = 0;
         std::uint64_t lowBufferEvents = 0;
+        std::uint64_t starvationEvents = 0;
         std::uint64_t requestMisses = 0;
         std::uint64_t paddedEvents = 0;
         std::uint64_t paddedPoints = 0;
@@ -244,6 +258,8 @@ private:
     StreamHealthWindow streamHealthWindow{};
     std::chrono::steady_clock::time_point lastStreamHealthDataAckTime{};
     std::chrono::steady_clock::time_point lastStreamHealthWarningTime{};
+
+    bool pendingStreamHealthRequestLikelyStarvedDac() const;
 
     mutable std::atomic<int> lastEstimatedBufferFullness{0};
     mutable std::atomic<int> lastKnownBufferCapacity{0};

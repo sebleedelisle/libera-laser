@@ -99,10 +99,22 @@ void testConnectionFailureIsRedAndCounted() {
               "connection lost count");
 }
 
+void testNetworkUnderflowHasDisplayLabel() {
+    const auto label = error_types::labelFor(error_types::network::bufferUnderflow);
+    ASSERT_TRUE(label == std::string_view("Network underrun"),
+                "network underrun label");
+}
+
 void testEtherDreamPlaybackIdleHasDisplayLabel() {
     const auto label = error_types::labelFor(error_types::etherdream::playbackIdle);
-    ASSERT_TRUE(label == std::string_view("Ether Dream playback idle"),
+    ASSERT_TRUE(label == std::string_view("Ether Dream underrun / playback idle"),
                 "Ether Dream playback idle label");
+}
+
+void testEtherDreamStreamStarvationHasDisplayLabel() {
+    const auto label = error_types::labelFor(error_types::etherdream::streamStarvation);
+    ASSERT_TRUE(label == std::string_view("Computer performance underrun"),
+                "Ether Dream stream starvation label");
 }
 
 void testEtherDreamStopConditionHasDisplayLabel() {
@@ -268,7 +280,9 @@ int main() {
     testDefaultStatusIsRed();
     testGreenOrangeTransitions();
     testConnectionFailureIsRedAndCounted();
+    testNetworkUnderflowHasDisplayLabel();
     testEtherDreamPlaybackIdleHasDisplayLabel();
+    testEtherDreamStreamStarvationHasDisplayLabel();
     testEtherDreamStopConditionHasDisplayLabel();
     testClearErrorsResetsCounts();
     testIntermittentStatusExpiresWithoutClearingCounts();

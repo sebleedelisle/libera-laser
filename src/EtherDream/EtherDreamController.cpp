@@ -391,7 +391,8 @@ EtherDreamController::waitForResponse(char command,
                 command == 'd'
                 && response.status.lightEngineState == LightEngineState::Ready
                 && isPlaybackStateThatCanHoldBufferedData(response.status.playbackState)
-                && statusLooksFullForDataReject(response.status, getBufferSize());
+                && (statusLooksFullForDataReject(response.status, getBufferSize())
+                    || dataPacketWouldOverflowBuffer(response.status, sequence));
             if (dataRejectedBecausePlaybackIdle) {
                 if (response.status.hasPlaybackUnderflow()) {
                     logInfo("[EtherDream] data command rejected after playback underflow",
@@ -400,15 +401,17 @@ EtherDreamController::waitForResponse(char command,
                             "sts", response.status.describe(),
                             "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                             "tx", describeProtocolTx(sequence));
+                    recordIntermittentError(error_types::network::bufferUnderflow);
                 } else {
-                    logInfo("[EtherDream] data command rejected because playback is idle",
+                    logInfo("[EtherDream] data command rejected because playback is idle after underrun",
                             "conn", connectionGeneration,
                             "seq", sequence,
                             "sts", response.status.describe(),
                             "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                             "tx", describeProtocolTx(sequence));
-                    recordIntermittentError(error_types::etherdream::playbackIdle);
+                    recordIntermittentError(error_types::network::bufferUnderflow);
                 }
+                resetStartupBlank();
                 return unexpected(make_error_code(std::errc::operation_canceled));
             }
             if (dataRejectedBecauseBufferFull) {
@@ -418,7 +421,7 @@ EtherDreamController::waitForResponse(char command,
                          "sts", response.status.describe(),
                          "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                          "tx", describeProtocolTx(sequence));
-                recordIntermittentError(error_types::network::bufferOverrun);
+                recordBufferOverrun();
                 return unexpected(make_error_code(std::errc::operation_canceled));
             }
             logError("[EtherDream] NAK invalid command", command,
@@ -439,7 +442,7 @@ EtherDreamController::waitForResponse(char command,
                      "sts", response.status.describe(),
                      "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                      "tx", describeProtocolTx(sequence));
-            recordIntermittentError(error_types::network::bufferOverrun);
+            recordBufferOverrun();
             return unexpected(make_error_code(std::errc::operation_canceled));
         }
 
@@ -564,7 +567,10 @@ expected<Ack> EtherDreamController::sendCommand(bool allowWhileStopping) {
         return unexpected(ec);
     }
 
-    auto ack = waitForResponse(opcode, allowWhileStopping, sequence);
+    // Once bytes are on the wire we must drain the matching response even if
+    // shutdown starts. Otherwise the next orderly stop can read this command's
+    // ACK and falsely report a protocol error.
+    auto ack = waitForResponse(opcode, /*allowWhileStopping*/ true, sequence);
     if (ack && opcode == 'd') {
         recordLatencySample(std::chrono::steady_clock::now() - sendStartTime);
     }
@@ -791,6 +797,7 @@ void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& st
     const bool underflow = status.hasPlaybackUnderflow();
     if (underflow && !wasUnderflow) {
         recordIntermittentError(error_types::network::bufferUnderflow);
+        resetStartupBlank();
     }
 
     const bool knownLightEngineState = isKnownLightEngineState(status.lightEngineState);
@@ -883,8 +890,7 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
     const auto bufferFullness = estimateBufferFullness();
     const int targetPoints = targetBufferPoints();
 
-    const auto bufferCapacity = getBufferSize();
-    const auto freeSpace = bufferCapacity > bufferFullness ? bufferCapacity - bufferFullness : 0;
+    const auto freeSpace = usableBufferFreeSpace(bufferFullness);
     const auto packetSpace = std::min<std::size_t>(freeSpace, config::ETHERDREAM_MAX_PACKET_POINTS);
     const auto targetDeficit =
         std::min<std::size_t>(calculateMinimumPoints(), packetSpace);
@@ -908,6 +914,10 @@ core::PointFillRequest EtherDreamController::getFillRequest() {
     pendingStreamHealthRequest.estimatedBufferBeforeRequest = bufferFullness;
     pendingStreamHealthRequest.targetBufferPointCount = targetPoints;
     pendingStreamHealthRequest.freeSpace = freeSpace;
+    pendingStreamHealthRequest.playbackWasPlaying =
+        lastKnownStatus.playbackState == PlaybackState::Playing;
+    pendingStreamHealthRequest.computerPerformanceUnderrun = false;
+    pendingStreamHealthRequest.recoveryBlankApplied = false;
     pointsToSend.clear();
     return req;
 }
@@ -917,6 +927,13 @@ bool EtherDreamController::shouldRequestPoints(const core::PointFillRequest& req
         && lastKnownStatus.playbackState == PlaybackState::Prepared
         && lastKnownStatus.bufferFullness < config::ETHERDREAM_MIN_PACKET_POINTS) {
         return request.minimumPointsRequired > 0;
+    }
+
+    if (lastKnownStatus.lightEngineState == LightEngineState::Ready
+        && lastKnownStatus.playbackState == PlaybackState::Playing
+        && bufferIsBelowPlayingUnderrunThreshold(
+            pendingStreamHealthRequest.estimatedBufferBeforeRequest)) {
+        return request.maximumPointsRequired > 0;
     }
 
     return request.minimumPointsRequired >= config::ETHERDREAM_MIN_PACKET_POINTS;
@@ -949,6 +966,11 @@ void EtherDreamController::sendPoints() {
 
     if (pointsToSend.size() == 0) {
         return;
+    }
+
+    if (pendingStreamHealthRequestLikelyStarvedDac()) {
+        recordComputerPerformanceUnderrun();
+        applyUnderrunRecoveryBlankToCurrentPacket();
     }
 
     const bool injectRateChange = pendingRateChangeCount>0;
@@ -1069,6 +1091,10 @@ expected<Ack> EtherDreamController::sendPing() {
 
 void EtherDreamController::pollStatus() {
     auto ack = sendPing();
+    if (ack && statusReportsPlayingBufferUnderrun(ack->status)) {
+        recordIntermittentError(error_types::network::bufferUnderflow);
+        resetStartupBlank();
+    }
     if (!ack && ack.error() != std::errc::operation_canceled) {
         handleNetworkFailure("status ping", ack.error());
     }
@@ -1143,6 +1169,31 @@ void EtherDreamController::captureStreamHealthRequest(
     pendingStreamHealthRequest.requestCompletedAt = std::chrono::steady_clock::now();
 }
 
+bool EtherDreamController::pendingStreamHealthRequestLikelyStarvedDac() const {
+    if (!pendingStreamHealthRequest.valid ||
+        !pendingStreamHealthRequest.playbackWasPlaying ||
+        pendingStreamHealthRequest.targetBufferPointCount <= 0) {
+        return false;
+    }
+
+    if (bufferIsBelowPlayingUnderrunThreshold(
+            pendingStreamHealthRequest.estimatedBufferBeforeRequest)) {
+        return true;
+    }
+
+    const int threshold = static_cast<int>(playingUnderrunBufferThreshold());
+    const int pointsUntilUnderrun =
+        pendingStreamHealthRequest.estimatedBufferBeforeRequest - threshold + 1;
+    if (pointsUntilUnderrun <= 0) {
+        return true;
+    }
+
+    const double msUntilUnderrun =
+        pointsToMillis(static_cast<std::size_t>(pointsUntilUnderrun));
+    return msUntilUnderrun > 0.0 &&
+           durationMillis(pendingStreamHealthRequest.requestDuration) >= msUntilUnderrun;
+}
+
 void EtherDreamController::recordStreamHealthRequestMiss() {
     if (!pendingStreamHealthRequest.valid) {
         return;
@@ -1161,6 +1212,13 @@ void EtherDreamController::recordStreamHealthRequestMiss() {
     streamHealthWindow.minEstimatedBuffer = std::min(
         streamHealthWindow.minEstimatedBuffer,
         pendingStreamHealthRequest.estimatedBufferBeforeRequest);
+
+    const bool likelyStarved = pendingStreamHealthRequestLikelyStarvedDac();
+    if (likelyStarved) {
+        streamHealthWindow.starvationEvents++;
+        recordComputerPerformanceUnderrun();
+        resetStartupBlank();
+    }
 
     const int lowBufferThreshold = std::max<int>(
         static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
@@ -1184,6 +1242,7 @@ void EtherDreamController::recordStreamHealthRequestMiss() {
                     "free_space", pendingStreamHealthRequest.freeSpace,
                     "req_min", pendingStreamHealthRequest.request.minimumPointsRequired,
                     "req_max", pendingStreamHealthRequest.request.maximumPointsRequired,
+                    "likely_starved", likelyStarved ? 1 : 0,
                     "request_ms", roundedMillis(durationMillis(
                         pendingStreamHealthRequest.requestDuration)));
         }
@@ -1235,6 +1294,30 @@ void EtherDreamController::recordStreamHealthPacket(
         streamHealthWindow.clampedPoints += metrics.clampedPointCount;
     }
 
+    const bool computerPerformanceUnderrun =
+        pending.computerPerformanceUnderrun || pendingStreamHealthRequestLikelyStarvedDac();
+    const bool dacStoppedAfterPlaying =
+        pending.playbackWasPlaying &&
+        ackStatus.lightEngineState == LightEngineState::Ready &&
+        ackStatus.playbackState == PlaybackState::Idle;
+    const bool dacBufferUnderrunWhilePlaying =
+        pending.playbackWasPlaying && statusReportsPlayingBufferUnderrun(ackStatus);
+    const bool actualDacUnderrun = dacStoppedAfterPlaying || dacBufferUnderrunWhilePlaying;
+
+    if (computerPerformanceUnderrun) {
+        streamHealthWindow.starvationEvents++;
+        if (!pending.computerPerformanceUnderrun) {
+            recordComputerPerformanceUnderrun();
+        }
+        if (!pending.recoveryBlankApplied) {
+            resetStartupBlank();
+        }
+    } else if (actualDacUnderrun) {
+        streamHealthWindow.starvationEvents++;
+        recordIntermittentError(error_types::network::bufferUnderflow);
+        resetStartupBlank();
+    }
+
     const int lowBufferThreshold = std::max<int>(
         static_cast<int>(config::ETHERDREAM_MIN_BUFFER_POINTS),
         pending.targetBufferPointCount / 2);
@@ -1266,6 +1349,8 @@ void EtherDreamController::recordStreamHealthPacket(
                     "final", metrics.finalPointCount,
                     "padded", metrics.blankPaddingPointCount,
                     "clamped", metrics.clampedPointCount,
+                    "computer_underrun", computerPerformanceUnderrun ? 1 : 0,
+                    "dac_underrun", actualDacUnderrun ? 1 : 0,
                     "request_ms", roundedMillis(durationMillis(pending.requestDuration)),
                     "send_ms", roundedMillis(durationMillis(sendDuration)),
                     "gap_ms", roundedMillis(dataGapMs),
@@ -1323,6 +1408,7 @@ void EtherDreamController::maybeLogStreamHealthSummary(
                 "padded_points", streamHealthWindow.paddedPoints,
                 "clamped_events", streamHealthWindow.clampedEvents,
                 "clamped_points", streamHealthWindow.clampedPoints,
+                "starvation_events", streamHealthWindow.starvationEvents,
                 "low_buffer_events", streamHealthWindow.lowBufferEvents);
     }
 
@@ -1336,6 +1422,31 @@ void EtherDreamController::resetStreamHealth() {
     streamHealthWindow.startedAt = std::chrono::steady_clock::now();
     lastStreamHealthDataAckTime = {};
     lastStreamHealthWarningTime = {};
+}
+
+void EtherDreamController::recordComputerPerformanceUnderrun() {
+    if (!pendingStreamHealthRequest.computerPerformanceUnderrun) {
+        pendingStreamHealthRequest.computerPerformanceUnderrun = true;
+        recordIntermittentError(error_types::etherdream::streamStarvation);
+    }
+}
+
+void EtherDreamController::recordBufferOverrun() {
+    recordIntermittentError(error_types::network::bufferOverrun);
+    // A full-buffer rejection means the DAC did not accept the packet we just
+    // pulled from the scheduler. The next accepted packet may therefore jump
+    // forward in content; blank its leading points just like an underrun restart.
+    resetStartupBlank();
+}
+
+void EtherDreamController::applyUnderrunRecoveryBlankToCurrentPacket() {
+    if (pendingStreamHealthRequest.recoveryBlankApplied) {
+        return;
+    }
+
+    resetStartupBlank();
+    applyStartupBlankToOutputPoints(pointsToSend);
+    pendingStreamHealthRequest.recoveryBlankApplied = true;
 }
 
 int EtherDreamController::estimateBufferFullness() const {
@@ -1369,12 +1480,70 @@ int EtherDreamController::targetBufferPoints() const {
         static_cast<int>(config::ETHERDREAM_SAFETY_HEADROOM_POINTS));
 }
 
+int EtherDreamController::usableBufferFreeSpace(int bufferFullness) const {
+    const int bufferSize = getBufferSize();
+    if (bufferSize <= 0) {
+        return 0;
+    }
+
+    const int clampedFullness = clampBufferFullnessToCapacity(bufferFullness, bufferSize);
+    const int rawFreeSpace = std::max(0, bufferSize - clampedFullness);
+    const int writeHeadroom = std::min<int>(
+        rawFreeSpace,
+        static_cast<int>(config::ETHERDREAM_WRITE_HEADROOM_POINTS));
+    return rawFreeSpace - writeHeadroom;
+}
+
+bool EtherDreamController::dataPacketWouldOverflowBuffer(
+    const EtherDreamStatus& status,
+    std::uint64_t sequence) const {
+    const int bufferSize = getBufferSize();
+    if (bufferSize <= 0) {
+        return false;
+    }
+
+    const auto* snapshot = findProtocolTxSnapshot(sequence);
+    if (!snapshot || snapshot->opcode != 'd' || snapshot->pointCount == 0) {
+        return false;
+    }
+
+    return static_cast<int>(snapshot->pointCount) >
+        usableBufferFreeSpace(status.bufferFullness);
+}
+
 std::uint32_t EtherDreamController::maxSafePointRate() const {
     std::uint32_t maxRate = config::ETHERDREAM_MAX_REASONABLE_POINT_RATE;
     if (controllerInfo && controllerInfo->maxPointRate() > 0) {
         maxRate = std::min(maxRate, controllerInfo->maxPointRate());
     }
     return maxRate;
+}
+
+bool EtherDreamController::usesDmaBufferUnderrunThreshold() const {
+    if (!controllerInfo) {
+        return false;
+    }
+
+    // ED3 reports hardware revision 30, ED4 reports 40/41. Unknown/virtual
+    // devices keep the older "only zero is definitely empty" threshold.
+    return controllerInfo->hardwareRevision() >= 30;
+}
+
+std::size_t EtherDreamController::playingUnderrunBufferThreshold() const {
+    return usesDmaBufferUnderrunThreshold()
+        ? config::ETHERDREAM_MIN_BUFFER_POINTS
+        : std::size_t{1};
+}
+
+bool EtherDreamController::bufferIsBelowPlayingUnderrunThreshold(int bufferFullness) const {
+    return bufferFullness < static_cast<int>(playingUnderrunBufferThreshold());
+}
+
+bool EtherDreamController::statusReportsPlayingBufferUnderrun(
+    const EtherDreamStatus& status) const {
+    return status.lightEngineState == LightEngineState::Ready
+        && status.playbackState == PlaybackState::Playing
+        && bufferIsBelowPlayingUnderrunThreshold(status.bufferFullness);
 }
 
 bool EtherDreamController::statusPointRateIsImplausible(const EtherDreamStatus& status) const {

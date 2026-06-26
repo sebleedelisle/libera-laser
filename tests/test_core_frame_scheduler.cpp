@@ -120,6 +120,27 @@ void testHighLatencyAllowsMultipleFramesQueued() {
     ASSERT_EQ(controller.queuedFrameCount(), acceptedFrames, "queued frame count matches pending frames");
 }
 
+void testTryFrameQueuePathWorksWhenUncontended() {
+    FrameSchedulerTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    controller.setArmed(true);
+
+    ASSERT_TRUE(controller.tryIsReadyForNewFrame(), "uncontended empty queue is ready");
+    ASSERT_TRUE(controller.trySendFrame(makeFrame(50.0f, 6)), "trySendFrame queues frame when uncontended");
+    ASSERT_EQ(controller.queuedFrameCount(), static_cast<std::size_t>(1), "trySendFrame adds one queued frame");
+
+    PointFillRequest request{};
+    request.minimumPointsRequired = 3;
+    request.maximumPointsRequired = 3;
+    request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+
+    ASSERT_TRUE(controller.requestPoints(request), "try-queued frame can be requested");
+    const auto batch = controller.lastBatch();
+    ASSERT_EQ(batch.size(), static_cast<std::size_t>(3), "try-queued frame batch size");
+    ASSERT_EQ(batch[0].x, 50.0f, "try-queued frame starts at expected point");
+    ASSERT_EQ(batch[2].x, 52.0f, "try-queued frame advances normally");
+}
+
 void testReadinessReopensAsQueuedPointsDrain() {
     FrameSchedulerTestController controller;
     LaserController::setTargetLatency(std::chrono::milliseconds(0));
@@ -225,6 +246,7 @@ int main() {
     testEmptyQueuePadsOnlyToMinimum();
     testDoesNotDropFrameMidPlayback();
     testHighLatencyAllowsMultipleFramesQueued();
+    testTryFrameQueuePathWorksWhenUncontended();
     testReadinessReopensAsQueuedPointsDrain();
     testPromotesFrameWhenItBecomesDueMidBatch();
     testFutureFrameOnlyRequestsMinimumBlankLead();
