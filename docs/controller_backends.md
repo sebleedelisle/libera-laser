@@ -62,8 +62,8 @@ public:
 };
 ```
 
-This is already close to how Ether Dream, LaserCube USB, LaserCube Net, AVB,
-IDN, and point-ingester plugins currently behave.
+This is already close to how Ether Dream, LaserCube USB, LaserCube Net,
+AVB, IDN, and point-ingester plugins currently behave.
 
 ## Frame-ingester backend
 
@@ -107,7 +107,42 @@ public:
 ```
 
 Today this is the right mental model for native frame transports such as the
-direct Helios USB path.
+direct Helios USB path and LightSpace Net. LightSpace Net still uses UDP for
+discovery, but active playback uploads complete current-pattern packets over
+TCP.
+
+LightSpace Net is not treated as an acknowledged point stream. The backend
+pulls one exact source frame from the scheduler and uploads it as one
+current-pattern packet. It must not resample the frame and must not split one
+logical source frame into multiple equal-sized "frames" to simulate streaming.
+`LIBERA_LIGHTSPACENET_PATTERN_POINTS` controls the maximum frame packet size the
+backend will send, defaulting to 700 points. If an input frame exceeds that
+limit, the backend preserves the leading source points that fit and spends the
+remaining point budget on a blank eased travel tail to the original frame end
+position. This is a deliberate transport fallback for current firmware limits:
+it avoids sending an arbitrary mid-frame endpoint as the current pattern while
+still keeping the packet below the device cap. The blank travel tail uses the
+same signed unit coordinate space as normal points: the full coordinate width is
+`-1..+1`, so each blank travel segment is roughly 2% of that width. The packet
+format itself carries 16-bit packet and payload length fields, but hardware
+probing on current firmware found a lower practical packet limit: 728 points
+produces a 5118-byte packet and survives a follow-up heartbeat, while 729 points
+produces a 5125-byte packet and the device stops answering on that TCP session.
+Repeated playback above the conservative runtime cap has also produced TCP send
+timeouts, so the default operational cap keeps substantial margin below the
+one-shot packet limit. The default upload cadence is also capped at one
+current-pattern packet every 40 ms. That pacing matches the controller's
+current-pattern model better than deriving a high upload rate from packet point
+count, and keeps command ACKs and heartbeat traffic from being starved by frame
+uploads. LightSpace scan-rate commands are clamped to the documented 1..30 kHz
+range.
+
+LightSpace Net heartbeat responses are useful only as a liveness signal in the
+current backend. The response payload observed on hardware is an 8-byte
+big-endian value that increments at roughly one count per millisecond. It does
+not echo the host heartbeat timestamp and should be treated as a probable
+device uptime or firmware tick counter, not as a frame acknowledgement, buffer
+depth, or render-status report.
 
 Out-of-tree plugins can now mirror this frame-ingester shape too via the ABI
 v2 `get_frame_requirements()` + `send_frame()` callbacks.

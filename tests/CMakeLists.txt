@@ -19,6 +19,7 @@ set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_encoding.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_byte_buffer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_command.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_lightspacenet_packet.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_status.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_transition.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_scanner_sync.cpp
@@ -37,6 +38,7 @@ set(LIBERA_HARDWARE_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_protocol_probe.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_etherdream_underflow_probe.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_usb_stream.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_lightspacenet_stream.cpp
 )
 
 foreach(test_source IN LISTS LIBERA_UNIT_TESTS)

@@ -28,8 +28,9 @@ namespace libera::core {
 namespace {
 void elevateWorkerThreadPriority() {
 #if defined(__APPLE__)
-    // macOS: use QoS to request a higher scheduling class without root.
-    const int rc = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    // macOS: keep streaming responsive without competing with UI/input/render
+    // work at the top interactive QoS class.
+    const int rc = pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
     if (rc != 0) {
         logInfo("[LaserControllerStreaming] pthread_set_qos_class_self_np failed", rc);
     }
@@ -141,11 +142,7 @@ bool LaserControllerStreaming::requestPoints(const PointFillRequest &request) {
     return true;
 }
 
-void LaserControllerStreaming::postProcessOutputPoints(std::vector<LaserPoint>& points) {
-    // Apply startup blanking (first N points forced to black).
-    // X/Y pass through so galvos can travel to content position while dark.
-    // The delay line was cleared in resetStartupBlank() so it fills with
-    // blank-RGB points, providing additional natural blanking during transition.
+void LaserControllerStreaming::applyStartupBlankToOutputPoints(std::vector<LaserPoint>& points) {
     int blankPointsRemaining = startupBlankPointsRemaining.load(std::memory_order_relaxed);
     if (blankPointsRemaining > 0) {
         for (auto &point : points) {
@@ -159,6 +156,14 @@ void LaserControllerStreaming::postProcessOutputPoints(std::vector<LaserPoint>& 
         }
         startupBlankPointsRemaining.store(blankPointsRemaining, std::memory_order_relaxed);
     }
+}
+
+void LaserControllerStreaming::postProcessOutputPoints(std::vector<LaserPoint>& points) {
+    // Apply startup blanking (first N points forced to black).
+    // X/Y pass through so galvos can travel to content position while dark.
+    // The delay line was cleared in resetStartupBlank() so it fills with
+    // blank-RGB points, providing additional natural blanking during transition.
+    applyStartupBlankToOutputPoints(points);
 
     if(!armed.load(std::memory_order_relaxed)) {
         // Shutdown blanking: hold at last content position (dark) long enough
@@ -487,6 +492,7 @@ void LaserControllerStreaming::clearErrors() {
     lastErrorTick.store(0, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(errorCountsMutex);
     errorCounts.clear();
+    lastLoggedEventTicks.clear();
     lastWarningCode.clear();
     lastErrorCode.clear();
 }
@@ -630,7 +636,10 @@ void LaserControllerStreaming::recordRecentEvent(ControllerEventSeverity severit
     }
 
     const std::string code(errorType);
+    const auto now = std::chrono::steady_clock::now();
+    const SteadyRep nowTick = now.time_since_epoch().count();
     std::uint64_t count = 0;
+    bool shouldLog = false;
     {
         std::lock_guard<std::mutex> lock(errorCountsMutex);
         count = ++errorCounts[code];
@@ -639,13 +648,27 @@ void LaserControllerStreaming::recordRecentEvent(ControllerEventSeverity severit
         } else {
             lastWarningCode = code;
         }
+
+        const auto [it, inserted] = lastLoggedEventTicks.try_emplace(code, SteadyRep{0});
+        const auto lastLogTime = std::chrono::steady_clock::time_point{
+            std::chrono::steady_clock::duration{it->second}};
+        const bool logIntervalElapsed =
+            it->second == 0 ||
+            (now - lastLogTime) >= std::chrono::milliseconds{repeatedEventLogIntervalMillis};
+        shouldLog = inserted || count == 1 || logIntervalElapsed;
+        if (shouldLog) {
+            it->second = nowTick;
+        }
     }
 
-    const SteadyRep nowTick = std::chrono::steady_clock::now().time_since_epoch().count();
     if (severity == ControllerEventSeverity::Error) {
         lastErrorTick.store(nowTick, std::memory_order_relaxed);
     } else {
         lastWarningTick.store(nowTick, std::memory_order_relaxed);
+    }
+
+    if (!shouldLog) {
+        return;
     }
 
     const char* severityLabel = controllerEventSeverityLabel(severity);

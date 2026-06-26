@@ -80,6 +80,28 @@ bool FrameScheduler::enqueueFrame(Frame&& frame) {
     return true;
 }
 
+bool FrameScheduler::tryEnqueueFrameIfReady(Frame&& frame, std::size_t queuedPointBudget) {
+    if (frame.points.empty()) {
+        return false;
+    }
+
+    std::unique_lock<std::mutex> lock(state->mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+
+    // Treat a busy/full scheduler as "not ready" for foreground callers. This
+    // lets the app skip one submitted frame instead of waiting behind the DAC
+    // worker thread.
+    if (queuedPointCountUnsafe() > queuedPointBudget) {
+        return false;
+    }
+
+    state->nominalFramePointCount = std::max<std::size_t>(frame.points.size(), 1);
+    state->pendingFrames.push_back(std::make_unique<Frame>(std::move(frame)));
+    return true;
+}
+
 void FrameScheduler::reset() {
     std::lock_guard<std::mutex> lock(state->mutex);
     state->pendingFrames.clear();
@@ -90,6 +112,15 @@ void FrameScheduler::reset() {
 
 bool FrameScheduler::isReadyForNewFrame(std::size_t queuedPointBudget) const {
     std::lock_guard<std::mutex> lock(state->mutex);
+    return queuedPointCountUnsafe() <= queuedPointBudget;
+}
+
+bool FrameScheduler::tryIsReadyForNewFrame(std::size_t queuedPointBudget) const {
+    std::unique_lock<std::mutex> lock(state->mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+
     return queuedPointCountUnsafe() <= queuedPointBudget;
 }
 

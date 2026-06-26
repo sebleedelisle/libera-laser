@@ -16,5 +16,6 @@
 #include "libera/etherdream/EtherDreamManager.hpp"
 #include "libera/helios/HeliosManager.hpp"
 #include "libera/idn/IdnManager.hpp"
+#include "libera/lightspacenet/LightSpaceNetManager.hpp"
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbManager.hpp"

@@ -580,15 +580,24 @@ bool runStreamOrderScenario(libera::etherdream::PlaybackState initialPlaybackSta
 
     if (expectUnderflowRecorded) {
         bool underflowRecorded = false;
+        bool protocolErrorRecorded = false;
         for (const auto& error : controller.getErrors()) {
             if (error.code == "network.buffer_underflow" && error.count > 0) {
                 underflowRecorded = true;
-                break;
+            }
+            if (error.code == "network.protocol_error" && error.count > 0) {
+                protocolErrorRecorded = true;
             }
         }
         if (!underflowRecorded) {
             std::fprintf(stderr,
                          "EtherDream stream order violation (%s): underflow was not recorded\n",
+                         scenarioName);
+            return false;
+        }
+        if (protocolErrorRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): underflow was reported with protocol error\n",
                          scenarioName);
             return false;
         }
@@ -717,9 +726,9 @@ int main() {
                                 0,
                                 false,
                                 2,
-                                false,
                                 true,
-                                true)) {
+                                true,
+                                false)) {
         return 1;
     }
     if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,
