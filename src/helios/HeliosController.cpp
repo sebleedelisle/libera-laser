@@ -148,6 +148,84 @@ int queryHeliosUsbFirmwareVersion(libusb_device_handle* handle) {
     return 0;
 }
 
+struct HeliosUsbOpenResult {
+    libusb_device_handle* handle = nullptr;
+    int firmwareVersion = 0;
+};
+
+HeliosUsbOpenResult openHeliosUsbConnection(libusb_context* usbContext,
+                                            const std::string& controllerPortPath) {
+    HeliosUsbOpenResult result;
+    if (usbContext == nullptr || controllerPortPath.empty()) {
+        return result;
+    }
+
+    // Direct USB connect intentionally enumerates raw libusb devices and claims
+    // only the one matching the persisted port path.
+    libusb_device** deviceList = nullptr;
+    const ssize_t count = libusb_get_device_list(usbContext, &deviceList);
+    if (count < 0 || !deviceList) {
+        return result;
+    }
+
+    for (ssize_t i = 0; i < count; ++i) {
+        libusb_device* device = deviceList[i];
+        libusb_device_descriptor descriptor{};
+        if (libusb_get_device_descriptor(device, &descriptor) != 0) {
+            continue;
+        }
+        if (descriptor.idVendor != HELIOS_VID || descriptor.idProduct != HELIOS_PID) {
+            continue;
+        }
+        if (makeHeliosUsbPortPath(device) != controllerPortPath) {
+            continue;
+        }
+
+        libusb_device_handle* handle = nullptr;
+        const int openRc = libusb_open(device, &handle);
+        if (openRc != LIBUSB_SUCCESS || handle == nullptr) {
+            continue;
+        }
+
+        const int claimRc = libusb_claim_interface(handle, 0);
+        if (claimRc != LIBUSB_SUCCESS) {
+            libusb_close(handle);
+            continue;
+        }
+
+        const int altRc = libusb_set_interface_alt_setting(handle, 0, 1);
+        if (altRc != LIBUSB_SUCCESS) {
+            libusb_release_interface(handle, 0);
+            libusb_close(handle);
+            continue;
+        }
+
+        // Match the vendor SDK startup sequence before streaming begins. The
+        // short delay and interrupt flush discard stale packets from an earlier
+        // owner/session, which matters both on first connect and after a USB
+        // reconnect.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        std::array<std::uint8_t, 32> flushBuffer{};
+        int actualLength = 0;
+        while (libusb_interrupt_transfer(handle,
+                                         EP_INT_IN,
+                                         flushBuffer.data(),
+                                         static_cast<int>(flushBuffer.size()),
+                                         &actualLength,
+                                         5) == LIBUSB_SUCCESS) {
+        }
+
+        result.firmwareVersion = queryHeliosUsbFirmwareVersion(handle);
+        (void)announceHeliosSdkVersion(handle);
+        result.handle = handle;
+        break;
+    }
+
+    libusb_free_device_list(deviceList, 1);
+    return result;
+}
+
 } // namespace
 
 namespace error_types = libera::core::error_types;
@@ -173,41 +251,41 @@ struct HeliosController::DirectUsbConnection {
     }
 
     void close() {
-        if (closed.exchange(true, std::memory_order_relaxed)) {
-            return;
-        }
-
         // Close is serialized with I/O so we do not race a write/status poll
         // against releasing the USB interface underneath it.
+        const bool wasClosed = closed.exchange(true, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(ioMutex);
-        if (!handle) {
-            return;
+        closeHandleLocked(!wasClosed);
+    }
+
+    bool tryReconnect(libusb_context* context, const std::string& controllerPortPath) {
+        if (context == nullptr || controllerPortPath.empty()) {
+            return false;
         }
 
-        if (abandonHandleOnClose.load(std::memory_order_relaxed)) {
-            // Teardown policy:
-            // on macOS we have seen libusb_close() crash during app shutdown
-            // from the Helios direct USB path. At this point the streaming
-            // thread has already been stopped by the manager, and the process is
-            // on its way out, so abandoning the raw handle is safer than trying
-            // to make one last libusb call into an unstable teardown state.
-            //
-            // This is intentionally shutdown-only. Normal runtime close paths
-            // still release the interface and close the handle properly.
-            handle = nullptr;
-            shutterOpen = false;
-            return;
+        std::lock_guard<std::mutex> lock(ioMutex);
+        if (!isClosed()) {
+            return true;
         }
 
-        // Best-effort stop before releasing the USB interface.
-        std::uint8_t stopRequest[2] = {0x01, 0};
-        (void)sendControlLocked(stopRequest, 2, 16);
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        // A fatal libusb error leaves the old handle unusable. Close that
+        // handle first, then run the exact same open/claim/startup sequence as
+        // the initial connection path.
+        closeHandleLocked(false);
+        const HeliosUsbOpenResult reopened = openHeliosUsbConnection(context, controllerPortPath);
+        if (reopened.handle == nullptr) {
+            return false;
+        }
 
-        libusb_release_interface(handle, 0);
-        libusb_close(handle);
-        handle = nullptr;
+        handle = reopened.handle;
+        firmwareVersion.store(reopened.firmwareVersion, std::memory_order_relaxed);
         shutterOpen = false;
+        closed.store(false, std::memory_order_relaxed);
+        return true;
+    }
+
+    void requestReconnect() {
+        closed.store(true, std::memory_order_relaxed);
     }
 
     int getStatus() {
@@ -264,7 +342,6 @@ struct HeliosController::DirectUsbConnection {
         // ownership granularity, not changing frame semantics.
         std::vector<HeliosPointExt> duplicatedPoints;
         const HeliosPointExt* pointsPtr = points;
-        bool freePoints = false;
 
         if (pps < HELIOS_MIN_PPS) {
             if (pps == 0) {
@@ -287,7 +364,6 @@ struct HeliosController::DirectUsbConnection {
             pointsPtr = duplicatedPoints.data();
             numOfPoints *= lowRateFactor;
             pps *= lowRateFactor;
-            freePoints = true;
         }
 
         unsigned int samplingFactor = 1;
@@ -300,7 +376,6 @@ struct HeliosController::DirectUsbConnection {
             numOfPoints = numOfPoints / samplingFactor;
 
             if (pps < HELIOS_MIN_PPS) {
-                (void)freePoints;
                 return HELIOS_ERROR_TOO_MANY_POINTS;
             }
         }
@@ -366,7 +441,7 @@ struct HeliosController::DirectUsbConnection {
     }
 
     int getFirmwareVersion() const {
-        return firmwareVersion;
+        return firmwareVersion.load(std::memory_order_relaxed);
     }
 
     int getName(char* out) {
@@ -384,6 +459,7 @@ struct HeliosController::DirectUsbConnection {
         const int rc = libusb_interrupt_transfer(handle, EP_INT_IN, response.data(),
                                                  static_cast<int>(response.size()), &actualLength, 32);
         if (rc != LIBUSB_SUCCESS) {
+            markClosedOnDisconnectLocked(rc);
             return HELIOS_ERROR_LIBUSB_BASE + rc;
         }
         if (actualLength < 1 || response[0] != 0x85) {
@@ -406,6 +482,48 @@ struct HeliosController::DirectUsbConnection {
     }
 
 private:
+    void closeHandleLocked(bool sendStop) {
+        if (!handle) {
+            shutterOpen = false;
+            return;
+        }
+
+        if (abandonHandleOnClose.load(std::memory_order_relaxed)) {
+            // Teardown policy:
+            // on macOS we have seen libusb_close() crash during app shutdown
+            // from the Helios direct USB path. At this point the streaming
+            // thread has already been stopped by the manager, and the process is
+            // on its way out, so abandoning the raw handle is safer than trying
+            // to make one last libusb call into an unstable teardown state.
+            //
+            // This is intentionally shutdown-only. Normal runtime close paths
+            // still release the interface and close the handle properly.
+            handle = nullptr;
+            shutterOpen = false;
+            return;
+        }
+
+        if (sendStop) {
+            // Best-effort stop before releasing the USB interface. Use a raw
+            // transfer here because close() has already marked the connection
+            // closed so normal control helpers intentionally reject I/O.
+            std::uint8_t stopRequest[2] = {0x01, 0};
+            int actualLength = 0;
+            (void)libusb_interrupt_transfer(handle,
+                                            EP_INT_OUT,
+                                            stopRequest,
+                                            2,
+                                            &actualLength,
+                                            16);
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
+
+        libusb_release_interface(handle, 0);
+        libusb_close(handle);
+        handle = nullptr;
+        shutterOpen = false;
+    }
+
     int sendControlLocked(std::uint8_t* buffer, unsigned int length, unsigned int timeoutMs) {
         if (buffer == nullptr) {
             return HELIOS_ERROR_DEVICE_NULL_BUFFER;
@@ -450,7 +568,7 @@ private:
     void markClosedOnDisconnectLocked(int libusbRc) {
         // Once macOS/libusb reports the device disappearing or a fatal I/O
         // breakage, stop pretending this handle is healthy. The run loop will
-        // surface that as a connection loss and stop trying to stream.
+        // surface that as a connection loss and reopen the same port path.
         if (libusbRc == LIBUSB_ERROR_NO_DEVICE || libusbRc == LIBUSB_ERROR_IO) {
             closed.store(true, std::memory_order_relaxed);
         }
@@ -460,7 +578,7 @@ private:
     std::atomic<bool> closed{false};
     std::atomic<bool> abandonHandleOnClose{false};
     bool shutterOpen = false;
-    int firmwareVersion = 0;
+    std::atomic<int> firmwareVersion{0};
     std::mutex ioMutex;
     std::vector<std::uint8_t> bulkTransferBuffer;
 };
@@ -472,79 +590,14 @@ std::shared_ptr<HeliosController> HeliosController::connectUsb(
         return {};
     }
 
-    // Direct USB connect intentionally enumerates raw libusb devices and claims
-    // only the one matching the persisted port path.
-    //
-    // This is the key fix for multi-Helios setups: connecting one DAC must not
-    // implicitly claim every Helios USB DAC visible to the process.
-    libusb_device** deviceList = nullptr;
-    const ssize_t count = libusb_get_device_list(usbContext.get(), &deviceList);
-    if (count < 0 || !deviceList) {
+    const HeliosUsbOpenResult opened =
+        openHeliosUsbConnection(usbContext.get(), controllerPortPath);
+    if (opened.handle == nullptr) {
         return {};
     }
 
-    std::unique_ptr<DirectUsbConnection> directConnection;
-    for (ssize_t i = 0; i < count; ++i) {
-        libusb_device* device = deviceList[i];
-        libusb_device_descriptor descriptor{};
-        if (libusb_get_device_descriptor(device, &descriptor) != 0) {
-            continue;
-        }
-        if (descriptor.idVendor != HELIOS_VID || descriptor.idProduct != HELIOS_PID) {
-            continue;
-        }
-        if (makeHeliosUsbPortPath(device) != controllerPortPath) {
-            continue;
-        }
-
-        libusb_device_handle* handle = nullptr;
-        const int openRc = libusb_open(device, &handle);
-        if (openRc != LIBUSB_SUCCESS || handle == nullptr) {
-            continue;
-        }
-
-        const int claimRc = libusb_claim_interface(handle, 0);
-        if (claimRc != LIBUSB_SUCCESS) {
-            libusb_close(handle);
-            continue;
-        }
-
-        const int altRc = libusb_set_interface_alt_setting(handle, 0, 1);
-        if (altRc != LIBUSB_SUCCESS) {
-            libusb_release_interface(handle, 0);
-            libusb_close(handle);
-            continue;
-        }
-
-        // Mirror the startup sequence the SDK uses before it starts talking to
-        // the DAC. The short delay and interrupt flush help avoid stale packets
-        // from a previous owner/session contaminating the first control reads.
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        std::array<std::uint8_t, 32> flushBuffer{};
-        int actualLength = 0;
-        while (libusb_interrupt_transfer(handle,
-                                         EP_INT_IN,
-                                         flushBuffer.data(),
-                                         static_cast<int>(flushBuffer.size()),
-                                         &actualLength,
-                                         5) == LIBUSB_SUCCESS) {
-        }
-
-        // Match the vendor SDK constructor more closely here. The initial
-        // firmware query plus SDK version announce gives the device one full
-        // request/response roundtrip before the streaming thread starts polling
-        // status, which reduces spurious first-poll USB errors.
-        const int fw = queryHeliosUsbFirmwareVersion(handle);
-        (void)announceHeliosSdkVersion(handle);
-        directConnection = std::make_unique<DirectUsbConnection>(handle, fw);
-        break;
-    }
-
-    libusb_free_device_list(deviceList, 1);
-    if (!directConnection) {
-        return {};
-    }
+    auto directConnection =
+        std::make_unique<DirectUsbConnection>(opened.handle, opened.firmwareVersion);
 
     return std::shared_ptr<HeliosController>(
         new HeliosController(std::move(usbContext),
@@ -662,7 +715,41 @@ void HeliosController::run() {
             setConnectionState(false);
             clearFrameTransportSubmissionEstimate();
             lastSubmittedFramePoints.store(0, std::memory_order_relaxed);
+            estimatedWriteLeadMicros.store(0, std::memory_order_relaxed);
+            updateEstimatedBufferSnapshotNow(0, getPointRate());
             wasConnected = false;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (usbConnection && now >= nextReconnectAttempt) {
+                ++reconnectAttemptCount;
+                if (usbConnection->tryReconnect(usbContext.get(), usbPortPath)) {
+                    logInfo("[HeliosController] USB reconnected",
+                            "path", usbPortPath,
+                            "attempts", reconnectAttemptCount);
+                    reconnectAttemptCount = 0;
+                    consecutiveStatusErrors = 0;
+                    consecutiveStatusTimeouts = 0;
+                    consecutiveWriteErrors = 0;
+                    consecutiveWriteTimeouts = 0;
+                    nextReconnectAttempt = std::chrono::steady_clock::time_point{};
+                    setConnectionState(true);
+                    resetStartupBlank();
+                    statusWarmupDeadline =
+                        std::chrono::steady_clock::now() + detail::STATUS_ERROR_WARMUP_GRACE;
+                    wasConnected = true;
+                    std::this_thread::sleep_for(5ms);
+                    continue;
+                }
+
+                recordIntermittentError(error_types::usb::connectFailed);
+                if (detail::shouldLogErrorBurst(reconnectAttemptCount)) {
+                    logInfo("[HeliosController] waiting for USB reconnect",
+                            "path", usbPortPath,
+                            "attempt", reconnectAttemptCount);
+                }
+                nextReconnectAttempt = now + detail::USB_RECONNECT_INTERVAL;
+            }
+
             std::this_thread::sleep_for(100ms);
             continue;
         }
@@ -679,16 +766,37 @@ void HeliosController::run() {
         if (status < 0) {
             if (std::chrono::steady_clock::now() < statusWarmupDeadline) {
                 consecutiveStatusErrors = 0;
+                consecutiveStatusTimeouts = 0;
                 std::this_thread::sleep_for(2ms);
                 continue;
             }
             if (status == -5007) {
                 recordIntermittentError(error_types::usb::timeout);
+                ++consecutiveStatusTimeouts;
+                consecutiveStatusErrors = 0;
+                if (detail::shouldLogErrorBurst(consecutiveStatusTimeouts)) {
+                    logError("[HeliosController] status timeout",
+                             "path", usbPortPath,
+                             "code", status,
+                             "reason", describeHeliosError(status),
+                             "consecutive", consecutiveStatusTimeouts);
+                }
+                if (consecutiveStatusTimeouts == detail::USB_RECONNECT_ERROR_THRESHOLD &&
+                    usbConnection && !usbConnection->isClosed()) {
+                    // A physically unplugged Helios can report as repeated
+                    // USB timeouts on macOS rather than LIBUSB_ERROR_NO_DEVICE.
+                    // Treat only a sustained timeout streak as a lost handle.
+                    logError("[HeliosController] requesting USB reconnect after status timeouts",
+                             "path", usbPortPath,
+                             "consecutive", consecutiveStatusTimeouts);
+                    usbConnection->requestReconnect();
+                }
                 std::this_thread::sleep_for(2ms);
                 continue;
             }
             recordIntermittentError(error_types::usb::statusError);
             ++consecutiveStatusErrors;
+            consecutiveStatusTimeouts = 0;
             if (detail::shouldLogErrorBurst(consecutiveStatusErrors)) {
                 logError("[HeliosController] status error",
                          "path", usbPortPath,
@@ -696,11 +804,19 @@ void HeliosController::run() {
                          "reason", describeHeliosError(status),
                          "consecutive", consecutiveStatusErrors);
             }
+            if (consecutiveStatusErrors == detail::USB_RECONNECT_ERROR_THRESHOLD &&
+                usbConnection && !usbConnection->isClosed()) {
+                logError("[HeliosController] requesting USB reconnect after status errors",
+                         "path", usbPortPath,
+                         "consecutive", consecutiveStatusErrors);
+                usbConnection->requestReconnect();
+            }
             std::this_thread::sleep_for(5ms);
             continue;
         }
         statusWarmupDeadline = std::chrono::steady_clock::time_point{};
         consecutiveStatusErrors = 0;
+        consecutiveStatusTimeouts = 0;
 
         if (status == 0) {
             std::this_thread::sleep_for(1ms);
@@ -767,21 +883,36 @@ void HeliosController::run() {
         if (result < 0) {
             if (result == -5007) {
                 recordIntermittentError(error_types::usb::timeout);
+                ++consecutiveWriteTimeouts;
+                consecutiveWriteErrors = 0;
             } else {
                 recordIntermittentError(error_types::usb::transferFailed);
+                ++consecutiveWriteErrors;
+                consecutiveWriteTimeouts = 0;
             }
-            ++consecutiveWriteErrors;
-            if (detail::shouldLogErrorBurst(consecutiveWriteErrors)) {
+            const auto consecutiveWriteFailures =
+                result == -5007 ? consecutiveWriteTimeouts : consecutiveWriteErrors;
+            if (detail::shouldLogErrorBurst(consecutiveWriteFailures)) {
                 logError("[HeliosController] WriteFrameExtended failed",
                          "path", usbPortPath,
                          "code", result,
                          "reason", describeHeliosError(result),
-                         "consecutive", consecutiveWriteErrors,
+                         "consecutive", consecutiveWriteFailures,
                          "point_count", frameBuffer.size(),
                          "pps", pps);
             }
+            if (consecutiveWriteFailures == detail::USB_RECONNECT_ERROR_THRESHOLD &&
+                usbConnection && !usbConnection->isClosed()) {
+                logError(result == -5007
+                             ? "[HeliosController] requesting USB reconnect after write timeouts"
+                             : "[HeliosController] requesting USB reconnect after write errors",
+                         "path", usbPortPath,
+                         "consecutive", consecutiveWriteFailures);
+                usbConnection->requestReconnect();
+            }
         } else {
             consecutiveWriteErrors = 0;
+            consecutiveWriteTimeouts = 0;
             recordLatencySample(sendDone - sendStart);
             const auto measuredWriteLeadMicros =
                 std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count();
