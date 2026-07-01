@@ -112,6 +112,7 @@ public:
     void clearPointCallbackPrefetch();
 
     bool sendFrame(Frame&& frame);
+    bool trySendFrame(Frame&& frame);
     void useFrameQueue();
     void clearFrameQueue();
     void clearContentSource();
@@ -120,6 +121,7 @@ public:
     void stopFrameMode();
     bool isFrameModeEnabled() const;
     bool isReadyForNewFrame() const;
+    bool tryIsReadyForNewFrame() const;
     std::size_t queuedFrameCount() const;
     std::optional<BufferState> getBufferState() const override;
     std::optional<PointCallbackBufferBreakdown> getPointCallbackBufferBreakdown() const;

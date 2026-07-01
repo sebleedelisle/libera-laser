@@ -122,6 +122,35 @@ bool LaserController::sendFrame(Frame&& frame) {
     return frameScheduler->enqueueFrame(std::move(frame));
 }
 
+bool LaserController::trySendFrame(Frame&& frame) {
+    if (frame.points.empty()) {
+        return false;
+    }
+
+    sanitizeLaserPoints(frame.points);
+
+    // Auto-stamp unscheduled frames to now + global target latency so callers
+    // can queue frames without manually setting Frame::time each time.
+    if (frame.time == std::chrono::steady_clock::time_point{}) {
+        frame.time = std::chrono::steady_clock::now() + targetLatency();
+    }
+
+    std::unique_lock<std::mutex> lock(contentSourceMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+
+    if (activeSource != ContentSource::FrameQueue) {
+        // Frame mode owns scheduling internally, so it must not reuse the user
+        // point callback slot in the streaming base class.
+        resetPointCallbackAdapterState();
+        LaserControllerStreaming::setRequestPointsCallback({});
+        activeSource = ContentSource::FrameQueue;
+    }
+
+    return frameScheduler->tryEnqueueFrameIfReady(std::move(frame), queuedPointBudget());
+}
+
 void LaserController::useFrameQueue() {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     if (activeSource == ContentSource::FrameQueue) {
@@ -172,6 +201,15 @@ bool LaserController::isFrameModeEnabled() const {
 bool LaserController::isReadyForNewFrame() const {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
     return frameScheduler->isReadyForNewFrame(queuedPointBudget());
+}
+
+bool LaserController::tryIsReadyForNewFrame() const {
+    std::unique_lock<std::mutex> lock(contentSourceMutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return false;
+    }
+
+    return frameScheduler->tryIsReadyForNewFrame(queuedPointBudget());
 }
 
 std::size_t LaserController::queuedFrameCount() const {

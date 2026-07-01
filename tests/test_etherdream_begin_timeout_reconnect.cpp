@@ -217,6 +217,7 @@ private:
 
         bool preparedSeen = false;
         bool dataSeen = false;
+        bool firstCommandSeen = false;
         std::uint16_t bufferedPoints = 0;
         int beginCommandsOnThisConnection = 0;
 
@@ -227,6 +228,21 @@ private:
             }
 
             const char command = static_cast<char>(opcode);
+            if (connectionIndex > 1 && !firstCommandSeen) {
+                firstCommandSeen = true;
+                if (command != 'c') {
+                    fail("fresh reconnect after network failure did not clear first");
+                    return;
+                }
+            }
+
+            if (command == 'c') {
+                preparedSeen = false;
+                dataSeen = false;
+                bufferedPoints = 0;
+                sendAck(client, 'c', libera::etherdream::PlaybackState::Idle, 0, 0);
+                continue;
+            }
 
             if (command == 'p') {
                 preparedSeen = true;

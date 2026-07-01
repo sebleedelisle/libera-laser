@@ -33,9 +33,11 @@ public:
     ~FrameScheduler();
 
     bool enqueueFrame(Frame&& frame);
+    bool tryEnqueueFrameIfReady(Frame&& frame, std::size_t queuedPointBudget);
     void reset();
 
     bool isReadyForNewFrame(std::size_t queuedPointBudget) const;
+    bool tryIsReadyForNewFrame(std::size_t queuedPointBudget) const;
     std::size_t queuedFrameCount() const;
     std::size_t nominalFramePointCount() const;
 

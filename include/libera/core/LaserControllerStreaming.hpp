@@ -234,6 +234,11 @@ protected:
     /// Reset the startup blanking window to 1 ms worth of points.
     void resetStartupBlank();
 
+    /// Consume the current startup blanking window against an already generated
+    /// point batch. Useful when a transport detects a playback discontinuity
+    /// after requestPoints() has already run.
+    void applyStartupBlankToOutputPoints(std::vector<LaserPoint>& points);
+
     /// Reset the shutdown blanking window (blank-in-place before returning to centre).
     void resetShutdownBlank();
 
@@ -359,6 +364,7 @@ private:
 
     static constexpr std::size_t latencySampleWindow = 512;
     static constexpr std::int64_t defaultRecentEventHoldMillis = 4000;
+    static constexpr std::int64_t repeatedEventLogIntervalMillis = 1000;
     mutable std::mutex latencySamplesMutex;
     std::deque<double> latencySamplesMs;
     mutable std::uint64_t latencyMutationCount{0};
@@ -380,6 +386,7 @@ private:
     std::atomic<std::int64_t> recentEventHoldMillis{defaultRecentEventHoldMillis};
     mutable std::mutex errorCountsMutex;
     std::unordered_map<std::string, std::uint64_t> errorCounts;
+    std::unordered_map<std::string, SteadyRep> lastLoggedEventTicks;
     std::string lastWarningCode;
     std::string lastErrorCode;
 };

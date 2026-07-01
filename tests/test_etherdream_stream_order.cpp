@@ -286,6 +286,7 @@ private:
         bool playbackIdleNakInjected = false;
         bool bufferFullNakInjected = false;
         bool stopConditionInjected = false;
+        bool clearRequiredAfterDataNak = false;
         std::size_t localBeginCount = 0;
         std::uint16_t bufferedPoints = 0;
 
@@ -297,6 +298,11 @@ private:
 
             const char command = static_cast<char>(opcode);
             recordCommand(command);
+
+            if (clearRequiredAfterDataNak && command != 'c') {
+                fail("data NAK recovery did not clear before preparing or beginning");
+                return;
+            }
 
             if (startupResetRequired && !stopSeen && command != 's') {
                 fail("non-idle startup was not stopped before streaming commands");
@@ -333,6 +339,10 @@ private:
                         libera::etherdream::PlaybackState::Idle,
                         0,
                         0);
+                preparedSeen = false;
+                firstDataSeen = false;
+                clearRequiredAfterDataNak = false;
+                bufferedPoints = 0;
                 continue;
             }
 
@@ -380,6 +390,7 @@ private:
                     playbackIdleNakInjected = true;
                     preparedSeen = false;
                     firstDataSeen = false;
+                    clearRequiredAfterDataNak = true;
                     bufferedPoints = 0;
                     sendAck(client,
                             'I',
@@ -395,6 +406,7 @@ private:
                     bufferFullNakInjected = true;
                     preparedSeen = true;
                     firstDataSeen = true;
+                    clearRequiredAfterDataNak = true;
                     bufferedPoints = 4096;
                     sendAck(client,
                             'I',
@@ -580,15 +592,24 @@ bool runStreamOrderScenario(libera::etherdream::PlaybackState initialPlaybackSta
 
     if (expectUnderflowRecorded) {
         bool underflowRecorded = false;
+        bool protocolErrorRecorded = false;
         for (const auto& error : controller.getErrors()) {
             if (error.code == "network.buffer_underflow" && error.count > 0) {
                 underflowRecorded = true;
-                break;
+            }
+            if (error.code == "network.protocol_error" && error.count > 0) {
+                protocolErrorRecorded = true;
             }
         }
         if (!underflowRecorded) {
             std::fprintf(stderr,
                          "EtherDream stream order violation (%s): underflow was not recorded\n",
+                         scenarioName);
+            return false;
+        }
+        if (protocolErrorRecorded) {
+            std::fprintf(stderr,
+                         "EtherDream stream order violation (%s): underflow was reported with protocol error\n",
                          scenarioName);
             return false;
         }
@@ -717,9 +738,9 @@ int main() {
                                 0,
                                 false,
                                 2,
-                                false,
                                 true,
-                                true)) {
+                                true,
+                                false)) {
         return 1;
     }
     if (!runStreamOrderScenario(libera::etherdream::PlaybackState::Idle,

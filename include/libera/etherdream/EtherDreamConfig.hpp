@@ -41,6 +41,9 @@ constexpr std::size_t ETHERDREAM_MIN_BUFFER_POINTS = 256;
 // right up to the Ether Dream's limit.
 constexpr std::size_t ETHERDREAM_MIN_FREE_POINTS = 512;
 constexpr std::size_t ETHERDREAM_SAFETY_HEADROOM_POINTS = ETHERDREAM_MIN_FREE_POINTS;
+// Real Ether Dreams can reject writes that would land exactly on the advertised
+// FIFO capacity. Keep one point spare for data-packet admission.
+constexpr std::size_t ETHERDREAM_WRITE_HEADROOM_POINTS = 1;
 
 // Ether Dream point rates are normally in the tens of thousands of points per
 // second. Anything above this is treated as corrupted state rather than a

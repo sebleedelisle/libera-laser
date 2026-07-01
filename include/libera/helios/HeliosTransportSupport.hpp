@@ -14,6 +14,8 @@ namespace libera::helios::detail {
 inline constexpr std::size_t MIN_FRAME_POINTS = 20;
 inline constexpr double TARGET_FRAME_DURATION_MS = 10.0;
 inline constexpr auto STATUS_ERROR_WARMUP_GRACE = std::chrono::milliseconds(250);
+inline constexpr auto USB_RECONNECT_INTERVAL = std::chrono::seconds(2);
+inline constexpr std::size_t USB_RECONNECT_ERROR_THRESHOLD = 10;
 inline constexpr unsigned int HELIOS_FLAGS = HELIOS_FLAGS_DEFAULT;
 
 inline bool shouldLogErrorBurst(std::size_t consecutiveCount) {
