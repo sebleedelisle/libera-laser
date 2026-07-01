@@ -286,6 +286,7 @@ private:
         bool playbackIdleNakInjected = false;
         bool bufferFullNakInjected = false;
         bool stopConditionInjected = false;
+        bool clearRequiredAfterDataNak = false;
         std::size_t localBeginCount = 0;
         std::uint16_t bufferedPoints = 0;
 
@@ -297,6 +298,11 @@ private:
 
             const char command = static_cast<char>(opcode);
             recordCommand(command);
+
+            if (clearRequiredAfterDataNak && command != 'c') {
+                fail("data NAK recovery did not clear before preparing or beginning");
+                return;
+            }
 
             if (startupResetRequired && !stopSeen && command != 's') {
                 fail("non-idle startup was not stopped before streaming commands");
@@ -333,6 +339,10 @@ private:
                         libera::etherdream::PlaybackState::Idle,
                         0,
                         0);
+                preparedSeen = false;
+                firstDataSeen = false;
+                clearRequiredAfterDataNak = false;
+                bufferedPoints = 0;
                 continue;
             }
 
@@ -380,6 +390,7 @@ private:
                     playbackIdleNakInjected = true;
                     preparedSeen = false;
                     firstDataSeen = false;
+                    clearRequiredAfterDataNak = true;
                     bufferedPoints = 0;
                     sendAck(client,
                             'I',
@@ -395,6 +406,7 @@ private:
                     bufferFullNakInjected = true;
                     preparedSeen = true;
                     firstDataSeen = true;
+                    clearRequiredAfterDataNak = true;
                     bufferedPoints = 4096;
                     sendAck(client,
                             'I',

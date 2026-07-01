@@ -412,6 +412,7 @@ EtherDreamController::waitForResponse(char command,
                     recordIntermittentError(error_types::network::bufferUnderflow);
                 }
                 resetStartupBlank();
+                scheduleClearRecovery("invalid_data_idle", response.status, sequence);
                 return unexpected(make_error_code(std::errc::operation_canceled));
             }
             if (dataRejectedBecauseBufferFull) {
@@ -422,6 +423,7 @@ EtherDreamController::waitForResponse(char command,
                          "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                          "tx", describeProtocolTx(sequence));
                 recordBufferOverrun();
+                scheduleClearRecovery("invalid_data_buffer_full", response.status, sequence);
                 return unexpected(make_error_code(std::errc::operation_canceled));
             }
             logError("[EtherDream] NAK invalid command", command,
@@ -431,6 +433,9 @@ EtherDreamController::waitForResponse(char command,
                      "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                      "tx", describeProtocolTx(sequence));
             recordIntermittentError(error_types::network::protocolError);
+            if (command == 'd') {
+                scheduleClearRecovery("invalid_data_command", response.status, sequence);
+            }
             return unexpected(make_error_code(std::errc::operation_canceled));
         }
 
@@ -443,6 +448,9 @@ EtherDreamController::waitForResponse(char command,
                      "hex", EtherDreamStatus::toHexLine(raw.data(), raw.size()),
                      "tx", describeProtocolTx(sequence));
             recordBufferOverrun();
+            if (command == 'd') {
+                scheduleClearRecovery("data_buffer_full", response.status, sequence);
+            }
             return unexpected(make_error_code(std::errc::operation_canceled));
         }
 
@@ -776,12 +784,41 @@ void EtherDreamController::handleNetworkFailure(std::string_view where,
                                      const std::error_code& ec) {
     logError("[EtherDreamController] failure", where, ec.message());
     connectionActive = false;
+    clearOnFreshConnection = true;
     lastError = ec;
     recordConnectionError(error_types::network::connectionLost);
     // Once a command/ACK exchange fails, the TCP stream may be out of sync.
     // Close immediately so the worker cannot send another command on stale
     // socket state before the outer loop starts a clean connection.
     tcpClient.close();
+}
+
+
+void EtherDreamController::scheduleClearRecovery(const char* recoveryReason,
+                                                 const EtherDreamStatus& status,
+                                                 std::uint64_t sequence) {
+    stopRequired = false;
+    clearRequired = true;
+    prepareRequired = false;
+    beginRequired = false;
+    resetPoints();
+
+    if (sequence != 0) {
+        logInfo("[EtherDream] recovery action",
+                "conn", connectionGeneration,
+                "seq", sequence,
+                "recovery_reason", recoveryReason,
+                "action", "clear_prepare_begin",
+                "sts", status.describe(),
+                "tx", describeProtocolTx(sequence));
+        return;
+    }
+
+    logInfo("[EtherDream] recovery action",
+            "conn", connectionGeneration,
+            "recovery_reason", recoveryReason,
+            "action", "clear_prepare_begin",
+            "sts", status.describe());
 }
 
 
@@ -848,6 +885,14 @@ void EtherDreamController::updatePlaybackRequirements(const EtherDreamStatus& st
 }
 
 void EtherDreamController::applyFreshConnectionStatus(const EtherDreamStatus& status) {
+    if (clearOnFreshConnection
+        && (status.lightEngineState == LightEngineState::Ready
+            || status.lightEngineState == LightEngineState::Estop)) {
+        clearOnFreshConnection = false;
+        scheduleClearRecovery("fresh_reconnect_after_network_failure", status);
+        return;
+    }
+
     if (status.lightEngineState == LightEngineState::Estop) {
         stopRequired = false;
         clearRequired = true;

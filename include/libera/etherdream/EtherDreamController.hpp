@@ -127,6 +127,9 @@ private:
     bool bufferIsBelowPlayingUnderrunThreshold(int bufferFullness) const;
     bool statusReportsPlayingBufferUnderrun(const EtherDreamStatus& status) const;
 
+    void scheduleClearRecovery(const char* recoveryReason,
+                               const EtherDreamStatus& status,
+                               std::uint64_t sequence = 0);
     void updatePlaybackRequirements(const EtherDreamStatus& status);
     void applyFreshConnectionStatus(const EtherDreamStatus& status);
     core::PointFillRequest getFillRequest();
@@ -240,6 +243,7 @@ private:
     bool prepareRequired = false;
     bool beginRequired = false;
     bool connectionActive = false;
+    bool clearOnFreshConnection = false;
 
     std::optional<std::error_code> lastError;
 
