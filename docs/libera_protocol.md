@@ -33,6 +33,9 @@ to create a new standard for laser control over a network.
 - Vendor-specific hardware management beyond identity, status, streaming, and
   basic capability negotiation.
 - Compression. TCP message framing should be simple first.
+- Freezing unreleased wire layouts. Until a release is tagged, fields, enum
+  values, payload layouts, and negotiation rules can change freely. Senders and
+  receivers should use the same `libera-protocol` revision.
 
 ## Terminology
 
@@ -94,8 +97,8 @@ The TCP stream should be length-prefixed binary records. Proposed convention:
 - payload schemas are record-type specific
 
 Both sides must reject malformed records and payloads that exceed negotiated
-limits. Unsupported protocol versions should be rejected during handshake rather
-than rediscovered on every record.
+limits. Unsupported protocol versions should be rejected during discovery or
+handshake rather than rediscovered on every record.
 
 The session should include:
 
@@ -119,6 +122,253 @@ not need to overload existing meanings:
 - `0x0400..0x04ff`: standard hardware-control records
 - `0x7000..0x7fff`: experimental Libera records
 - `0x8000..0xffff`: manufacturer/private extension records
+
+## MVP wire format
+
+The current MVP wire format is intentionally small and fixed-width where
+possible. All multi-byte integer fields are unsigned big-endian unless the
+field says otherwise. Variable strings are UTF-8 byte strings with explicit
+16-bit byte lengths; they are not null-terminated.
+
+Constants:
+
+```text
+PROTOCOL_MAGIC          uint32  0x4c494250  ("LIBP")
+PROTOCOL_VERSION_MAJOR  uint8   0
+PROTOCOL_VERSION_MINOR  uint8   1
+DEFAULT_DISCOVERY_PORT  uint16  45425
+DEFAULT_SESSION_PORT    uint16  45426
+```
+
+Every TCP record uses this 12-byte header:
+
+```text
+uint16  record_type
+uint16  record_flags
+uint32  payload_length
+uint32  sequence_number
+uint8   payload[payload_length]
+```
+
+Defined MVP record types:
+
+```text
+0x0001  HELLO
+0x0002  ACCEPT
+0x0003  REJECT
+0x0004  READY
+0x0005  ACK
+0x0006  ERROR
+0x0007  PING
+0x0008  PONG
+0x0009  CLOSE
+0x0101  POINTS
+0x0102  FRAME_MARKER
+0x0201  STREAM_CONFIG
+0x0202  SET_SCANNER_SYNC
+0x0301  STATUS
+0x8000  MANUFACTURER_PRIVATE
+```
+
+Defined MVP stream modes:
+
+```text
+0  raw point stream
+1  raw point stream with optional markers
+2  marked point stream
+3  frame by count
+4  frame by next marker
+```
+
+Defined MVP session feature flags:
+
+```text
+bit 0  target begin time
+bit 1  repeat last frame
+bit 2  scanner sync
+bit 3  status
+bit 4  manufacturer private records
+```
+
+### UDP discovery advertisement
+
+Discovery advertisements are UDP datagrams. The current payload is:
+
+```text
+uint32  protocol_magic
+uint8   version_major
+uint8   version_minor
+uint16  tcp_port
+uint16  supported_stream_mode_mask
+uint8   max_user_channel_count
+uint8   availability
+uint32  min_point_rate
+uint32  max_point_rate
+uint32  max_frame_point_count
+uint32  feature_flags
+uint16  endpoint_id_length
+uint16  display_name_length
+uint16  endpoint_type_length
+uint16  address_length
+uint8   endpoint_id[endpoint_id_length]
+uint8   display_name[display_name_length]
+uint8   endpoint_type[endpoint_type_length]
+uint8   address[address_length]
+```
+
+`supported_stream_mode_mask` uses `1 << stream_mode`.
+
+`availability` values:
+
+```text
+0  available
+1  busy
+2  disabled
+3  fault
+```
+
+Availability is advisory because UDP can be stale. A sender may use it to grey
+out endpoints in the UI, but TCP handshake rejection is authoritative.
+
+If `address` is empty, the sender should use the source address of the UDP
+datagram. `endpoint_id + address + tcp_port` identifies one advertised endpoint
+for discovery de-duplication.
+
+### HELLO
+
+The sender opens TCP and sends `HELLO` first:
+
+```text
+uint32  protocol_magic
+uint8   version_major
+uint8   version_minor
+uint16  requested_stream_mode
+uint8   requested_user_channel_count
+uint8   reserved
+uint32  default_point_rate
+uint16  sender_name_length
+uint8   sender_name[sender_name_length]
+```
+
+### ACCEPT
+
+The receiver accepts a session with:
+
+```text
+uint16  accepted_stream_mode
+uint8   accepted_user_channel_count
+uint8   reserved
+uint32  default_point_rate
+uint32  max_point_rate
+uint32  max_frame_point_count
+uint32  max_record_payload_size
+uint64  session_id
+uint32  feature_flags
+```
+
+After `ACCEPT`, the sender must send `READY` before data records.
+
+### REJECT
+
+The receiver rejects a session with:
+
+```text
+uint16  reject_code
+uint16  message_length
+uint8   message[message_length]
+```
+
+Defined MVP reject codes:
+
+```text
+1  unsupported version
+2  busy
+3  malformed HELLO
+4  unsupported mode
+5  internal error
+```
+
+`REJECT_BUSY` means a `REJECT` record with reject code `2`. It is not a
+separate record type.
+
+### STREAM_CONFIG
+
+```text
+uint32  default_point_rate
+uint16  stream_mode
+uint8   user_channel_count
+uint8   reserved
+uint16  flags
+```
+
+`STREAM_CONFIG` may update the active stream mode, point rate, and user-channel
+count after handshake, within the receiver's accepted limits.
+
+### FRAME_MARKER
+
+```text
+uint64  frame_id
+uint64  target_begin_time_ns
+uint32  point_rate
+uint32  frame_point_count
+uint32  flags
+```
+
+`target_begin_time_ns` is receiver session time. `0` means schedule as soon as
+possible in order. `point_rate == 0` means use the active stream default.
+
+In `frame by count` mode, `frame_point_count` must be non-zero and the receiver
+commits the frame once that many points have arrived. In `frame by next marker`
+mode, `frame_point_count` may be zero and the next marker closes the previous
+frame.
+
+### POINTS
+
+The `POINTS` payload contains packed point samples. There is no point-count
+field; the count is `payload_length / sample_size`.
+
+```text
+int16   x
+int16   y
+uint16  r
+uint16  g
+uint16  b
+uint16  i
+uint16  u[accepted_user_channel_count]
+```
+
+`sample_size = 12 + 2 * accepted_user_channel_count`.
+
+### SET_SCANNER_SYNC
+
+```text
+int64   offset_ns
+uint8   enabled
+uint8   reserved[3]
+```
+
+`offset_ns` is signed nanoseconds. Positive values delay colour samples relative
+to geometry. The receiver applies this after decoding points and before sending
+to hardware.
+
+### STATUS
+
+```text
+uint16  code
+uint16  reserved
+uint32  queued_points
+uint32  queued_frames
+uint32  feature_flags
+uint16  message_length
+uint8   message[message_length]
+```
+
+The MVP status record is deliberately small. Rich telemetry remains a future
+extension.
+
+### PING, PONG, CLOSE
+
+`PING` and `PONG` carry one `uint64` timestamp payload. `CLOSE` has no payload.
 
 ## Handshake requirements
 
@@ -164,8 +414,39 @@ After `ACCEPT`, the sender sends `READY`. Data messages should not be accepted
 before `READY`.
 
 If an endpoint already has an exclusive active session, the ingest endpoint
-should respond to `HELLO` with `REJECT_BUSY` and close the connection. Rejected
-connections must not reset or otherwise disturb the active session.
+should respond to `HELLO` with `REJECT` code `busy` and close the connection.
+Rejected connections must not reset or otherwise disturb the active session.
+
+## Endpoint ownership and multiple streams
+
+The MVP does not multiplex multiple laser streams inside one TCP connection.
+Each advertised ingest endpoint represents one controllable output target and
+has its own TCP session endpoint.
+
+For multiple DACs behind one computer, the bridge should advertise multiple
+endpoints. They may share the same IP address, but they must be distinguishable
+by endpoint ID and usually by TCP port:
+
+```text
+LL - Helios A  192.168.1.50:45426  available
+LL - Helios B  192.168.1.50:45427  busy
+LL - Helios C  192.168.1.50:45428  available
+```
+
+The sender treats these as separate controllers. It opens one TCP session per
+selected endpoint.
+
+For one DAC endpoint, the MVP ownership rule is exclusive:
+
+```text
+first accepted sender      -> ACCEPT, endpoint becomes busy
+second simultaneous sender -> REJECT busy
+accepted sender disconnects -> endpoint becomes available
+```
+
+There is no per-record stream ID. Multi-client mixing, handoff, priority, and
+shared ownership are deferred protocol features. Until those exist, a receiver
+must not accept two active data sessions for the same endpoint.
 
 ## Point format
 
@@ -302,13 +583,15 @@ Requirements:
 
 ## Scanner-sync control
 
-Scanner sync should be a control value applied by the ingest endpoint after
-decoding points and before sending to hardware.
+Scanner sync is a control value applied by the ingest endpoint after decoding
+points and before sending to hardware.
 
-Proposed message:
+`SET_SCANNER_SYNC` payload:
 
 ```text
-SET_SCANNER_SYNC(offset_ns, flags)
+int64  offset_ns
+uint8  enabled
+uint8  reserved[3]
 ```
 
 Requirements:
@@ -316,7 +599,8 @@ Requirements:
 - The offset is signed and expressed in nanoseconds, not points.
 - The receiver converts the time offset to a point delay using the active frame
   or stream point rate.
-- Positive and negative semantics must be documented before implementation.
+- Positive values delay colour samples relative to geometry by `offset_ns`.
+- Receivers that cannot apply negative offsets should clamp them to zero.
 - The receiver reports the accepted/clamped value in status.
 - Frames should not contain pre-shifted colour samples when scanner sync is
   active. The point stream should stay geometrically and chromatically aligned
