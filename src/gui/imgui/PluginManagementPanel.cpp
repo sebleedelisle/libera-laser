@@ -2,11 +2,16 @@
 
 #include "imgui.h"
 #include "libera/plugin/PluginManagement.hpp"
+#include "libera/plugin/PluginSettings.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <limits>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -113,6 +118,150 @@ void drawLabelValue(const char* label, const std::string& value) {
     ImGui::TextWrapped("%s", value.c_str());
 }
 
+void reportSettingResult(const plugin::SettingChangeResult& result,
+                         PluginPanelState& state) {
+    state.lastMessageIsError = !result.success;
+    state.lastMessage = result.message;
+}
+
+std::string floatString(double value) {
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output.precision(std::numeric_limits<double>::max_digits10);
+    output << value;
+    return output.str();
+}
+
+void drawSetting(const plugin::Setting& setting,
+                 const std::string& pluginType,
+                 const std::string& controllerId,
+                 PluginPanelState& state) {
+    const auto& definition = setting.definition;
+    ImGui::PushID(definition.key.c_str());
+
+    auto apply = [&](const std::string& value) {
+        const auto result = controllerId.empty()
+            ? plugin::setPluginSetting(pluginType, definition.key, value)
+            : plugin::setControllerSetting(pluginType,
+                                           controllerId,
+                                           definition.key,
+                                           value);
+        reportSettingResult(result, state);
+    };
+
+    switch (definition.type) {
+        case plugin::SettingType::Bool: {
+            bool value = setting.value == "true";
+            if (ImGui::Checkbox(definition.label.c_str(), &value)) {
+                apply(value ? "true" : "false");
+            }
+            break;
+        }
+
+        case plugin::SettingType::Int: {
+            std::int64_t value = 0;
+            std::int64_t step = 1;
+            try {
+                value = std::stoll(setting.value);
+                if (definition.stepValue) {
+                    step = std::stoll(*definition.stepValue);
+                }
+            } catch (...) {
+                value = 0;
+                step = 1;
+            }
+            if (ImGui::InputScalar(definition.label.c_str(),
+                                   ImGuiDataType_S64,
+                                   &value,
+                                   &step)) {
+                apply(std::to_string(value));
+            }
+            break;
+        }
+
+        case plugin::SettingType::Float: {
+            double value = 0.0;
+            double step = 0.0;
+            try {
+                value = std::stod(setting.value);
+                if (definition.stepValue) {
+                    step = std::stod(*definition.stepValue);
+                }
+            } catch (...) {
+                value = 0.0;
+                step = 0.0;
+            }
+            const double* stepPointer = step > 0.0 ? &step : nullptr;
+            if (ImGui::InputDouble(definition.label.c_str(),
+                                   &value,
+                                   stepPointer ? *stepPointer : 0.0)) {
+                apply(floatString(value));
+            }
+            break;
+        }
+
+        case plugin::SettingType::String: {
+            const std::string editKey = pluginType + "\n" + controllerId +
+                                        "\n" + definition.key;
+            auto [it, inserted] = state.settingEditValues.emplace(
+                editKey, setting.value);
+            (void)inserted;
+
+            std::vector<char> buffer(2048, '\0');
+            std::snprintf(buffer.data(), buffer.size(), "%s", it->second.c_str());
+            const bool enterPressed = ImGui::InputText(
+                definition.label.c_str(),
+                buffer.data(),
+                buffer.size(),
+                ImGuiInputTextFlags_EnterReturnsTrue);
+            it->second = buffer.data();
+            if (enterPressed || ImGui::IsItemDeactivatedAfterEdit()) {
+                apply(it->second);
+            }
+            break;
+        }
+
+        case plugin::SettingType::Enum: {
+            const auto selected = std::find_if(
+                definition.choices.begin(),
+                definition.choices.end(),
+                [&](const plugin::SettingChoice& choice) {
+                    return choice.value == setting.value;
+                });
+            const char* preview = selected == definition.choices.end()
+                ? setting.value.c_str()
+                : selected->label.c_str();
+            if (ImGui::BeginCombo(definition.label.c_str(), preview)) {
+                for (const auto& choice : definition.choices) {
+                    const bool isSelected = choice.value == setting.value;
+                    if (ImGui::Selectable(choice.label.c_str(), isSelected)) {
+                        apply(choice.value);
+                    }
+                    if (isSelected) {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            break;
+        }
+    }
+
+    if (!definition.description.empty()) {
+        ImGui::TextDisabled("%s", definition.description.c_str());
+    }
+    ImGui::PopID();
+}
+
+void drawSettings(const std::vector<plugin::Setting>& settings,
+                  const std::string& pluginType,
+                  const std::string& controllerId,
+                  PluginPanelState& state) {
+    for (const auto& setting : settings) {
+        drawSetting(setting, pluginType, controllerId, state);
+    }
+}
+
 void drawPlugin(plugin::ManagedPluginInfo pluginInfo,
                 PluginPanelState& state,
                 const PluginPanelCallbacks& callbacks,
@@ -193,6 +342,16 @@ void drawPlugin(plugin::ManagedPluginInfo pluginInfo,
             ImGui::PushStyleColor(ImGuiCol_Text, pendingColor);
             ImGui::TextWrapped("Restart required for this change to take effect.");
             ImGui::PopStyleColor();
+        }
+
+        if (pluginInfo.state == plugin::ManagedPluginState::Loaded &&
+            !pluginInfo.typeName.empty()) {
+            const auto settings = plugin::pluginSettings(pluginInfo.typeName);
+            if (!settings.empty()) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Settings");
+                drawSettings(settings, pluginInfo.typeName, {}, state);
+            }
         }
 
         if (options.showRuntimeErrors && !pluginInfo.runtimeErrors.empty()) {
@@ -317,6 +476,19 @@ void DrawPluginManagementPanel(PluginPanelState& state,
                           callbacks,
                           options);
     }
+}
+
+void DrawPluginControllerSettings(const std::string& pluginType,
+                                  const std::string& controllerId,
+                                  PluginPanelState& state) {
+    ImGui::PushID(pluginType.c_str());
+    ImGui::PushID(controllerId.c_str());
+    drawSettings(plugin::controllerSettings(pluginType, controllerId),
+                 pluginType,
+                 controllerId,
+                 state);
+    ImGui::PopID();
+    ImGui::PopID();
 }
 
 } // namespace libera::gui::imgui

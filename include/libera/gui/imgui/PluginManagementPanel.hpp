@@ -3,6 +3,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace libera::gui::imgui {
 
@@ -10,6 +11,9 @@ struct PluginPanelState {
     std::string lastMessage;
     bool lastMessageIsError = false;
     bool restartHintVisible = false;
+    // Text inputs need a stable edit buffer across frames. Numeric and choice
+    // widgets can render directly from their persisted setting value.
+    std::unordered_map<std::string, std::string> settingEditValues;
 };
 
 struct PluginPanelCallbacks {
@@ -35,5 +39,14 @@ struct PluginPanelOptions {
 void DrawPluginManagementPanel(PluginPanelState& state,
                                const PluginPanelCallbacks& callbacks,
                                const PluginPanelOptions& options = {});
+
+/*
+ * Draw settings for one stable plugin controller identity. Applications can
+ * place this beside their existing controller controls; offline edits are
+ * saved and applied when the controller next connects.
+ */
+void DrawPluginControllerSettings(const std::string& pluginType,
+                                  const std::string& controllerId,
+                                  PluginPanelState& state);
 
 } // namespace libera::gui::imgui

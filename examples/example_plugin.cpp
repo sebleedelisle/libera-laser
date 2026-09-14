@@ -42,6 +42,9 @@ namespace {
 
 struct ExampleBackend {
     const libera_host_services_t* host = nullptr;
+    // Plugin-wide settings live on the backend so every connected controller
+    // observes the same value without copying configuration into each handle.
+    std::atomic<bool> lowLatencyMode{false};
 };
 
 struct ExampleController {
@@ -49,6 +52,7 @@ struct ExampleController {
     libera_host_ctx_t hostCtx = nullptr;
     std::atomic<uint32_t> pointRate{30000};
     std::atomic<bool> armed{false};
+    std::atomic<bool> invertX{false};
 };
 
 libera_status_t acceptSubmission(ExampleController* controller,
@@ -236,8 +240,100 @@ int readProperty(void* rawController,
     return length;
 }
 
+const libera_setting_choice_t transportModeChoices[] = {
+    {"balanced", "Balanced"},
+    {"low_latency", "Low latency"},
+};
+
+const libera_setting_def_t transportModeSetting = {
+    /* struct_size   */ sizeof(libera_setting_def_t),
+    /* key           */ "transport_mode",
+    /* label         */ "Transport mode",
+    /* description   */ "Chooses one mode shared by every simulated controller.",
+    /* type          */ LIBERA_SETTING_ENUM,
+    /* default_value */ "balanced",
+    /* minimum_value */ nullptr,
+    /* maximum_value */ nullptr,
+    /* step_value    */ nullptr,
+    /* choices       */ transportModeChoices,
+    /* choice_count  */ 2,
+};
+
+const libera_setting_def_t invertXSetting = {
+    /* struct_size   */ sizeof(libera_setting_def_t),
+    /* key           */ "invert_x",
+    /* label         */ "Invert X",
+    /* description   */ "Inverts the horizontal coordinate for this controller.",
+    /* type          */ LIBERA_SETTING_BOOL,
+    /* default_value */ "false",
+    /* minimum_value */ nullptr,
+    /* maximum_value */ nullptr,
+    /* step_value    */ nullptr,
+    /* choices       */ nullptr,
+    /* choice_count  */ 0,
+};
+
+uint32_t getSettingCount(libera_setting_scope_t scope) {
+    switch (scope) {
+        case LIBERA_SETTING_SCOPE_PLUGIN:
+        case LIBERA_SETTING_SCOPE_CONTROLLER:
+            return 1;
+    }
+    return 0;
+}
+
+const libera_setting_def_t* getSettingDefinition(
+    libera_setting_scope_t scope,
+    uint32_t settingIndex) {
+    if (settingIndex != 0) {
+        return nullptr;
+    }
+    return scope == LIBERA_SETTING_SCOPE_PLUGIN
+        ? &transportModeSetting
+        : &invertXSetting;
+}
+
+libera_status_t setPluginSetting(void* rawBackend,
+                                 const char* key,
+                                 const char* value) {
+    auto* backend = static_cast<ExampleBackend*>(rawBackend);
+    if (!backend || !key || !value ||
+        std::strcmp(key, "transport_mode") != 0) {
+        return LIBERA_ERR_INVALID_ARGUMENT;
+    }
+
+    if (std::strcmp(value, "balanced") == 0) {
+        backend->lowLatencyMode.store(false);
+        return LIBERA_OK;
+    }
+    if (std::strcmp(value, "low_latency") == 0) {
+        backend->lowLatencyMode.store(true);
+        return LIBERA_OK;
+    }
+    return LIBERA_ERR_INVALID_ARGUMENT;
+}
+
+libera_status_t setControllerSetting(void* rawController,
+                                     const char* key,
+                                     const char* value) {
+    auto* controller = static_cast<ExampleController*>(rawController);
+    if (!controller || !key || !value || std::strcmp(key, "invert_x") != 0) {
+        return LIBERA_ERR_INVALID_ARGUMENT;
+    }
+    if (std::strcmp(value, "true") == 0) {
+        controller->invertX.store(true);
+        return LIBERA_OK;
+    }
+    if (std::strcmp(value, "false") == 0) {
+        controller->invertX.store(false);
+        return LIBERA_OK;
+    }
+    return LIBERA_ERR_INVALID_ARGUMENT;
+}
+
 const libera_plugin_api_t examplePluginApi = {
     /* abi_version        */ LIBERA_PLUGIN_API_VERSION,
+    /* struct_size        */ sizeof(libera_plugin_api_t),
     /* type_name          */ "AcmeUsbDac",
     /* display_name       */ "Acme USB DAC",
     /* create_backend     */ &createBackend,
@@ -255,6 +351,10 @@ const libera_plugin_api_t examplePluginApi = {
     /* read_property      */ &readProperty,
     /* get_frame_requirements */ &getFrameRequirements,
     /* send_frame             */ &sendFrame,
+    /* get_setting_count      */ &getSettingCount,
+    /* get_setting_definition */ &getSettingDefinition,
+    /* set_plugin_setting     */ &setPluginSetting,
+    /* set_controller_setting */ &setControllerSetting,
 };
 
 } // namespace

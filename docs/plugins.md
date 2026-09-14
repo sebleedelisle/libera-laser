@@ -85,6 +85,10 @@ The main functions are:
 - `libera::plugin::installPlugin(path)`
 - `libera::plugin::removePlugin(path)`
 - `libera::plugin::platformPluginExtension()`
+- `libera::plugin::pluginSettings(type)`
+- `libera::plugin::controllerSettings(type, controllerId)`
+- `libera::plugin::setPluginSetting(type, key, value)`
+- `libera::plugin::setControllerSetting(type, controllerId, key, value)`
 
 `listManagedPlugins()` merges the runtime `PluginRegistry` with shared-library
 files found in the user plugin folder. That gives apps enough state to render:
@@ -94,6 +98,12 @@ files found in the user plugin folder. That gives apps enough state to render:
 - plugin files copied after startup, reported as `PendingRestart`
 - loaded plugin files removed from disk, reported as `RemovedPendingRestart`
 - runtime errors reported by a plugin while controllers are active
+
+Plugin setting values are stored in `libera-plugin-settings.conf` beside the
+shared plugin libraries. Libera owns this small per-user store so the same
+plugin configuration is restored in each Libera-enabled application. Values
+are keyed by the stable plugin `type_name`; controller values also include the
+stable discovery `id`.
 
 `installPlugin()` validates the plugin using the same callback and ABI rules as
 the runtime loader before copying it into `userPluginDirectory()`. New installs
@@ -121,7 +131,13 @@ libera::gui::imgui::DrawPluginManagementPanel(state, callbacks, options);
 ```
 
 The caller still owns the window, native file picker, restart behavior, and
-styling. The shared panel owns the install/remove/list/status UI.
+styling. The shared panel owns the install/remove/list/status UI and renders
+plugin-wide settings. Controller UIs can use:
+
+```cpp
+libera::gui::imgui::DrawPluginControllerSettings(
+    pluginType, controllerId, panelState);
+```
 
 ## Required callbacks
 
@@ -136,8 +152,10 @@ These fields in `libera_plugin_api_t` are required:
 
 Everything else is optional.
 
-Set `.abi_version = LIBERA_PLUGIN_API_VERSION`. The current unreleased plugin
-API version is `1`.
+Set `.abi_version = LIBERA_PLUGIN_API_VERSION` and
+`.struct_size = sizeof(libera_plugin_api_t)`. The current unreleased plugin API
+version remains `1`; `struct_size` permits future append-only additions without
+forcing a version change.
 
 ## Optional callbacks
 
@@ -152,6 +170,10 @@ These can be omitted by setting the field to `NULL`:
 - `read_property`
 - `get_frame_requirements`
 - `send_frame`
+- `get_setting_count`
+- `get_setting_definition`
+- `set_plugin_setting`
+- `set_controller_setting`
 
 If `get_buffer_state` is provided, the host can pace point submissions against
 the device's reported fill level.
@@ -167,6 +189,9 @@ properties.
 If you use the frame-ingester path, `get_frame_requirements` and `send_frame`
 must be provided together.
 
+The two setting-definition callbacks must be provided together. A setter is
+required only for a scope whose setting count is non-zero.
+
 ## Host services
 
 If you implement `create_backend()`, Libera passes a
@@ -176,6 +201,9 @@ separately from the main plugin ABI and currently exposes:
 - `log(level, message)`
 - `record_latency(host_ctx, nanoseconds)`
 - `report_error(host_ctx, code, label)`
+
+The host-services table also carries `struct_size`. Plugins must check both its
+version and size before using fields added by a later host.
 
 `host_ctx` is the opaque token Libera passes into `connect_controller()`. Keep
 that token on the controller side if you want to report transport latency or
@@ -226,6 +254,101 @@ The host handles:
 - `get_property(key)`
 
 That keeps property boilerplate small.
+
+## Settings
+
+Settings are persistent writable configuration. They are separate from
+read-only properties and from operational state such as point rate or arming.
+Libera supports two scopes:
+
+- `LIBERA_SETTING_SCOPE_PLUGIN` for one value shared by the backend and all of
+  its controllers
+- `LIBERA_SETTING_SCOPE_CONTROLLER` for a value stored against one stable
+  discovered controller `id`
+
+A plugin exposes definitions through:
+
+```c
+uint32_t get_setting_count(libera_setting_scope_t scope);
+
+const libera_setting_def_t* get_setting_definition(
+    libera_setting_scope_t scope,
+    uint32_t setting_index);
+```
+
+Each returned definition must remain valid for the lifetime of the loaded
+library and set `.struct_size = sizeof(libera_setting_def_t)`. Definitions are
+returned one at a time so their structures can grow without changing array
+stride. Keys must be unique within their scope. This first version deliberately
+uses one static schema for every controller exposed by a plugin; model-specific
+or dynamically generated schemas can be added later if a real plugin needs
+them.
+
+Supported setting types are:
+
+- `LIBERA_SETTING_BOOL`
+- `LIBERA_SETTING_INT`
+- `LIBERA_SETTING_FLOAT`
+- `LIBERA_SETTING_STRING`
+- `LIBERA_SETTING_ENUM`
+
+Values cross the ABI as canonical UTF-8 strings. Booleans use `"true"` and
+`"false"`; integers use base-10 notation; floating-point values use a decimal
+point; enums use their stable choice value rather than their display label.
+Numeric definitions can declare optional minimum, maximum, and UI step values.
+
+Setters are separated by scope:
+
+```c
+libera_status_t set_plugin_setting(void* backend,
+                                   const char* key,
+                                   const char* value);
+
+libera_status_t set_controller_setting(void* controller,
+                                       const char* key,
+                                       const char* value);
+```
+
+The host validates values before calling a setter and persists a change only
+after the setter returns `LIBERA_OK`. Controller-setting callbacks are
+serialized with host calls on that controller's opaque handle, so changes land
+between complete submissions. A plugin setting can affect several controllers,
+so the plugin must synchronize that callback with any shared transport work it
+owns. After every successful change, Libera calls `rescan()` when the plugin
+provides it. Applications will observe the refreshed discovery state on their
+next normal discovery pass.
+
+Startup order is deliberately deterministic:
+
+```text
+create_backend()
+├── apply saved/default plugin settings
+├── rescan() and discover()
+└── connect_controller()
+    ├── apply saved/default controller settings
+    └── start host streaming thread
+```
+
+Controller settings are persisted using `type_name + controller id + setting
+key`. Plugins should therefore use serial numbers, stable unit identifiers, or
+another persistent identity for discovery IDs. An offline controller setting
+can be saved before connection and is applied immediately after its next
+`connect_controller()` call. Settings are also restored after an automatic
+transport reconnect creates a fresh controller handle.
+
+Host applications can inspect and update settings without handling the C ABI:
+
+```cpp
+auto sharedSettings = libera::plugin::pluginSettings("ExamplePlugin");
+auto deviceSettings = libera::plugin::controllerSettings(
+    "ExamplePlugin", "device-001");
+
+auto result = libera::plugin::setPluginSetting(
+    "ExamplePlugin", "transport_mode", "low_latency");
+
+auto controllerResult = libera::plugin::setControllerSetting(
+    "ExamplePlugin", "device-001", "invert_x", "true");
+```
 
 ## Choosing a transport shape
 
@@ -362,6 +485,7 @@ static libera_status_t send_points(void* rawController,
 
 static const libera_plugin_api_t pluginApi = {
     .abi_version = LIBERA_PLUGIN_API_VERSION,
+    .struct_size = sizeof(libera_plugin_api_t),
     .type_name = "AcmeUsbDac",
     .display_name = "Acme USB DAC",
     .discover = discover,
@@ -409,6 +533,7 @@ Then wire those fields into `libera_plugin_api_t`:
 ```c
 static const libera_plugin_api_t pluginApi = {
     .abi_version = LIBERA_PLUGIN_API_VERSION,
+    .struct_size = sizeof(libera_plugin_api_t),
     .type_name = "AcmeFrameDac",
     .display_name = "Acme Frame DAC",
     .discover = discover,
@@ -431,12 +556,14 @@ For a point-ingester plugin that supports two devices, the call flow is:
 load .dylib
 ├── libera_plugin_get_api()
 ├── create_backend(host)                 optional
+├── set_plugin_setting(...)              zero or more saved/default values
 ├── rescan(backend)                      optional
 ├── discover(backend, emit, ctx)         emits "dev-A", "dev-B"
 │
 ├── connect_controller(backend, dev-A, host_ctx_A) -> controller_A
 │   ├── set_point_rate(controller_A, 30000)         optional
 │   ├── set_armed(controller_A, true)               optional
+│   ├── set_controller_setting(...)                 zero or more values
 │   ├── get_buffer_state(controller_A, &bs)         optional
 │   ├── send_points(controller_A, pts, n)           repeated
 │   └── destroy_controller(controller_A)
@@ -453,11 +580,13 @@ For a frame-ingester plugin, the per-controller loop becomes:
 load .dylib
 ├── libera_plugin_get_api()
 ├── create_backend(host)                           optional
+├── set_plugin_setting(...)                        zero or more values
 ├── discover(backend, emit, ctx)
 │
 ├── connect_controller(backend, dev-A, host_ctx_A) -> controller_A
 │   ├── set_point_rate(controller_A, 30000)           optional
 │   ├── set_armed(controller_A, true)                 optional
+│   ├── set_controller_setting(...)                   zero or more values
 │   ├── get_frame_requirements(controller_A, &req)    repeated
 │   ├── send_frame(controller_A, frame_pts, n)        repeated
 │   └── destroy_controller(controller_A)

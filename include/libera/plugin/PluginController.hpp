@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
@@ -24,7 +26,8 @@ struct PluginProperty {
  * whole frames from Libera's shared content-source pipeline, converts them to
  * the plugin wire format, and forwards them through the plugin callbacks.
  */
-class PluginController : public core::LaserController {
+class PluginController : public core::LaserController,
+                         public std::enable_shared_from_this<PluginController> {
 public:
     PluginController(const libera_plugin_api_t* api,
                      void* backendHandle,
@@ -33,8 +36,16 @@ public:
     ~PluginController() override;
 
     bool open();
+    void close();
 
     void setPointRate(std::uint32_t pointRateValue) override;
+
+    // Settings use the stable discovery identity for persistence and the
+    // opaque live handle only while applying a value to this connection.
+    const std::string& pluginType() const { return pluginTypeName; }
+    std::string controllerId() const { return controllerInfo.id; }
+    libera_status_t applySetting(const std::string& key,
+                                 const std::string& value);
 
     // Called by the host-services callbacks installed in PluginManager.
     void recordLatencyFromPlugin(std::uint64_t nanoseconds);
@@ -59,8 +70,14 @@ private:
     void* backendHandle = nullptr;
     libera_controller_info_t controllerInfo{};
     std::string pluginPath;
+    std::string pluginTypeName;
     void* pluginHandle = nullptr;
     std::atomic<bool> connected{false};
+
+    // Plugins own the opaque controller handle, so every callback using it is
+    // serialized with live setting changes. The mutex is recursive because a
+    // reconnect restores saved settings through the same public setting path.
+    mutable std::recursive_mutex pluginCallMutex;
 
     // Last armed state pushed to the plugin via api->set_armed(). Only touched
     // from the run() thread; we push on transition rather than on every tick.

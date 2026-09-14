@@ -21,6 +21,7 @@
 #define LIBERA_PLUGIN_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -115,6 +116,7 @@ typedef void* libera_host_ctx_t;
  */
 typedef struct {
     uint32_t abi_version;
+    uint32_t struct_size;
 
     void (*log)(libera_log_level_t level, const char* message);
 
@@ -125,6 +127,15 @@ typedef struct {
                          const char* code,
                          const char* label);
 } libera_host_services_t;
+
+#define LIBERA_PLUGIN_HOST_SERVICES_BASE_SIZE \
+    (offsetof(libera_host_services_t, report_error) + \
+     sizeof(((libera_host_services_t*)0)->report_error))
+
+#define LIBERA_PLUGIN_HOST_SERVICES_HAS_FIELD(SERVICES, FIELD) \
+    ((SERVICES) != NULL && \
+     (SERVICES)->struct_size >= offsetof(libera_host_services_t, FIELD) + \
+                                  sizeof(((libera_host_services_t*)0)->FIELD))
 
 /*
  * Optional network metadata for discovery results.
@@ -167,6 +178,51 @@ typedef struct {
 } libera_property_def_t;
 
 /*
+ * Settings use a typed schema for host-side validation and UI, while values
+ * cross the ABI as canonical UTF-8 strings. This keeps allocation and string
+ * ownership entirely on the caller's side.
+ */
+typedef enum {
+    LIBERA_SETTING_BOOL = 0,
+    LIBERA_SETTING_INT = 1,
+    LIBERA_SETTING_FLOAT = 2,
+    LIBERA_SETTING_STRING = 3,
+    LIBERA_SETTING_ENUM = 4
+} libera_setting_type_t;
+
+typedef enum {
+    LIBERA_SETTING_SCOPE_PLUGIN = 0,
+    LIBERA_SETTING_SCOPE_CONTROLLER = 1
+} libera_setting_scope_t;
+
+typedef struct {
+    const char* value;
+    const char* label;
+} libera_setting_choice_t;
+
+/*
+ * One setting definition. Numeric bounds and step are canonical strings and
+ * may be NULL when they do not apply. Enum settings use choices/choice_count.
+ *
+ * Definitions are returned individually by get_setting_definition() rather
+ * than as a flat array. Combined with struct_size, that lets future versions
+ * append fields without changing the stride expected by an older host.
+ */
+typedef struct {
+    uint32_t struct_size;
+    const char* key;
+    const char* label;
+    const char* description;
+    libera_setting_type_t type;
+    const char* default_value;
+    const char* minimum_value;
+    const char* maximum_value;
+    const char* step_value;
+    const libera_setting_choice_t* choices;
+    uint32_t choice_count;
+} libera_setting_def_t;
+
+/*
  * Main plugin API table.
  *
  * Required callbacks:
@@ -179,6 +235,7 @@ typedef struct {
  */
 typedef struct {
     uint32_t abi_version;
+    uint32_t struct_size;
 
     /*
      * Stable backend identity.
@@ -290,7 +347,48 @@ typedef struct {
     libera_status_t (*send_frame)(void* controller,
                                   const libera_point_t* points,
                                   uint32_t count);
+
+    /*
+     * Optional typed settings schema. The same definition callbacks serve both
+     * scopes. A plugin may return zero settings for either scope.
+     *
+     * Setters may be called while controllers are streaming. The host
+     * serializes controller setters with its other calls on that controller
+     * handle. Plugins must synchronize plugin-wide setters with shared work
+     * spanning multiple controllers. The host persists a value only after its
+     * setter returns LIBERA_OK, then requests a fresh discovery pass.
+     */
+    uint32_t (*get_setting_count)(libera_setting_scope_t scope);
+
+    const libera_setting_def_t* (*get_setting_definition)(
+        libera_setting_scope_t scope,
+        uint32_t setting_index);
+
+    libera_status_t (*set_plugin_setting)(void* backend,
+                                          const char* key,
+                                          const char* value);
+
+    libera_status_t (*set_controller_setting)(void* controller,
+                                              const char* key,
+                                              const char* value);
 } libera_plugin_api_t;
+
+/*
+ * The base size covers the transport API that every v1 host understands.
+ * Optional trailing fields must only be read after checking struct_size.
+ */
+#define LIBERA_PLUGIN_API_BASE_SIZE \
+    (offsetof(libera_plugin_api_t, send_frame) + \
+     sizeof(((libera_plugin_api_t*)0)->send_frame))
+
+#define LIBERA_PLUGIN_API_HAS_FIELD(API, FIELD) \
+    ((API) != NULL && \
+     (API)->struct_size >= offsetof(libera_plugin_api_t, FIELD) + \
+                           sizeof(((libera_plugin_api_t*)0)->FIELD))
+
+#define LIBERA_PLUGIN_SETTING_DEF_BASE_SIZE \
+    (offsetof(libera_setting_def_t, choice_count) + \
+     sizeof(((libera_setting_def_t*)0)->choice_count))
 
 /*
  * Single export every plugin must provide.

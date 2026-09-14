@@ -1,4 +1,5 @@
 #include "PluginValidation.hpp"
+#include "PluginSettingsInternal.hpp"
 
 namespace libera::plugin {
 
@@ -16,6 +17,10 @@ std::string validatePluginApi(const libera_plugin_api_t* api) {
         return "ABI version mismatch (plugin=" +
                std::to_string(api->abi_version) +
                ", host=" + std::to_string(LIBERA_PLUGIN_API_VERSION) + ")";
+    }
+
+    if (api->struct_size < LIBERA_PLUGIN_API_BASE_SIZE) {
+        return "API table is smaller than the required v1 transport interface";
     }
 
     if (!api->type_name || !*api->type_name) {
@@ -56,6 +61,43 @@ std::string validatePluginApi(const libera_plugin_api_t* api) {
 
     if (api->property_count > 0 && !api->read_property) {
         return "declared properties without read_property()";
+    }
+
+    const bool hasSettingCount =
+        LIBERA_PLUGIN_API_HAS_FIELD(api, get_setting_count) &&
+        api->get_setting_count;
+    const bool hasSettingDefinitions =
+        LIBERA_PLUGIN_API_HAS_FIELD(api, get_setting_definition) &&
+        api->get_setting_definition;
+    if (hasSettingCount != hasSettingDefinitions) {
+        return "settings must provide both definition callbacks";
+    }
+
+    if (hasSettingCount) {
+        std::string settingsError;
+        const auto pluginSettings = readSettingDefinitions(
+            api, SettingScope::Plugin, &settingsError);
+        if (!settingsError.empty()) {
+            return "invalid plugin settings: " + settingsError;
+        }
+        const auto controllerSettings = readSettingDefinitions(
+            api, SettingScope::Controller, &settingsError);
+        if (!settingsError.empty()) {
+            return "invalid controller settings: " + settingsError;
+        }
+
+        const bool hasPluginSetter =
+            LIBERA_PLUGIN_API_HAS_FIELD(api, set_plugin_setting) &&
+            api->set_plugin_setting;
+        const bool hasControllerSetter =
+            LIBERA_PLUGIN_API_HAS_FIELD(api, set_controller_setting) &&
+            api->set_controller_setting;
+        if (!pluginSettings.empty() && !hasPluginSetter) {
+            return "declared plugin settings without set_plugin_setting()";
+        }
+        if (!controllerSettings.empty() && !hasControllerSetter) {
+            return "declared controller settings without set_controller_setting()";
+        }
     }
 
     return {};

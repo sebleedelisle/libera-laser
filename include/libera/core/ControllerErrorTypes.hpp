@@ -76,7 +76,7 @@ inline constexpr std::string_view labelFor(std::string_view code) {
     // Plugin-reported codes we don't recognise: show the code itself rather
     // than "Unknown error" so the user has something actionable to grep for.
     if (code.size() > 7 && code.substr(0, 7) == "plugin.") return code;
-    // Likewise for domain-prefixed plugin codes (e.g. "shownet.offline").
+    // Likewise for domain-prefixed plugin codes (e.g. "network.offline").
     if (code.find('.') != std::string_view::npos) return code;
 
     return "Unknown error";

@@ -22,3 +22,7 @@
 #include "libera/lightspacenet/LightSpaceNetManager.hpp"
 #include "libera/lasercubenet/LaserCubeNetManager.hpp"
 #include "libera/lasercubeusb/LaserCubeUsbManager.hpp"
+#if defined(LIBERA_ENABLE_PLUGINS)
+#include "libera/plugin/PluginManagement.hpp"
+#include "libera/plugin/PluginSettings.hpp"
+#endif

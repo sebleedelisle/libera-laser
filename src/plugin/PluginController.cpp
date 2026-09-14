@@ -4,6 +4,8 @@
 #include "libera/log/Log.hpp"
 #include "libera/plugin/PluginRegistry.hpp"
 
+#include "PluginSettingsInternal.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -93,17 +95,26 @@ PluginController::PluginController(const libera_plugin_api_t* api,
 : api(api)
 , backendHandle(backendHandle)
 , controllerInfo(controllerInfo)
-, pluginPath(std::move(pluginPath)) {}
+, pluginPath(std::move(pluginPath))
+, pluginTypeName(api && api->type_name ? api->type_name : "") {}
 
 PluginController::~PluginController() {
+    close();
+}
+
+void PluginController::close() {
     stopThread();
+    std::lock_guard callLock(pluginCallMutex);
     if (pluginHandle && api && api->destroy_controller) {
         api->destroy_controller(pluginHandle);
         pluginHandle = nullptr;
     }
+    connected.store(false, std::memory_order_relaxed);
+    setConnectionState(false);
 }
 
 bool PluginController::open() {
+    std::lock_guard callLock(pluginCallMutex);
     if (!api || !api->connect_controller) {
         return false;
     }
@@ -140,9 +151,29 @@ bool PluginController::open() {
     return true;
 }
 
+libera_status_t PluginController::applySetting(const std::string& key,
+                                               const std::string& value) {
+    std::lock_guard callLock(pluginCallMutex);
+    if (!connected.load(std::memory_order_relaxed) || !pluginHandle || !api ||
+        !LIBERA_PLUGIN_API_HAS_FIELD(api, set_controller_setting) ||
+        !api->set_controller_setting) {
+        return LIBERA_ERR_DISCONNECTED;
+    }
+
+    const auto status = api->set_controller_setting(pluginHandle,
+                                                    key.c_str(),
+                                                    value.c_str());
+    if (status == LIBERA_ERR_DISCONNECTED) {
+        connected.store(false, std::memory_order_relaxed);
+    }
+    return status;
+}
+
 void PluginController::setPointRate(std::uint32_t pointRateValue) {
     core::LaserController::setPointRate(pointRateValue);
-    if (pluginHandle && api && api->set_point_rate) {
+    std::lock_guard callLock(pluginCallMutex);
+    if (connected.load(std::memory_order_relaxed) &&
+        pluginHandle && api && api->set_point_rate) {
         api->set_point_rate(pluginHandle, pointRateValue);
     }
 }
@@ -157,10 +188,16 @@ bool PluginController::updateBufferTelemetry(std::uint32_t rate,
                                              libera_buffer_state_t& bufferState,
                                              bool clearOnMissingTelemetry) {
     bufferState = {-1, -1};
-    if (!pluginHandle || !api || !api->get_buffer_state ||
-        api->get_buffer_state(pluginHandle, &bufferState) != 0 ||
-        bufferState.total_buffer_points <= 0 ||
-        bufferState.points_in_buffer < 0) {
+    bool haveTelemetry = false;
+    {
+        std::lock_guard callLock(pluginCallMutex);
+        haveTelemetry = connected.load(std::memory_order_relaxed) &&
+                        pluginHandle && api && api->get_buffer_state &&
+                        api->get_buffer_state(pluginHandle, &bufferState) == 0 &&
+                        bufferState.total_buffer_points > 0 &&
+                        bufferState.points_in_buffer >= 0;
+    }
+    if (!haveTelemetry) {
         if (clearOnMissingTelemetry) {
             clearEstimatedBufferState();
         }
@@ -213,7 +250,9 @@ std::vector<PluginProperty> PluginController::listProperties() const {
 }
 
 std::optional<std::string> PluginController::getProperty(const std::string& key) const {
-    if (!pluginHandle || !api || !api->read_property) {
+    std::lock_guard callLock(pluginCallMutex);
+    if (!connected.load(std::memory_order_relaxed) ||
+        !pluginHandle || !api || !api->read_property) {
         return std::nullopt;
     }
 
@@ -276,43 +315,66 @@ void PluginController::run() {
     while (running.load()) {
         if (!connected.load(std::memory_order_relaxed)) {
             setConnectionState(false);
+            bool retryReconnect = false;
+            {
+                std::lock_guard callLock(pluginCallMutex);
+                if (pluginHandle && api->destroy_controller) {
+                    clearFrameTransportSubmissionEstimate();
+                    api->destroy_controller(pluginHandle);
+                    pluginHandle = nullptr;
+                }
 
-            if (pluginHandle && api->destroy_controller) {
-                clearFrameTransportSubmissionEstimate();
-                api->destroy_controller(pluginHandle);
-                pluginHandle = nullptr;
+                pluginHandle = api->connect_controller(
+                    backendHandle,
+                    &controllerInfo,
+                    static_cast<libera_host_ctx_t>(this));
+                if (!pluginHandle) {
+                    retryReconnect = true;
+                } else {
+                    if (api->set_point_rate) {
+                        api->set_point_rate(pluginHandle, getPointRate());
+                    }
+
+                    lastSentArmed = isArmed();
+                    if (api->set_armed) {
+                        api->set_armed(pluginHandle, lastSentArmed);
+                    }
+
+                    // Mark the new handle live while holding the callback lock.
+                    // The recursive lock lets restoration use applySetting(),
+                    // while other threads cannot observe a half-configured handle.
+                    connected.store(true, std::memory_order_relaxed);
+                    std::string settingsError;
+                    if (!applySavedControllerSettings(*this, &settingsError)) {
+                        connected.store(false, std::memory_order_relaxed);
+                        reportErrorFromPlugin("plugin.settings.reconnect",
+                                              settingsError.c_str());
+                        api->destroy_controller(pluginHandle);
+                        pluginHandle = nullptr;
+                        retryReconnect = true;
+                    } else {
+                        currentPointIndex = 0;
+                        smoothedSendFrameMicros = 0;
+                        resetStartupBlank();
+                        clearFrameTransportSubmissionEstimate();
+                    }
+                }
             }
-
-            pluginHandle = api->connect_controller(
-                backendHandle,
-                &controllerInfo,
-                static_cast<libera_host_ctx_t>(this));
-            if (!pluginHandle) {
+            if (retryReconnect) {
                 std::this_thread::sleep_for(reconnectRetryDelay);
                 continue;
             }
-
-            if (api->set_point_rate) {
-                api->set_point_rate(pluginHandle, getPointRate());
-            }
-
-            lastSentArmed = isArmed();
-            if (api->set_armed) {
-                api->set_armed(pluginHandle, lastSentArmed);
-            }
-            currentPointIndex = 0;
-            smoothedSendFrameMicros = 0;
-            resetStartupBlank();
-            clearFrameTransportSubmissionEstimate();
-            connected.store(true, std::memory_order_relaxed);
         }
 
         setConnectionState(true);
 
         const bool armedNow = isArmed();
         if (armedNow != lastSentArmed && api->set_armed) {
-            api->set_armed(pluginHandle, armedNow);
-            lastSentArmed = armedNow;
+            std::lock_guard callLock(pluginCallMutex);
+            if (connected.load(std::memory_order_relaxed) && pluginHandle) {
+                api->set_armed(pluginHandle, armedNow);
+                lastSentArmed = armedNow;
+            }
         } else if (!api->set_armed) {
             lastSentArmed = armedNow;
         }
@@ -330,7 +392,16 @@ void PluginController::run() {
 
         if (frameTransport) {
             libera_frame_requirements_t requirements{};
-            const auto status = api->get_frame_requirements(pluginHandle, &requirements);
+            libera_status_t status = LIBERA_ERR_DISCONNECTED;
+            {
+                std::lock_guard callLock(pluginCallMutex);
+                if (connected.load(std::memory_order_relaxed) && pluginHandle) {
+                    status = api->get_frame_requirements(pluginHandle, &requirements);
+                    if (status == LIBERA_ERR_DISCONNECTED) {
+                        connected.store(false, std::memory_order_relaxed);
+                    }
+                }
+            }
             if (status == LIBERA_ERR_BUSY) {
                 std::this_thread::sleep_for(workerIdleDelay);
                 continue;
@@ -395,10 +466,19 @@ void PluginController::run() {
             convertPoints(frameToSend.points, pluginPoints);
             const std::size_t sentPointCount = frameToSend.points.size();
             const auto sendStart = std::chrono::steady_clock::now();
-            const auto sendStatus = api->send_frame(
-                pluginHandle,
-                pluginPoints.data(),
-                static_cast<uint32_t>(pluginPoints.size()));
+            libera_status_t sendStatus = LIBERA_ERR_DISCONNECTED;
+            {
+                std::lock_guard callLock(pluginCallMutex);
+                if (connected.load(std::memory_order_relaxed) && pluginHandle) {
+                    sendStatus = api->send_frame(
+                        pluginHandle,
+                        pluginPoints.data(),
+                        static_cast<uint32_t>(pluginPoints.size()));
+                    if (sendStatus == LIBERA_ERR_DISCONNECTED) {
+                        connected.store(false, std::memory_order_relaxed);
+                    }
+                }
+            }
             const auto sendDone = std::chrono::steady_clock::now();
             if (sendStatus != LIBERA_OK) {
                 handlePluginFailure(sendStatus, "send_frame", "plugin.send.");
@@ -479,9 +559,19 @@ void PluginController::run() {
         convertPoints(pointsToSend, pluginPoints);
         const std::size_t sentPointCount = pluginPoints.size();
 
-        const auto status = api->send_points(pluginHandle,
-                                             pluginPoints.data(),
-                                             static_cast<uint32_t>(pluginPoints.size()));
+        libera_status_t status = LIBERA_ERR_DISCONNECTED;
+        {
+            std::lock_guard callLock(pluginCallMutex);
+            if (connected.load(std::memory_order_relaxed) && pluginHandle) {
+                status = api->send_points(
+                    pluginHandle,
+                    pluginPoints.data(),
+                    static_cast<uint32_t>(pluginPoints.size()));
+                if (status == LIBERA_ERR_DISCONNECTED) {
+                    connected.store(false, std::memory_order_relaxed);
+                }
+            }
+        }
         pointsToSend.clear();
 
         if (status != LIBERA_OK) {
@@ -492,6 +582,7 @@ void PluginController::run() {
         currentPointIndex += sentPointCount;
     }
 
+    std::lock_guard callLock(pluginCallMutex);
     if (pluginHandle && api->set_armed) {
         api->set_armed(pluginHandle, false);
     }

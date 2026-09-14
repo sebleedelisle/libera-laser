@@ -5,6 +5,7 @@
 #include "libera/log/Log.hpp"
 
 #include "PluginValidation.hpp"
+#include "PluginSettingsInternal.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -106,8 +107,9 @@ void hostReportErrorCallback(libera_host_ctx_t host_ctx,
     ctrl->reportErrorFromPlugin(code, label);
 }
 
-const libera_host_services_t kHostServices = {
+const libera_host_services_t hostServices = {
     /* abi_version    */ LIBERA_PLUGIN_HOST_SERVICES_VERSION,
+    /* struct_size    */ sizeof(libera_host_services_t),
     /* log            */ &hostLogCallback,
     /* record_latency */ &hostRecordLatencyCallback,
     /* report_error   */ &hostReportErrorCallback,
@@ -190,6 +192,7 @@ std::shared_ptr<LoadedPlugin> loadPlugin(const fs::path& path) {
     plugin->typeName = api->type_name;
     plugin->displayName = api->display_name;
     plugin->path = pathString;
+    registerLoadedPlugin(plugin);
 
     libera::log::logInfo("Plugin: loaded \"", plugin->displayName,
                          "\" (type=",
@@ -219,22 +222,46 @@ bool PluginDelegateManager::ensureBackend() {
     if (!plugin || !plugin->api) {
         return false;
     }
+    std::lock_guard lifecycleLock(plugin->lifecycleMutex);
     if (plugin->initialised) {
         return true;
     }
 
     if (plugin->api->create_backend) {
-        plugin->backendHandle = plugin->api->create_backend(&kHostServices);
+        plugin->backendHandle = plugin->api->create_backend(&hostServices);
         if (!plugin->backendHandle) {
             const std::string message = "create_backend() returned null";
             libera::log::logError("Plugin: ", plugin->path, " ", message);
-            PluginRegistry::instance().pushRuntimeError(
-                plugin->path, "create_backend", message);
+            PluginRegistry::instance().recordFailure(
+                plugin->path,
+                PluginState::FailedBackend,
+                message,
+                plugin->typeName,
+                plugin->displayName);
             return false;
         }
     }
 
+    // Plugin-wide settings may affect discovery, so restore them before the
+    // first rescan rather than waiting for a controller connection.
+    std::string settingsError;
+    if (!applySavedPluginSettings(plugin, &settingsError)) {
+        PluginRegistry::instance().recordFailure(
+            plugin->path,
+            PluginState::FailedBackend,
+            settingsError,
+            plugin->typeName,
+            plugin->displayName);
+        if (plugin->api->destroy_backend) {
+            plugin->api->destroy_backend(plugin->backendHandle);
+        }
+        plugin->backendHandle = nullptr;
+        return false;
+    }
+
     plugin->initialised = true;
+    PluginRegistry::instance().recordLoaded(
+        plugin->path, plugin->typeName, plugin->displayName);
     return true;
 }
 
@@ -243,6 +270,8 @@ PluginDelegateManager::discover() {
     if (!ensureBackend()) {
         return {};
     }
+
+    std::lock_guard lifecycleLock(plugin->lifecycleMutex);
 
     if (plugin->api->rescan) {
         plugin->api->rescan(plugin->backendHandle);
@@ -293,11 +322,12 @@ PluginDelegateManager::createController(const PluginControllerInfo& info) {
     if (!ensureBackend()) {
         return nullptr;
     }
-    return std::make_shared<PluginController>(
+    auto controller = std::make_shared<PluginController>(
         plugin->api,
         plugin->backendHandle,
         info.pluginInfo(),
         plugin->path);
+    return controller;
 }
 
 PluginDelegateManager::NewControllerDisposition
@@ -307,12 +337,40 @@ PluginDelegateManager::prepareNewController(PluginController& controller,
     if (!controller.open()) {
         return NewControllerDisposition::DropController;
     }
+
+    // A controller's opaque plugin handle exists now, but its worker has not
+    // started yet. This is the only race-free place to restore persisted
+    // controller settings before the first frame can be submitted.
+    std::string settingsError;
+    if (!applySavedControllerSettings(controller, &settingsError)) {
+        PluginRegistry::instance().pushRuntimeError(
+            plugin->path, "settings.controller_apply", settingsError);
+        controller.close();
+        return NewControllerDisposition::DropController;
+    }
+    // Publish the controller for live setting changes only after its initial
+    // settings have been applied to the fully constructed plugin handle.
+    registerPluginController(plugin->typeName,
+                             info.idValue(),
+                             controller.shared_from_this());
     controller.useFrameQueue();
     controller.startThread();
     return NewControllerDisposition::KeepController;
 }
 
+void PluginDelegateManager::closeController(const std::string& key,
+                                             PluginController& controller) {
+    (void)key;
+    // Destroy controller handles before their shared backend. External
+    // shared_ptr owners may keep the C++ wrapper alive after System shutdown.
+    controller.close();
+}
+
 void PluginDelegateManager::afterCloseControllers() {
+    if (!plugin) {
+        return;
+    }
+    std::lock_guard lifecycleLock(plugin->lifecycleMutex);
     if (plugin && plugin->initialised) {
         if (plugin->api->destroy_backend) {
             plugin->api->destroy_backend(plugin->backendHandle);

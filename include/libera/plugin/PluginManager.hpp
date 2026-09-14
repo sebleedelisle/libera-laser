@@ -5,6 +5,7 @@
 #include "libera/plugin/PluginControllerInfo.hpp"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,9 @@ struct LoadedPlugin {
     std::string displayName;
     std::string path;
     bool initialised = false;
+    // Serializes backend creation, destruction, discovery, and live
+    // plugin-setting changes without blocking independent controller streams.
+    std::mutex lifecycleMutex;
 };
 
 /*
@@ -44,6 +48,8 @@ private:
     ControllerPtr createController(const PluginControllerInfo& info) override;
     NewControllerDisposition prepareNewController(PluginController& controller,
                                                   const PluginControllerInfo& info) override;
+    void closeController(const std::string& key,
+                         PluginController& controller) override;
     void afterCloseControllers() override;
 };
 

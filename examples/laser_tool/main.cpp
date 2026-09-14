@@ -116,6 +116,8 @@ struct ControllerEntry {
     bool connecting = false;       // True while an async connection is in progress
     std::shared_ptr<core::LaserController> controller;  // The connected controller (null until connected)
     std::future<std::shared_ptr<core::LaserController>> connectFuture; // Async connection result
+    bool hasPluginSettings = false;
+    libera::gui::imgui::PluginPanelState pluginSettingsState;
 };
 
 // Lightweight snapshot of a discovered controller, used to pass discovery
@@ -782,7 +784,14 @@ static void applyDiscoveryResults(AppState& state) {
         bool exists = false;
         for (auto& entry : state.controllers) { if (entry.id == d.id) { exists = true; break; } }
         if (!exists) {
-            state.controllers.push_back({d.id, d.label, d.type, d.maxPointRate, false, false, nullptr, {}});
+            ControllerEntry entry;
+            entry.id = d.id;
+            entry.label = d.label;
+            entry.type = d.type;
+            entry.maxPointRate = d.maxPointRate;
+            entry.hasPluginSettings =
+                !plugin::controllerSettings(d.type, d.id).empty();
+            state.controllers.push_back(std::move(entry));
         }
     }
 }
@@ -1422,6 +1431,32 @@ int main(int /*argc*/, char* argv[]) {
                     startAsyncConnect(state, entry);
                 else if (!entry.enabled && wasEnabled)
                     disconnectController(entry);
+
+                if (entry.hasPluginSettings) {
+                    ImGui::Indent();
+                    if (ImGui::TreeNodeEx("Controller settings",
+                                          ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                        libera::gui::imgui::DrawPluginControllerSettings(
+                            entry.type,
+                            entry.id,
+                            entry.pluginSettingsState);
+
+                        // Keep validation or plugin errors beside the setting
+                        // that produced them instead of hiding them elsewhere.
+                        if (!entry.pluginSettingsState.lastMessage.empty()) {
+                            const ImVec4 messageColor =
+                                entry.pluginSettingsState.lastMessageIsError
+                                    ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
+                                    : ImVec4(0.35f, 0.8f, 0.45f, 1.0f);
+                            ImGui::TextColored(
+                                messageColor,
+                                "%s",
+                                entry.pluginSettingsState.lastMessage.c_str());
+                        }
+                        ImGui::TreePop();
+                    }
+                    ImGui::Unindent();
+                }
 
                 ImGui::PopID();
             }

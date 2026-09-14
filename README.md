@@ -11,7 +11,7 @@ Libera aims to become a de facto standard for laser control, with support for a 
 - LightSpace Net (LS-Net protocol, UDP discovery with TCP pattern playback)
 - AVB/Audio (LA Sollinger lasers or any multichannel audio devices) 
 
-It also has a real-time plugin system so that hardware vendors can implement support for their own protocols without exposing the underlying details. Plugins can be developed and distributed by the vendors themselves, creating a bridge between open interoperability and proprietary systems, allowing both to coexist without compromise.
+It also has a real-time plugin system so hardware vendors and independent developers can add controller support without changing the core library. A plugin can be distributed separately while still presenting the same discovery, streaming, settings, and status APIs to every Libera-enabled application.
 
 This also enables developers of new protocols and controllers to add support for their hardware across libera-enabled applications without waiting for a new release or changes to the core system.
 

@@ -83,6 +83,28 @@ Apps that expose plugin management UI should use
 `removePlugin()` from `PluginManagement.hpp` rather than duplicating filesystem
 and validation rules.
 
+Plugins may also expose typed settings. Plugin-wide settings are shared by all
+controllers from that plugin, while controller settings follow one stable
+controller ID. Values are restored automatically before discovery or streaming:
+
+```cpp
+#include "libera/plugin/PluginSettings.hpp"
+
+for (const auto& setting :
+     libera::plugin::pluginSettings("ExamplePlugin")) {
+    std::cout << setting.definition.label << ": " << setting.value << "\n";
+}
+
+auto result = libera::plugin::setControllerSetting(
+    "ExamplePlugin", "device-001", "invert_x", "true");
+```
+
+Setting changes can be applied while controllers are connected. A successful
+change is persisted in Libera's shared per-user plugin settings file and asks
+the affected plugin to rescan. Libera serializes a controller setting with its
+transport callbacks; plugins remain responsible for synchronizing a
+plugin-wide setting with work shared across their controllers.
+
 ## Step 1 - discover controllers
 
 `discoverControllers()` returns a list of `ControllerInfo` objects describing
