@@ -26,17 +26,20 @@ struct LightSpaceNetConfig {
 
     static constexpr std::uint32_t MIN_POINT_RATE = 1000;
     static constexpr std::uint32_t DEFAULT_POINT_RATE = 30000;
-    static constexpr std::uint32_t MAX_POINT_RATE = 100000;
+    // The protocol exposes scan frequency as integer kHz and the documented
+    // device range is 1..30 kHz. Keep Liberation's pacing and advertised DAC
+    // capability aligned with the rate the controller can actually render.
+    static constexpr std::uint32_t MAX_POINT_RATE = 30000;
 
-    // The LS-Net point packet describes the "current pattern", so normal
-    // playback should send one complete source frame per upload. Hardware
-    // probing showed the current firmware accepts a single 5118-byte pattern
-    // packet and stops answering at 5125 bytes, consistent with a 5120-byte
-    // packet cap. Repeated playback near that boundary is unreliable, so the
-    // operational cap leaves substantial margin below the measured one-shot
-    // limit. This is a hard transport cap, not a target size: oversized frames
-    // are fitted by preserving source prefix points and appending blank travel
-    // to the original frame end, not by resampling the whole frame.
+    // LS-Net point packets replace the controller's current pattern. The packet
+    // format has 16-bit length fields, but current firmware has a lower
+    // practical payload ceiling: 728 points creates a 5118-byte packet that
+    // remains responsive, while 729 points creates a 5125-byte packet that can
+    // drop the TCP session. Keep normal operation below that boundary.
+    //
+    // This is a hard transport cap, not a target size. Oversized frames are
+    // fitted by preserving the source prefix and appending blank travel to the
+    // original frame end, rather than by resampling the whole frame.
     static constexpr std::size_t MAX_CURRENT_PATTERN_PACKET_BYTES = 5120;
     static constexpr std::size_t CURRENT_PATTERN_PACKET_OVERHEAD = 22;
     static constexpr std::size_t BYTES_PER_POINT = 7;
@@ -45,7 +48,7 @@ struct LightSpaceNetConfig {
         BYTES_PER_POINT;
     static constexpr std::size_t MAX_SOURCE_FRAME_POINTS = 700;
     static constexpr std::size_t DEFAULT_PATTERN_POINTS = MAX_SOURCE_FRAME_POINTS;
-    static constexpr auto DEFAULT_PATTERN_UPDATE_INTERVAL = std::chrono::milliseconds(40);
+    static constexpr auto DEFAULT_PATTERN_UPDATE_INTERVAL = std::chrono::milliseconds(0);
 
     static constexpr auto COMMAND_ACK_TIMEOUT = std::chrono::milliseconds(100);
     static constexpr int COMMAND_ACK_ATTEMPTS = 3;

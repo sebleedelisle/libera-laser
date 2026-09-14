@@ -102,6 +102,18 @@ void AvbDeviceRuntime::detachController(std::uint32_t channelOffset) {
     }
 }
 
+bool AvbDeviceRuntime::hasAttachedControllers() {
+    std::lock_guard lock(banksMutex);
+    for (auto it = banksByOffset.begin(); it != banksByOffset.end();) {
+        if (it->second.controller.expired()) {
+            it = banksByOffset.erase(it);
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
 void AvbDeviceRuntime::handleAudioCallback(
     float* output,
     std::uint32_t frameCount,

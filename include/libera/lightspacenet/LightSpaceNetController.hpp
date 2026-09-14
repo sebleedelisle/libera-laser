@@ -33,15 +33,28 @@ protected:
     void setPointRate(std::uint32_t pointRate) override;
 
 private:
+    enum class CommandAckMode {
+        Probe,
+        Supported,
+        Silent
+    };
+
+    enum class ControlCommandResult {
+        Failed,
+        Acknowledged,
+        SentWithoutAck
+    };
+
     libera::expected<void> connectToStatus(const LightSpaceNetStatus& status);
     bool reconnectToLatestStatus();
 
     bool sendPacket(const std::vector<std::uint8_t>& packet,
                     std::chrono::milliseconds timeout);
-    bool sendControlCommand(std::uint8_t commandWord,
-                            const std::vector<std::uint8_t>& packet);
+    ControlCommandResult sendControlCommand(std::uint8_t commandWord,
+                                            const std::vector<std::uint8_t>& packet);
     bool sendReliableCommand(std::uint8_t commandWord,
-                             const std::vector<std::uint8_t>& packet);
+                             const std::vector<std::uint8_t>& packet,
+                             bool recordTimeout);
     bool waitForCommandAck(std::uint8_t commandWord,
                            std::chrono::steady_clock::time_point deadline);
     bool hasTcpConnection() const;
@@ -56,6 +69,7 @@ private:
     void sendHeartbeatIfDue();
     void syncPointRate();
     void syncLaserState();
+    void updateFrameReadinessBackpressure();
     void sendBlankPatternForShutdown();
     bool sendFramePattern();
     void recordTimingSample(std::size_t sentPointCount,
@@ -84,20 +98,19 @@ private:
     std::chrono::steady_clock::time_point nextLaserStateSyncTime{};
 
     LightSpaceNetCoordinateOptions coordinateOptions;
-    bool commandAckRequired{true};
     bool strictHeartbeat{false};
     bool timingLogEnabled{false};
     bool heartbeatTimeoutLogged{false};
+    CommandAckMode commandAckMode{CommandAckMode::Probe};
     std::chrono::milliseconds patternUpdateInterval{
         LightSpaceNetConfig::DEFAULT_PATTERN_UPDATE_INTERVAL};
-    std::chrono::steady_clock::time_point lastPatternSentTime{};
     std::chrono::steady_clock::time_point nextPatternSendTime{};
     std::chrono::steady_clock::time_point lastIncomingPollTime{};
 
     std::size_t patternPointLimit{LightSpaceNetConfig::DEFAULT_PATTERN_POINTS};
-    std::size_t lastSentPacketPointCount{0};
     std::size_t lastSentPacketBytes{0};
     std::size_t lastSubmittedPatternPoints{0};
+    bool lastSentPatternWasBlank{false};
     std::chrono::microseconds estimatedWriteLead{0};
     std::uint64_t currentPointIndex{0};
 

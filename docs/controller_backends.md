@@ -130,12 +130,32 @@ produces a 5118-byte packet and survives a follow-up heartbeat, while 729 points
 produces a 5125-byte packet and the device stops answering on that TCP session.
 Repeated playback above the conservative runtime cap has also produced TCP send
 timeouts, so the default operational cap keeps substantial margin below the
-one-shot packet limit. The default upload cadence is also capped at one
-current-pattern packet every 40 ms. That pacing matches the controller's
-current-pattern model better than deriving a high upload rate from packet point
-count, and keeps command ACKs and heartbeat traffic from being starved by frame
-uploads. LightSpace scan-rate commands are clamped to the documented 1..30 kHz
-range.
+one-shot packet limit.
+
+The public content API is the normal Libera one: applications use
+`sendFrame(...)` or `setPointCallback(...)`, and the backend consumes those
+sources through `requestFrame(...)`. Current-pattern uploads are then treated as
+state updates, not as a consuming frame FIFO. The controller is expected to
+repeat the last accepted pattern internally, so the backend does not resend a
+held frame while idle. If no replacement arrives for longer than
+`LaserController::maxFrameHoldTime()`, it sends a single full-size blank pattern
+as a safety clear. Pattern uploads are paced by the number of points sent and
+the selected scan rate so the host does not keep adding TCP data faster than the
+controller can consume current-pattern replacements. Readiness is still
+backpressured through the common `isReadyForNewFrame()` path: LS-Net uses a
+single-unsent-update budget so it does not demand a deep queue from the
+application.
+Blank packets keep a full-pattern pacing floor so one-point blanks cannot be
+uploaded far faster than the controller can treat them as current-pattern
+transactions. Repeated blank patterns are treated as a stable blank output state:
+after one blank packet is accepted, the backend polls for new content but does
+not keep retransmitting blank packets. The optional
+`LIBERA_LIGHTSPACENET_PATTERN_MS` value can raise pacing to a fixed minimum
+interval when testing firmware that needs extra recovery time. LightSpace
+scan-rate commands are clamped to the documented 1..30 kHz range. Command
+packets probe for the documented ACK, but the backend falls back to best-effort
+control commands for firmware that accepts commands silently; point-stream
+uploads must not depend on command ACK availability.
 
 LightSpace Net heartbeat responses are useful only as a liveness signal in the
 current backend. The response payload observed on hardware is an 8-byte
@@ -143,6 +163,17 @@ big-endian value that increments at roughly one count per millisecond. It does
 not echo the host heartbeat timestamp and should be treated as a probable
 device uptime or firmware tick counter, not as a frame acknowledgement, buffer
 depth, or render-status report.
+
+The LS-Net backend defaults to unsigned 12-bit X/Y coordinate words in
+big-endian order. The `LIBERA_LIGHTSPACENET_COORDS`,
+`LIBERA_LIGHTSPACENET_COORD_ENDIAN`, `LIBERA_LIGHTSPACENET_INVERT_X`,
+`LIBERA_LIGHTSPACENET_INVERT_Y`, `LIBERA_LIGHTSPACENET_SWAP_XY`,
+`LIBERA_LIGHTSPACENET_SCALE`, `LIBERA_LIGHTSPACENET_OFFSET_X`,
+`LIBERA_LIGHTSPACENET_OFFSET_Y`, `LIBERA_LIGHTSPACENET_POINT_RATE`,
+`LIBERA_LIGHTSPACENET_PATTERN_POINTS`, `LIBERA_LIGHTSPACENET_PATTERN_MS`,
+`LIBERA_LIGHTSPACENET_REQUIRE_HEARTBEAT`, and
+`LIBERA_LIGHTSPACENET_TIMING_LOG` environment variables are development and
+hardware-validation overrides. They are not required for normal applications.
 
 Out-of-tree plugins can now mirror this frame-ingester shape too via the ABI
 v2 `get_frame_requirements()` + `send_frame()` callbacks.

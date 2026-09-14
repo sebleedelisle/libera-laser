@@ -4,6 +4,8 @@
 #include <chrono>
 #include <cstddef>
 #include <limits>
+#include <thread>
+#include <utility>
 
 using namespace libera;
 using namespace libera::core;
@@ -27,12 +29,16 @@ public:
                          std::size_t blankFramePointCount,
                          std::chrono::steady_clock::time_point estimatedFirstPointRenderTime,
                          Frame& outputFrame,
-                         std::size_t preferredPointCount = 0) {
+                         std::size_t preferredPointCount = 0,
+                         bool advanceWhenAvailable = false,
+                         bool repeatCurrentFrameWhenIdle = true) {
         FrameFillRequest request{};
         request.maximumPointsRequired = maximumPointsRequired;
         request.preferredPointCount = preferredPointCount;
         request.blankFramePointCount = blankFramePointCount;
         request.estimatedFirstPointRenderTime = estimatedFirstPointRenderTime;
+        request.advanceWhenAvailable = advanceWhenAvailable;
+        request.repeatCurrentFrameWhenIdle = repeatCurrentFrameWhenIdle;
         return LaserController::requestFrame(request, outputFrame);
     }
 
@@ -82,6 +88,18 @@ Frame makeSteppedFrame(float startX, std::size_t count) {
         p.g = 1.0f;
         p.b = 1.0f;
         frame.points.push_back(p);
+    }
+    return frame;
+}
+
+Frame makeMarkerFrame(float marker, std::size_t count = 4) {
+    Frame frame;
+    frame.points.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        LaserPoint point{};
+        point.r = marker;
+        point.i = marker;
+        frame.points.push_back(point);
     }
     return frame;
 }
@@ -158,6 +176,119 @@ void testHoldLastFrameRepeatsPreviousContent() {
     ASSERT_EQ(secondOutput.points.size(), static_cast<std::size_t>(4), "held frame keeps original size");
     ASSERT_EQ(secondOutput.points.front().x, 20.0f, "held frame repeats the first point");
     ASSERT_EQ(secondOutput.points.back().x, 23.0f, "held frame repeats the last point");
+}
+
+void testRetainedFrameTransportDoesNotResendHeldFrame() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    prepareController(controller);
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame frame = makeSteppedFrame(20.0f, 4);
+    frame.time = now;
+    ASSERT_TRUE(controller.sendFrame(std::move(frame)), "frame queued");
+
+    Frame firstOutput;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           now,
+                                           firstOutput,
+                                           0,
+                                           true,
+                                           false),
+                "first retained-frame request succeeds");
+    ASSERT_EQ(firstOutput.points.size(), static_cast<std::size_t>(4), "first frame is sent");
+    ASSERT_EQ(firstOutput.points.front().x, 20.0f, "first frame content is preserved");
+
+    Frame idleOutput;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           now,
+                                           idleOutput,
+                                           0,
+                                           true,
+                                           false),
+                "idle retained-frame request succeeds");
+    ASSERT_TRUE(idleOutput.points.empty(),
+                "retained transport does not resend a held frame while idle");
+}
+
+void testRetainedFrameTransportAdvancesWhenReplacementArrives() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(500));
+    prepareController(controller);
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame first = makeMarkerFrame(0.1f);
+    first.time = now;
+    ASSERT_TRUE(controller.sendFrame(std::move(first)), "first frame queued");
+
+    Frame firstOutput;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           now,
+                                           firstOutput,
+                                           0,
+                                           true,
+                                           false),
+                "first retained-frame request succeeds");
+    ASSERT_EQ(firstOutput.points.front().r, 0.1f, "first frame is emitted");
+
+    Frame second = makeMarkerFrame(0.2f);
+    second.time = now;
+    ASSERT_TRUE(controller.sendFrame(std::move(second)), "replacement frame queued");
+
+    Frame replacementOutput;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           now,
+                                           replacementOutput,
+                                           0,
+                                           true,
+                                           false),
+                "replacement retained-frame request succeeds");
+    ASSERT_EQ(replacementOutput.points.front().r, 0.2f,
+              "retained transport advances to the replacement frame");
+}
+
+void testRetainedFrameTransportStillBlanksAfterHoldTimeout() {
+    FrameRequestTestController controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(0));
+    LaserController::setMaxFrameHoldTime(std::chrono::milliseconds(1));
+    prepareController(controller);
+
+    const auto now = std::chrono::steady_clock::now();
+    Frame frame = makeSteppedFrame(30.0f, 4);
+    frame.time = now;
+    ASSERT_TRUE(controller.sendFrame(std::move(frame)), "frame queued");
+
+    Frame firstOutput;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           now,
+                                           firstOutput,
+                                           0,
+                                           true,
+                                           false),
+                "first retained-frame request succeeds");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+
+    Frame blankOutput;
+    ASSERT_TRUE(controller.requestFrameNow(32,
+                                           6,
+                                           std::chrono::steady_clock::now(),
+                                           blankOutput,
+                                           0,
+                                           true,
+                                           false),
+                "blank retained-frame request succeeds");
+    ASSERT_EQ(blankOutput.points.size(), static_cast<std::size_t>(6),
+              "hold timeout emits the requested blank size");
+    ASSERT_EQ(blankOutput.points.front().r, 0.0f, "blank output clears red");
+    ASSERT_EQ(blankOutput.points.front().i, 0.0f, "blank output clears intensity");
 }
 
 void testTransitionBlankingIsPrependedToNextDistantFrame() {
@@ -604,6 +735,9 @@ int main() {
     testDueQueuedFramePassesThroughUnchanged();
     testFutureFrameReturnsIdleBlankFrame();
     testHoldLastFrameRepeatsPreviousContent();
+    testRetainedFrameTransportDoesNotResendHeldFrame();
+    testRetainedFrameTransportAdvancesWhenReplacementArrives();
+    testRetainedFrameTransportStillBlanksAfterHoldTimeout();
     testTransitionBlankingIsPrependedToNextDistantFrame();
     testOversizedFrameIsDeliveredAcrossMultipleTransportFrames();
     testOversizedFrameFinishesItsLoopBeforeSwitchingFrames();

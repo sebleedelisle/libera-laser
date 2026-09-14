@@ -14,6 +14,7 @@ public:
 
     IdnControllerInfo(std::string id,
                       std::string unitIdValue,
+                      unsigned int serviceIdValue,
                       std::string label,
                       std::uint32_t maxPointRateValue,
                       unsigned int controllerIndexValue,
@@ -27,12 +28,14 @@ public:
                      maxPointRateValue,
                      std::move(networkInfo))
     , unitIdString(std::move(unitIdValue))
+    , idnServiceId(serviceIdValue)
     , controllerIndex(controllerIndexValue)
     , firmwareVersion(firmwareVersionValue)
     , hostNameString(std::move(hostNameValue))
     , serviceNameString(std::move(serviceNameValue)) {}
 
     const std::string& unitId() const { return unitIdString; }
+    unsigned int serviceId() const { return idnServiceId; }
     unsigned int index() const { return controllerIndex; }
     int firmwareVersionValue() const { return firmwareVersion; }
     const std::string& hostName() const { return hostNameString; }
@@ -40,6 +43,7 @@ public:
 
 private:
     std::string unitIdString;
+    unsigned int idnServiceId = 0;
     unsigned int controllerIndex = 0;
     int firmwareVersion = 0;
     std::string hostNameString;

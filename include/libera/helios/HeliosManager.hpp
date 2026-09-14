@@ -64,6 +64,8 @@ private:
                                                   const HeliosControllerInfo& info) override;
     void prepareExistingController(HeliosController& controller,
                                    const HeliosControllerInfo& info) override;
+    void disconnectControllerInstance(const std::string& key,
+                                      HeliosController& controller) override;
     void closeController(const std::string& key, HeliosController& controller) override;
     void afterCloseControllers() override;
 };

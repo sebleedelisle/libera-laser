@@ -3,12 +3,12 @@
 #include "libera/core/LaserPoint.hpp"
 #include "libera/log/Log.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace libera;
@@ -87,7 +87,7 @@ std::shared_ptr<LaserController> waitForController(LightSpaceNetManager& manager
 
 int main() {
     logInfo("=== LightSpace Net hardware stream test ===");
-    logInfo("This sends a small dim square for 3 seconds after discovery.");
+    logInfo("This submits a small dim square for 3 seconds after discovery.");
 
     LightSpaceNetManager manager;
     auto controller = waitForController(manager);
@@ -100,63 +100,74 @@ int main() {
     constexpr std::uint32_t pointRate = 30000;
     controller->setPointRate(pointRate);
 
-    const auto frame = makeDimSquareFrame();
-    std::atomic<std::uint64_t> totalPoints{0};
-    std::atomic<std::uint64_t> callbackCalls{0};
-
-    controller->setPointCallback(
-        [&](const PointFillRequest& request, std::vector<LaserPoint>& output) {
-            callbackCalls.fetch_add(1, std::memory_order_relaxed);
-            const auto start = totalPoints.load(std::memory_order_relaxed);
-            const auto count = request.maximumPointsRequired;
-            for (std::size_t i = 0; i < count; ++i) {
-                output.push_back(frame[(start + i) % frame.size()]);
-            }
-            totalPoints.fetch_add(count, std::memory_order_relaxed);
-        });
+    const auto framePoints = makeDimSquareFrame();
+    std::uint64_t submittedFrames = 0;
+    std::uint64_t acceptedFrames = 0;
+    std::uint64_t skippedFrames = 0;
 
     controller->setArmed(true);
 
     const auto start = std::chrono::steady_clock::now();
+    auto lastLogTime = start;
     while (std::chrono::steady_clock::now() - start < std::chrono::seconds(3)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
-        const auto status = controller->getStatus();
-        const auto buffer = controller->getBufferState();
-        if (buffer) {
-            logInfo("status",
-                    static_cast<int>(status),
-                    "buffer",
-                    buffer->pointsInBuffer,
-                    "/",
-                    buffer->totalBufferPoints,
-                    "callbacks",
-                    callbackCalls.load(std::memory_order_relaxed),
-                    "points",
-                    totalPoints.load(std::memory_order_relaxed));
+        if (controller->tryIsReadyForNewFrame()) {
+            Frame frame;
+            frame.points = framePoints;
+            ++submittedFrames;
+            if (controller->trySendFrame(std::move(frame))) {
+                ++acceptedFrames;
+            } else {
+                ++skippedFrames;
+            }
         } else {
-            logInfo("status",
-                    static_cast<int>(status),
-                    "callbacks",
-                    callbackCalls.load(std::memory_order_relaxed),
-                    "points",
-                    totalPoints.load(std::memory_order_relaxed));
+            ++skippedFrames;
         }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastLogTime >= std::chrono::milliseconds(250)) {
+            lastLogTime = now;
+            const auto status = controller->getStatus();
+            const auto buffer = controller->getBufferState();
+            if (buffer) {
+                logInfo("status",
+                        static_cast<int>(status),
+                        "buffer",
+                        buffer->pointsInBuffer,
+                        "/",
+                        buffer->totalBufferPoints,
+                        "queued",
+                        controller->queuedFrameCount(),
+                        "accepted",
+                        acceptedFrames,
+                        "skipped",
+                        skippedFrames);
+            } else {
+                logInfo("status",
+                        static_cast<int>(status),
+                        "queued",
+                        controller->queuedFrameCount(),
+                        "accepted",
+                        acceptedFrames,
+                        "skipped",
+                        skippedFrames);
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     controller->setArmed(false);
-    controller->clearPointCallback();
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
     manager.closeAll();
 
-    const auto calls = callbackCalls.load(std::memory_order_relaxed);
-    const auto points = totalPoints.load(std::memory_order_relaxed);
-    if (calls == 0 || points == 0) {
-        logError("Stream callback was not consumed by the backend.");
+    if (acceptedFrames == 0) {
+        logError("No frame was accepted by the backend.");
         return 1;
     }
 
     logInfo("LightSpace Net stream test finished.",
-            "callbacks", calls,
-            "points", points);
+            "submitted", submittedFrames,
+            "accepted", acceptedFrames,
+            "skipped", skippedFrames);
     return 0;
 }

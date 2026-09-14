@@ -30,6 +30,7 @@ private:
     std::size_t emptySdkDiagnosticCountdown = 0;
     bool reportedSdkSlotsWithoutResults = false;
     std::unordered_map<unsigned int, std::string> stableUnitIdByIndex;
+    std::unordered_map<unsigned int, std::string> stableControllerIdByIndex;
 
     std::string controllerKey(const IdnControllerInfo& info) const override;
     ControllerPtr createController(const IdnControllerInfo& info) override;

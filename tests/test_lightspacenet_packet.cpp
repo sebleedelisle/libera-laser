@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 using namespace libera;
@@ -75,8 +76,8 @@ void testPointStreamEncoding() {
     ASSERT_EQ(readBe16(parsed->payload.data()), static_cast<std::uint16_t>(2), "point count");
 
     const auto* firstPoint = parsed->payload.data() + 2;
-    ASSERT_EQ(readBe16(firstPoint + 0), static_cast<std::uint16_t>(0x8000), "x -1 maps to signed minimum");
-    ASSERT_EQ(readBe16(firstPoint + 2), static_cast<std::uint16_t>(0), "y 0 maps to signed centre");
+    ASSERT_EQ(readBe16(firstPoint + 0), static_cast<std::uint16_t>(0), "x -1 maps to unsigned12 minimum");
+    ASSERT_EQ(readBe16(firstPoint + 2), static_cast<std::uint16_t>(2048), "y 0 maps to unsigned12 centre");
     ASSERT_EQ(firstPoint[4], static_cast<std::uint8_t>(255), "red maps to 255");
     ASSERT_EQ(firstPoint[5], static_cast<std::uint8_t>(128), "green half maps to 128");
     ASSERT_EQ(firstPoint[6], static_cast<std::uint8_t>(0), "blue maps to 0");
@@ -112,8 +113,8 @@ void testCoordinateAxisOptions() {
     ASSERT_TRUE(parsed.has_value(), "axis option point stream parses");
 
     const auto* firstPoint = parsed->payload.data() + 2;
-    ASSERT_EQ(readBe16(firstPoint + 0), static_cast<std::uint16_t>(0x4000), "swapped/inverted x encodes original -y");
-    ASSERT_EQ(readBe16(firstPoint + 2), static_cast<std::uint16_t>(0xE000), "swapped/inverted y encodes original -x");
+    ASSERT_EQ(readBe16(firstPoint + 0), static_cast<std::uint16_t>(3071), "swapped/inverted x encodes original -y");
+    ASSERT_EQ(readBe16(firstPoint + 2), static_cast<std::uint16_t>(1536), "swapped/inverted y encodes original -x");
 }
 
 void testNarrowCoordinateEncodingsCanBeSelected() {
@@ -152,8 +153,45 @@ void testCoordinateScaleAndByteOrderCanBeSelected() {
     ASSERT_TRUE(parsed.has_value(), "little-endian scaled point stream parses");
 
     const auto* firstPoint = parsed->payload.data() + 2;
-    ASSERT_EQ(firstPoint[0], static_cast<std::uint8_t>(0x00), "little-endian x low byte first");
-    ASSERT_EQ(firstPoint[1], static_cast<std::uint8_t>(0x40), "little-endian x high byte second");
+    ASSERT_EQ(firstPoint[0], static_cast<std::uint8_t>(0xFF), "little-endian x low byte first");
+    ASSERT_EQ(firstPoint[1], static_cast<std::uint8_t>(0x0B), "little-endian x high byte second");
+}
+
+void testNonFinitePointValuesEncodeSafely() {
+    std::vector<core::LaserPoint> points;
+    core::LaserPoint point;
+    point.x = std::numeric_limits<float>::quiet_NaN();
+    point.y = std::numeric_limits<float>::infinity();
+    point.r = std::numeric_limits<float>::quiet_NaN();
+    point.g = std::numeric_limits<float>::infinity();
+    point.b = -std::numeric_limits<float>::infinity();
+    points.push_back(point);
+
+    const auto packet = buildPointStreamPacket(points);
+    const auto parsed = parsePacket(packet.data(), packet.size());
+    ASSERT_TRUE(parsed.has_value(), "non-finite point stream parses");
+
+    const auto* firstPoint = parsed->payload.data() + 2;
+    ASSERT_EQ(readBe16(firstPoint + 0),
+              static_cast<std::uint16_t>(2048),
+              "NaN x maps to unsigned12 centre");
+    ASSERT_EQ(readBe16(firstPoint + 2),
+              static_cast<std::uint16_t>(2048),
+              "infinite y maps to unsigned12 centre");
+    ASSERT_EQ(firstPoint[4], static_cast<std::uint8_t>(0), "NaN red maps to 0");
+    ASSERT_EQ(firstPoint[5], static_cast<std::uint8_t>(0), "infinite green maps to 0");
+    ASSERT_EQ(firstPoint[6], static_cast<std::uint8_t>(0), "infinite blue maps to 0");
+}
+
+void testRejectsUnsupportedProtocolVersion() {
+    auto packet = buildHeartbeatQueryPacket(0x0102030405060708ull);
+    packet[13] = 0x02;
+    const auto crc = crc16Ccitt(packet.data(), packet.size() - 2);
+    packet[packet.size() - 2] = static_cast<std::uint8_t>((crc >> 8) & 0xFFu);
+    packet[packet.size() - 1] = static_cast<std::uint8_t>(crc & 0xFFu);
+
+    ASSERT_TRUE(!parsePacket(packet.data(), packet.size()).has_value(),
+                "unsupported protocol version is rejected");
 }
 
 void testParsesBroadcastResponse() {
@@ -214,6 +252,24 @@ void testScanFrequencyClampsToDocumentRange() {
     ASSERT_EQ(LightSpaceNetConfig::scanFrequencyKilohertz(150000),
               static_cast<std::uint8_t>(30),
               "high rate clamps to documented 30 kHz limit");
+}
+
+void testPointRateClampsToSupportedScanRate() {
+    ASSERT_EQ(LightSpaceNetConfig::clampPointRate(0),
+              static_cast<std::uint32_t>(30000),
+              "zero rate falls back to default point rate");
+    ASSERT_EQ(LightSpaceNetConfig::clampPointRate(500),
+              static_cast<std::uint32_t>(1000),
+              "low point rate clamps to the documented minimum");
+    ASSERT_EQ(LightSpaceNetConfig::clampPointRate(80000),
+              static_cast<std::uint32_t>(30000),
+              "point rate must not exceed the scan rate the protocol can set");
+}
+
+void testDefaultPatternUpdateIntervalAddsNoFixedDelay() {
+    ASSERT_EQ(LightSpaceNetConfig::DEFAULT_PATTERN_UPDATE_INTERVAL.count(),
+              0,
+              "LightSpace current-pattern pacing is based on sent points by default");
 }
 
 void testScanFrequencyPacketUsesKilohertzPayload() {
@@ -369,9 +425,13 @@ int main() {
     testCoordinateAxisOptions();
     testNarrowCoordinateEncodingsCanBeSelected();
     testCoordinateScaleAndByteOrderCanBeSelected();
+    testNonFinitePointValuesEncodeSafely();
+    testRejectsUnsupportedProtocolVersion();
     testParsesBroadcastResponse();
     testParsesObservedBroadcastNetworkLayout();
     testScanFrequencyClampsToDocumentRange();
+    testPointRateClampsToSupportedScanRate();
+    testDefaultPatternUpdateIntervalAddsNoFixedDelay();
     testScanFrequencyPacketUsesKilohertzPayload();
     testPointStreamPacketLengthForCompletePattern();
     testCurrentPatternFirmwareSafePacketLimit();

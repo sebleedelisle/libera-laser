@@ -31,7 +31,7 @@ enum class LightSpaceNetCoordinateByteOrder {
 };
 
 struct LightSpaceNetCoordinateOptions {
-    LightSpaceNetCoordinateEncoding encoding = LightSpaceNetCoordinateEncoding::Signed16;
+    LightSpaceNetCoordinateEncoding encoding = LightSpaceNetCoordinateEncoding::Unsigned12;
     LightSpaceNetCoordinateByteOrder byteOrder = LightSpaceNetCoordinateByteOrder::BigEndian;
     bool invertX = false;
     bool invertY = false;

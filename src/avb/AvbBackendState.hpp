@@ -36,6 +36,7 @@ public:
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<AvbController> connectController(const AvbControllerInfo& info);
+    bool disconnectController(const std::string& controllerId);
     void closeAll();
 
     std::vector<AvbAudioDeviceInfo> availableDevices();

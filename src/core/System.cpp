@@ -326,6 +326,15 @@ System::connectController(const core::ControllerInfo& info) {
     return controller;
 }
 
+bool System::disconnectController(std::string_view type, std::string_view id) {
+    auto it = managerByType.find(std::string(type));
+    if (it == managerByType.end() || !it->second) {
+        return false;
+    }
+
+    return it->second->disconnectController(id);
+}
+
 void System::shutdown() {
     if (shutdownComplete) {
         return;

@@ -16,13 +16,15 @@ namespace {
 // the Helios SDK's transient device indices.
 struct DiscoveredIdnService {
     std::string unitId;
+    std::string controllerId;
     core::ControllerInfo::NetworkInfo networkInfo;
+    unsigned int serviceId = 0;
     std::string hostName;
     std::string serviceName;
     std::string displayLabel;
 };
 
-// Snapshot of one raw discovery pass. The same unit can be looked up either by
+// Snapshot of one raw discovery pass. The same service can be looked up either by
 // its service label or, for SDK fallback names, by its advertised IP address.
 struct IdnDiscoverySnapshot {
     std::unordered_map<std::string, std::vector<DiscoveredIdnService>> servicesByLabel;
@@ -37,8 +39,13 @@ std::string makeFallbackUnitId(unsigned int index) {
     return "unknown-index-" + std::to_string(index);
 }
 
-std::string makeControllerIdFromUnitId(const std::string& unitId) {
-    return "idn-" + unitId;
+std::string makeFallbackControllerId(unsigned int index) {
+    return "idn-" + makeFallbackUnitId(index);
+}
+
+std::string makeControllerIdFromServiceId(const std::string& unitId,
+                                          unsigned int serviceId) {
+    return "idn-" + unitId + "-service-" + std::to_string(serviceId);
 }
 
 constexpr std::size_t sdkNameMaxLength = 31;
@@ -75,6 +82,11 @@ std::string makeDisplayServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
     return fallbackLabel;
 }
 
+IdnController::HealthEndpoint makeHealthEndpoint(
+    const core::ControllerInfo::NetworkInfo& networkInfo) {
+    return IdnController::HealthEndpoint{networkInfo.ip, networkInfo.port};
+}
+
 std::string ipv4ToString(const in_addr& addr) {
     const std::uint32_t hostOrder = ntohl(addr.s_addr);
     return std::to_string((hostOrder >> 24) & 0xFFu) + "." +
@@ -85,7 +97,7 @@ std::string ipv4ToString(const in_addr& addr) {
 
 std::string encodeUnitIdHex(const std::uint8_t* unitId) {
     // The IDN hello packet gives us a binary 16-byte unit ID. Convert it to a
-    // readable and stable string so it can safely be used as a controller key.
+    // readable and stable string so it can safely be used inside controller keys.
     static constexpr char hexDigits[] = "0123456789abcdef";
     std::string hex;
     hex.reserve(IDNSL_UNITID_LENGTH * 2);
@@ -131,13 +143,16 @@ IdnDiscoverySnapshot discoverIdnServices() {
 
         const std::string unitId = encodeUnitIdHex(serverInfo->unitID);
         for (unsigned int i = 0; i < serverInfo->serviceCount; ++i) {
-            const auto sdkLabel = makeSdkServiceLabel(*serverInfo, serverInfo->serviceTable[i]);
+            const auto& serviceInfo = serverInfo->serviceTable[i];
+            const auto sdkLabel = makeSdkServiceLabel(*serverInfo, serviceInfo);
             DiscoveredIdnService service{
                 unitId,
+                makeControllerIdFromServiceId(unitId, serviceInfo.serviceID),
                 *endpoint,
+                serviceInfo.serviceID,
                 serverInfo->hostName,
-                serverInfo->serviceTable[i].serviceName,
-                makeDisplayServiceLabel(*serverInfo, serverInfo->serviceTable[i], sdkLabel),
+                serviceInfo.serviceName,
+                makeDisplayServiceLabel(*serverInfo, serviceInfo, sdkLabel),
             };
             snapshot.servicesByLabel[sdkLabel].push_back(service);
             snapshot.servicesByIp[endpoint->ip].push_back(std::move(service));
@@ -160,30 +175,31 @@ std::size_t countDiscoveredServices(const IdnDiscoverySnapshot& snapshot) {
 std::optional<DiscoveredIdnService> matchDiscoveredService(
     const std::unordered_map<std::string, std::vector<DiscoveredIdnService>>& servicesByKey,
     const std::string& key,
-    const std::string* preferredUnitId,
-    const std::unordered_set<std::string>& usedUnitIds) {
+    const std::string* preferredControllerId,
+    const std::unordered_set<std::string>& usedControllerIds) {
     const auto servicesIt = servicesByKey.find(key);
     if (servicesIt == servicesByKey.end()) {
         return std::nullopt;
     }
 
     const auto& services = servicesIt->second;
-    if (preferredUnitId) {
-        // First try to keep the same unit ID bound to the same SDK slot as the
+    if (preferredControllerId) {
+        // First try to keep the same service bound to the same SDK slot as the
         // previous snapshot. That preserves controller identity even if several
-        // services share the same display label.
+        // services share the same display label or unit ID.
         for (const auto& service : services) {
-            if (service.unitId == *preferredUnitId &&
-                usedUnitIds.find(service.unitId) == usedUnitIds.end()) {
+            if (service.controllerId == *preferredControllerId &&
+                usedControllerIds.find(service.controllerId) == usedControllerIds.end()) {
                 return service;
             }
         }
     }
 
     // Otherwise pick the first still-unclaimed service for this key. The
-    // caller tracks which unit IDs were already assigned during this snapshot.
+    // caller tracks which service-level controller IDs were already assigned
+    // during this snapshot.
     for (const auto& service : services) {
-        if (usedUnitIds.find(service.unitId) == usedUnitIds.end()) {
+        if (usedControllerIds.find(service.controllerId) == usedControllerIds.end()) {
             return service;
         }
     }
@@ -239,8 +255,8 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     const auto activeSnapshot = liveControllers();
     const bool hasActive = !activeSnapshot.empty();
     bool hasDisconnectedActive = false;
-    for (const auto& [unitId, controller] : activeSnapshot) {
-        (void)unitId;
+    for (const auto& [controllerId, controller] : activeSnapshot) {
+        (void)controllerId;
         if (controller && !controller->isConnected()) {
             hasDisconnectedActive = true;
             break;
@@ -250,7 +266,7 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     // Re-scan policy:
     // keep SDK indices stable during steady-state playback, but allow a rescan
     // once an active controller has already dropped. That gives the manager a
-    // chance to reopen IDN devices and remap the stable unit ID to whichever
+    // chance to reopen IDN devices and remap the stable service ID to whichever
     // transient SDK index it came back on.
     const auto count = refreshControllerCount(!hasActive || hasDisconnectedActive);
     if (!sdk || count == 0) {
@@ -271,7 +287,7 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
 
     emptySdkDiagnosticCountdown = 0;
     const auto discoverySnapshot = discoverIdnServices();
-    std::unordered_set<std::string> usedUnitIds;
+    std::unordered_set<std::string> usedControllerIds;
     std::unordered_set<unsigned int> seenIndices;
     std::size_t closedSlotCount = 0;
     std::size_t usbSlotCount = 0;
@@ -303,59 +319,78 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
 
         const int firmware = sdk->GetFirmwareVersion(index);
         const auto stableUnitIdIt = stableUnitIdByIndex.find(index);
-        const std::string* preferredUnitId =
-            stableUnitIdIt != stableUnitIdByIndex.end() ? &stableUnitIdIt->second : nullptr;
+        const auto stableControllerIdIt = stableControllerIdByIndex.find(index);
+        const std::string* preferredControllerId =
+            stableControllerIdIt != stableControllerIdByIndex.end() ?
+                &stableControllerIdIt->second :
+                nullptr;
 
         // Strategy:
-        // derive a stable unit ID from raw IDN discovery, while still using the
+        // derive a stable service ID from raw IDN discovery, while still using the
         // SDK index as the transient runtime handle for this specific snapshot.
         std::optional<DiscoveredIdnService> matchedService =
             matchDiscoveredService(discoverySnapshot.servicesByLabel,
                                    truncateToSdkNameLength(sdkLabel),
-                                   preferredUnitId,
-                                   usedUnitIds);
+                                   preferredControllerId,
+                                   usedControllerIds);
 
         std::optional<core::ControllerInfo::NetworkInfo> networkInfo;
         static constexpr const char* idnIpPrefix = "IDN: ";
         if (!matchedService && sdkLabel.rfind(idnIpPrefix, 0) == 0 && sdkLabel.size() > 5) {
             // Some SDK fallback names only expose the IP address. Use that as a
-            // second lookup path so we can still recover the stable unit ID.
+            // second lookup path so we can still recover the stable service ID.
             matchedService = matchDiscoveredService(discoverySnapshot.servicesByIp,
                                                     sdkLabel.substr(5),
-                                                    preferredUnitId,
-                                                    usedUnitIds);
+                                                    preferredControllerId,
+                                                    usedControllerIds);
         }
 
         std::string unitId;
+        std::string controllerId;
+        unsigned int serviceId = 0;
         std::string hostName;
         std::string serviceName;
         if (matchedService) {
             unitId = matchedService->unitId;
+            controllerId = matchedService->controllerId;
+            serviceId = matchedService->serviceId;
             networkInfo = matchedService->networkInfo;
             hostName = matchedService->hostName;
             serviceName = matchedService->serviceName;
             if (!matchedService->displayLabel.empty()) {
                 label = matchedService->displayLabel;
             }
-        } else if (stableUnitIdIt != stableUnitIdByIndex.end()) {
+        } else if (stableUnitIdIt != stableUnitIdByIndex.end() &&
+                   stableControllerIdIt != stableControllerIdByIndex.end()) {
             unitId = stableUnitIdIt->second;
+            controllerId = stableControllerIdIt->second;
         } else {
             unitId = makeFallbackUnitId(index);
+            controllerId = makeFallbackControllerId(index);
         }
 
-        if (usedUnitIds.find(unitId) != usedUnitIds.end()) {
+        if (usedControllerIds.find(controllerId) != usedControllerIds.end()) {
             // A duplicate here means the current snapshot could not map two SDK
-            // slots back to distinct protocol identities. Keep them separate for
+            // slots back to distinct protocol services. Keep them separate for
             // now so we do not accidentally collapse live controllers together.
             unitId = makeFallbackUnitId(index);
+            controllerId = makeFallbackControllerId(index);
+            serviceId = 0;
         }
-        usedUnitIds.insert(unitId);
+        usedControllerIds.insert(controllerId);
         stableUnitIdByIndex[index] = unitId;
+        stableControllerIdByIndex[index] = controllerId;
 
-        const auto activeIt = activeSnapshot.find(unitId);
+        const auto activeIt = activeSnapshot.find(controllerId);
         if (activeIt != activeSnapshot.end() && activeIt->second) {
             if (activeIt->second->controllerIndex() != index) {
                 activeIt->second->updateControllerIndex(index);
+            }
+            if (networkInfo) {
+                activeIt->second->setHealthEndpoint(makeHealthEndpoint(*networkInfo));
+            }
+            if (matchedService) {
+                activeIt->second->noteDiscoverySeen();
             }
         }
 
@@ -364,11 +399,11 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
                 sdkLabel.substr(5),
                 static_cast<std::uint16_t>(IDN_PORT)};
         }
-        std::string id = makeControllerIdFromUnitId(unitId);
 
         results.emplace_back(std::make_unique<IdnControllerInfo>(
-            std::move(id),
+            std::move(controllerId),
             std::move(unitId),
+            serviceId,
             std::move(label),
             HELIOS_MAX_PPS_IDN,
             index,
@@ -394,10 +429,17 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
     }
 
     for (auto it = stableUnitIdByIndex.begin(); it != stableUnitIdByIndex.end();) {
-        // Drop cached slot-to-unit bindings for SDK indices that no longer
+        // Drop cached slot-to-service bindings for SDK indices that no longer
         // exist in the latest snapshot. Fresh discoveries will rebuild them.
         if (seenIndices.find(it->first) == seenIndices.end()) {
             it = stableUnitIdByIndex.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = stableControllerIdByIndex.begin(); it != stableControllerIdByIndex.end();) {
+        if (seenIndices.find(it->first) == seenIndices.end()) {
+            it = stableControllerIdByIndex.erase(it);
         } else {
             ++it;
         }
@@ -408,18 +450,26 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
 
 std::string
 IdnManager::controllerKey(const IdnControllerInfo& info) const {
-    return info.unitId();
+    return info.idValue();
 }
 
 std::shared_ptr<IdnController>
 IdnManager::createController(const IdnControllerInfo& info) {
-    return std::make_shared<IdnController>(sdk, info.index());
+    IdnController::HealthEndpoint endpoint;
+    if (const auto& networkInfo = info.networkInfo()) {
+        endpoint = makeHealthEndpoint(*networkInfo);
+    }
+    return std::make_shared<IdnController>(sdk, info.index(), std::move(endpoint));
 }
 
 IdnManager::NewControllerDisposition
 IdnManager::prepareNewController(IdnController& controller,
                                  const IdnControllerInfo& info) {
-    (void)info;
+    if (const auto& networkInfo = info.networkInfo()) {
+        controller.setHealthEndpoint(makeHealthEndpoint(*networkInfo));
+        controller.noteDiscoverySeen();
+    }
+    controller.startHealthMonitoring();
     // Keep existing behavior: calling connectController can re-start a controller.
     controller.startThread();
     return NewControllerDisposition::KeepController;
@@ -427,13 +477,18 @@ IdnManager::prepareNewController(IdnController& controller,
 
 void IdnManager::prepareExistingController(IdnController& controller,
                                            const IdnControllerInfo& info) {
-    (void)info;
+    if (const auto& networkInfo = info.networkInfo()) {
+        controller.setHealthEndpoint(makeHealthEndpoint(*networkInfo));
+        controller.noteDiscoverySeen();
+    }
+    controller.startHealthMonitoring();
     controller.startThread();
 }
 
 void IdnManager::closeController(const std::string& key,
                                  IdnController& controller) {
     (void)key;
+    controller.stopHealthMonitoring();
     controller.close();
 }
 
@@ -447,6 +502,7 @@ void IdnManager::afterCloseControllers() {
     emptySdkDiagnosticCountdown = 0;
     reportedSdkSlotsWithoutResults = false;
     stableUnitIdByIndex.clear();
+    stableControllerIdByIndex.clear();
 }
 
 } // namespace libera::idn

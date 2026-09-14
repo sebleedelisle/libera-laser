@@ -115,7 +115,9 @@ bool LaserController::sendFrame(Frame&& frame) {
         activeSource = ContentSource::FrameQueue;
     }
 
-    if (!frameScheduler->isReadyForNewFrame(queuedPointBudget())) {
+    if (!frameScheduler->isReadyForNewFrame(
+            queuedPointBudget(),
+            minimumQueuedFramePointCountForReadiness())) {
         return false;
     }
 
@@ -148,7 +150,10 @@ bool LaserController::trySendFrame(Frame&& frame) {
         activeSource = ContentSource::FrameQueue;
     }
 
-    return frameScheduler->tryEnqueueFrameIfReady(std::move(frame), queuedPointBudget());
+    return frameScheduler->tryEnqueueFrameIfReady(
+        std::move(frame),
+        queuedPointBudget(),
+        minimumQueuedFramePointCountForReadiness());
 }
 
 void LaserController::useFrameQueue() {
@@ -200,7 +205,9 @@ bool LaserController::isFrameModeEnabled() const {
 
 bool LaserController::isReadyForNewFrame() const {
     std::lock_guard<std::mutex> lock(contentSourceMutex);
-    return frameScheduler->isReadyForNewFrame(queuedPointBudget());
+    return frameScheduler->isReadyForNewFrame(
+        queuedPointBudget(),
+        minimumQueuedFramePointCountForReadiness());
 }
 
 bool LaserController::tryIsReadyForNewFrame() const {
@@ -209,7 +216,9 @@ bool LaserController::tryIsReadyForNewFrame() const {
         return false;
     }
 
-    return frameScheduler->tryIsReadyForNewFrame(queuedPointBudget());
+    return frameScheduler->tryIsReadyForNewFrame(
+        queuedPointBudget(),
+        minimumQueuedFramePointCountForReadiness());
 }
 
 std::size_t LaserController::queuedFrameCount() const {
@@ -421,6 +430,7 @@ bool LaserController::requestFrame(const FrameFillRequest& request, Frame& outpu
     schedulerRequest.estimatedFirstPointRenderTime = request.estimatedFirstPointRenderTime;
     schedulerRequest.currentPointIndex = request.currentPointIndex;
     schedulerRequest.advanceWhenAvailable = request.advanceWhenAvailable;
+    schedulerRequest.repeatCurrentFrameWhenIdle = request.repeatCurrentFrameWhenIdle;
     frameScheduler->fillFrame(
         schedulerRequest,
         maxFrameHoldTime(),
@@ -436,10 +446,16 @@ bool LaserController::isUsingFrameQueueSource() const {
 }
 
 std::size_t LaserController::queuedPointBudget() const {
+    if (hasQueuedFramePointBudgetOverride.load(std::memory_order_acquire)) {
+        return queuedFramePointBudgetOverride.load(std::memory_order_relaxed);
+    }
+
     const auto latencyPoints = static_cast<std::size_t>(
         std::max(0, millisToPoints(targetLatency())));
-    const auto nominalFramePoints =
-        std::max<std::size_t>(frameScheduler->nominalFramePointCount(), 1);
+    const auto nominalFramePoints = std::max({
+        frameScheduler->nominalFramePointCount(),
+        minimumQueuedFramePointCountForReadiness(),
+        static_cast<std::size_t>(1)});
 
     // Frame-first transports (Helios USB, IDN, …) drain one frame per status
     // tick. For configurations where one frame's playback time is comparable
@@ -550,6 +566,28 @@ void LaserController::clearFrameTransportSubmissionEstimate() {
         frameTransportEstimate = FrameTransportEstimate{};
     }
     clearEstimatedBufferState();
+}
+
+void LaserController::setMinimumQueuedFramePointCountForReadiness(std::size_t pointCount) {
+    minimumQueuedFramePointCount.store(std::max<std::size_t>(pointCount, 1),
+                                       std::memory_order_relaxed);
+}
+
+std::size_t LaserController::minimumQueuedFramePointCountForReadiness() const {
+    return std::max<std::size_t>(
+        minimumQueuedFramePointCount.load(std::memory_order_relaxed),
+        1);
+}
+
+void LaserController::setQueuedFramePointBudgetOverride(
+    std::optional<std::size_t> pointBudget) {
+    if (pointBudget) {
+        queuedFramePointBudgetOverride.store(*pointBudget, std::memory_order_relaxed);
+        hasQueuedFramePointBudgetOverride.store(true, std::memory_order_release);
+    } else {
+        hasQueuedFramePointBudgetOverride.store(false, std::memory_order_release);
+        queuedFramePointBudgetOverride.store(0, std::memory_order_relaxed);
+    }
 }
 
 std::chrono::steady_clock::time_point

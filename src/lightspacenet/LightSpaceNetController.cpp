@@ -24,6 +24,7 @@ namespace {
 
 constexpr auto reconnectRetryDelay = std::chrono::milliseconds(100);
 constexpr auto commandRetryDelay = std::chrono::seconds(1);
+constexpr auto repeatedBlankPollInterval = std::chrono::milliseconds(5);
 constexpr std::array<std::uint8_t, 10> protocolHeader{
     'L', 'I', 'G', 'H', 'T', 'S', 'P', 'A', 'C', 'E'
 };
@@ -96,12 +97,61 @@ std::chrono::steady_clock::duration pointPlaybackDuration(std::size_t pointCount
             static_cast<double>(pointCount) / static_cast<double>(pointRate)));
 }
 
+std::size_t pointCountForDuration(std::chrono::milliseconds duration,
+                                  std::uint32_t pointRate) {
+    if (duration.count() <= 0 || pointRate == 0) {
+        return 0;
+    }
+
+    const auto millis = static_cast<std::uint64_t>(duration.count());
+    const auto points =
+        ((millis * static_cast<std::uint64_t>(pointRate)) + 999u) / 1000u;
+    return static_cast<std::size_t>(std::min<std::uint64_t>(
+        points,
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())));
+}
+
 std::vector<core::LaserPoint> makeBlankPatternPoints(std::size_t pointCount) {
     std::vector<core::LaserPoint> blankPoints(pointCount);
     for (auto& point : blankPoints) {
         point.i = 0.0f;
     }
     return blankPoints;
+}
+
+std::vector<core::LaserPoint> makeBlankPatternAtPoint(
+    const core::LaserPoint& anchor,
+    std::size_t pointCount) {
+    std::vector<core::LaserPoint> blankPoints(pointCount);
+    for (auto& point : blankPoints) {
+        point.x = anchor.x;
+        point.y = anchor.y;
+        point.r = 0.0f;
+        point.g = 0.0f;
+        point.b = 0.0f;
+        point.i = 0.0f;
+    }
+    return blankPoints;
+}
+
+bool patternPointsAreBlank(const std::vector<core::LaserPoint>& points) {
+    for (const auto& point : points) {
+        if (point.r > 0.001f || point.g > 0.001f || point.b > 0.001f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void padBlankPatternToPointLimit(std::vector<core::LaserPoint>& points,
+                                 std::size_t patternPointLimit) {
+    if (points.empty() ||
+        points.size() >= patternPointLimit ||
+        !patternPointsAreBlank(points)) {
+        return;
+    }
+
+    points = makeBlankPatternAtPoint(points.back(), patternPointLimit);
 }
 
 const char* coordinateEncodingName(LightSpaceNetCoordinateEncoding encoding) {
@@ -256,19 +306,21 @@ std::chrono::milliseconds patternUpdateIntervalFromEnvironment() {
 
     char* end = nullptr;
     const long parsed = std::strtol(rawValue, &end, 10);
-    if (end == rawValue || parsed <= 0) {
+    if (end == rawValue || parsed < 0) {
         logError("[LightSpaceNetController] invalid LIBERA_LIGHTSPACENET_PATTERN_MS",
                  rawValue,
                  "using default");
         return LightSpaceNetConfig::DEFAULT_PATTERN_UPDATE_INTERVAL;
     }
 
-    return std::chrono::milliseconds(std::clamp<long>(parsed, 1, 1000));
+    return std::chrono::milliseconds(std::clamp<long>(parsed, 0, 1000));
 }
 
 } // namespace
 
-LightSpaceNetController::LightSpaceNetController() = default;
+LightSpaceNetController::LightSpaceNetController() {
+    updateFrameReadinessBackpressure();
+}
 
 LightSpaceNetController::LightSpaceNetController(LightSpaceNetControllerInfo info)
     : LightSpaceNetController() {
@@ -332,10 +384,6 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
     }
     tcpClient->setLowLatency();
 
-    networkConnected.store(true, std::memory_order_relaxed);
-    reconnectRequested.store(false, std::memory_order_relaxed);
-    setConnectionState(true);
-
     const auto now = std::chrono::steady_clock::now();
     lastHeartbeatSentTime = {};
     lastHeartbeatReplyTime = now;
@@ -346,18 +394,18 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
     laserStatePushNeeded = true;
     nextLaserStateSyncTime = {};
     coordinateOptions = coordinateOptionsFromEnvironment();
-    commandAckRequired = !environmentFlagEnabled("LIBERA_LIGHTSPACENET_SKIP_COMMAND_ACK");
     strictHeartbeat = environmentFlagEnabled("LIBERA_LIGHTSPACENET_REQUIRE_HEARTBEAT");
     timingLogEnabled = environmentFlagEnabled("LIBERA_LIGHTSPACENET_TIMING_LOG");
     heartbeatTimeoutLogged = false;
+    commandAckMode = CommandAckMode::Probe;
     patternUpdateInterval = patternUpdateIntervalFromEnvironment();
-    lastPatternSentTime = {};
     nextPatternSendTime = {};
     lastIncomingPollTime = {};
     patternPointLimit = patternPointLimitFromEnvironment();
-    lastSentPacketPointCount = 0;
+    updateFrameReadinessBackpressure();
     lastSentPacketBytes = 0;
     lastSubmittedPatternPoints = 0;
+    lastSentPatternWasBlank = false;
     estimatedWriteLead = std::chrono::microseconds(0);
     currentPointIndex = 0;
     clearFrameTransportSubmissionEstimate();
@@ -365,6 +413,10 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
     timingLogWindowStart = {};
     timingLogPacketsSent = 0;
     timingLogPointsSent = 0;
+
+    networkConnected.store(true, std::memory_order_relaxed);
+    reconnectRequested.store(false, std::memory_order_relaxed);
+    setConnectionState(true);
 
     logInfo("[LightSpaceNetController] coordinate mapping",
             coordinateEncodingName(coordinateOptions.encoding),
@@ -381,8 +433,7 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
             "pps -> scan rate",
             static_cast<int>(LightSpaceNetConfig::scanFrequencyKilohertz(getPointRate())),
             "kHz");
-    logInfo("[LightSpaceNetController] command ACK mode",
-            commandAckRequired ? "required" : "fire-and-forget");
+    logInfo("[LightSpaceNetController] command ACK mode adaptive");
     logInfo("[LightSpaceNetController] timing log",
             timingLogEnabled ? "enabled" : "disabled");
     logInfo("[LightSpaceNetController] maximum frame points", patternPointLimit);
@@ -391,6 +442,9 @@ libera::expected<void> LightSpaceNetController::connectToStatus(const LightSpace
     logInfo("[LightSpaceNetController] minimum pattern update interval",
             patternUpdateInterval.count(),
             "ms");
+    logInfo("[LightSpaceNetController] minimum queued-frame readiness cost",
+            minimumQueuedFramePointCountForReadiness(),
+            "points");
 
     setEstimatedBufferCapacity(static_cast<int>(patternPointLimit));
     updateEstimatedBufferSnapshotNow(0, getPointRate());
@@ -430,6 +484,7 @@ void LightSpaceNetController::close() {
     reconnectRequested.store(false, std::memory_order_relaxed);
     setConnectionState(false);
     clearEstimatedBufferState();
+    lastSentPatternWasBlank = false;
     if (tcpClient) {
         tcpClient->close();
     }
@@ -439,7 +494,9 @@ void LightSpaceNetController::run() {
     resetStartupBlank();
 
     while (running.load()) {
-        if (!networkConnected.load(std::memory_order_relaxed) || !hasTcpConnection()) {
+        if (reconnectRequested.load(std::memory_order_relaxed) ||
+            !networkConnected.load(std::memory_order_relaxed) ||
+            !hasTcpConnection()) {
             setConnectionState(false);
             networkConnected.store(false, std::memory_order_relaxed);
             reconnectRequested.store(false, std::memory_order_relaxed);
@@ -454,8 +511,17 @@ void LightSpaceNetController::run() {
 
         setConnectionState(true);
         syncPointRate();
+        if (!networkConnected.load(std::memory_order_relaxed) || !hasTcpConnection()) {
+            continue;
+        }
         syncLaserState();
+        if (!networkConnected.load(std::memory_order_relaxed) || !hasTcpConnection()) {
+            continue;
+        }
         sendHeartbeatIfDue();
+        if (!networkConnected.load(std::memory_order_relaxed) || !hasTcpConnection()) {
+            continue;
+        }
 
         (void)sendFramePattern();
         const auto now = std::chrono::steady_clock::now();
@@ -486,12 +552,20 @@ void LightSpaceNetController::setPointRate(std::uint32_t pointRateValue) {
         clampedPointRate != getPointRate() || lastSentPointRate != clampedPointRate;
 
     LaserControllerStreaming::setPointRate(clampedPointRate);
+    updateFrameReadinessBackpressure();
     if (!deviceRateNeedsUpdate) {
         return;
     }
 
     pointRatePushNeeded = true;
     nextPointRateSyncTime = {};
+}
+
+void LightSpaceNetController::updateFrameReadinessBackpressure() {
+    const auto cadencePoints = pointCountForDuration(patternUpdateInterval, getPointRate());
+    setMinimumQueuedFramePointCountForReadiness(
+        std::max(patternPointLimit, cadencePoints));
+    setQueuedFramePointBudgetOverride(0);
 }
 
 bool LightSpaceNetController::sendPacket(const std::vector<std::uint8_t>& packet,
@@ -515,21 +589,42 @@ bool LightSpaceNetController::sendPacket(const std::vector<std::uint8_t>& packet
     return true;
 }
 
-bool LightSpaceNetController::sendControlCommand(
+LightSpaceNetController::ControlCommandResult LightSpaceNetController::sendControlCommand(
     std::uint8_t commandWord,
     const std::vector<std::uint8_t>& packet) {
-    if (commandAckRequired) {
-        return sendReliableCommand(commandWord, packet);
+    if (commandAckMode == CommandAckMode::Silent) {
+        return sendPacket(packet, std::chrono::milliseconds(50))
+            ? ControlCommandResult::SentWithoutAck
+            : ControlCommandResult::Failed;
     }
 
-    // This escape hatch is useful while validating firmware that accepts
-    // commands but does not return documented ACK packets on the TCP session.
-    return sendPacket(packet, std::chrono::milliseconds(50));
+    const bool recordTimeout = commandAckMode == CommandAckMode::Supported;
+    if (sendReliableCommand(commandWord, packet, recordTimeout)) {
+        commandAckMode = CommandAckMode::Supported;
+        return ControlCommandResult::Acknowledged;
+    }
+
+    if (!networkConnected.load(std::memory_order_relaxed) || !hasTcpConnection()) {
+        return ControlCommandResult::Failed;
+    }
+
+    if (commandAckMode == CommandAckMode::Probe) {
+        logInfo("[LightSpaceNetController] command ACK not observed; continuing with best-effort control commands",
+                "command",
+                static_cast<int>(commandWord));
+    } else {
+        logInfo("[LightSpaceNetController] command ACK timed out; falling back to best-effort control commands",
+                "command",
+                static_cast<int>(commandWord));
+    }
+    commandAckMode = CommandAckMode::Silent;
+    return ControlCommandResult::SentWithoutAck;
 }
 
 bool LightSpaceNetController::sendReliableCommand(
     std::uint8_t commandWord,
-    const std::vector<std::uint8_t>& packet) {
+    const std::vector<std::uint8_t>& packet,
+    bool recordTimeout) {
     for (int attempt = 0; attempt < LightSpaceNetConfig::COMMAND_ACK_ATTEMPTS; ++attempt) {
         if (!sendPacket(packet, LightSpaceNetConfig::COMMAND_ACK_TIMEOUT)) {
             return false;
@@ -542,7 +637,9 @@ bool LightSpaceNetController::sendReliableCommand(
         }
     }
 
-    recordIntermittentError(error_types::network::timeout);
+    if (recordTimeout) {
+        recordIntermittentError(error_types::network::timeout);
+    }
     return false;
 }
 
@@ -776,17 +873,24 @@ void LightSpaceNetController::syncPointRate() {
             "kHz");
 
     const auto packet = buildScanFrequencyPacket(desired);
-    if (sendControlCommand(LightSpaceNetConfig::CMD_SET_SCAN_FREQUENCY, packet)) {
+    const auto result = sendControlCommand(LightSpaceNetConfig::CMD_SET_SCAN_FREQUENCY, packet);
+    if (result != ControlCommandResult::Failed) {
         lastSentPointRate = desired;
         pointRatePushNeeded = false;
         nextPointRateSyncTime = {};
-        logInfo("[LightSpaceNetController] point rate accepted",
-                desired,
-                "pps");
+        if (result == ControlCommandResult::Acknowledged) {
+            logInfo("[LightSpaceNetController] point rate acknowledged",
+                    desired,
+                    "pps");
+        } else {
+            logInfo("[LightSpaceNetController] point rate sent without ACK",
+                    desired,
+                    "pps");
+        }
     } else {
         pointRatePushNeeded = true;
         nextPointRateSyncTime = now + commandRetryDelay;
-        logError("[LightSpaceNetController] point rate command not acknowledged; retrying",
+        logError("[LightSpaceNetController] point rate command failed; retrying",
                  desired,
                  "pps");
     }
@@ -805,7 +909,8 @@ void LightSpaceNetController::syncLaserState() {
     }
 
     const auto packet = buildLaserSwitchPacket(armedNow);
-    if (sendControlCommand(LightSpaceNetConfig::CMD_LASER_ON_OFF, packet)) {
+    if (sendControlCommand(LightSpaceNetConfig::CMD_LASER_ON_OFF, packet) !=
+        ControlCommandResult::Failed) {
         lastSentArmed = armedNow;
         laserStatePushNeeded = false;
         nextLaserStateSyncTime = {};
@@ -833,11 +938,9 @@ bool LightSpaceNetController::sendFramePattern() {
     const auto now = std::chrono::steady_clock::now();
     if (nextPatternSendTime != std::chrono::steady_clock::time_point{} &&
         now < nextPatternSendTime) {
-        lastSentPacketPointCount = 0;
         return true;
     }
 
-    core::Frame frame;
     const auto estimatedFirstRenderTime =
         projectedNextWriteRenderTime(now, nonNegativeMicros(estimatedWriteLead));
     FrameFillRequest request{};
@@ -847,46 +950,60 @@ bool LightSpaceNetController::sendFramePattern() {
     request.estimatedFirstPointRenderTime = estimatedFirstRenderTime;
     request.currentPointIndex = currentPointIndex;
     request.advanceWhenAvailable = true;
+    request.repeatCurrentFrameWhenIdle = false;
 
+    core::Frame frame;
     if (!requestFrame(request, frame)) {
         return false;
     }
+
     if (frame.points.empty()) {
-        lastSentPacketPointCount = 0;
+        lastSentPacketBytes = 0;
+        nextPatternSendTime = now + repeatedBlankPollInterval;
         return true;
     }
 
-    const auto& packetPoints = frame.points;
-    if (packetPoints.empty()) {
-        lastSentPacketPointCount = 0;
+    std::vector<core::LaserPoint> pointsToSend = std::move(frame.points);
+    padBlankPatternToPointLimit(pointsToSend, patternPointLimit);
+
+    if (pointsToSend.empty()) {
+        lastSentPacketBytes = 0;
+        nextPatternSendTime = now + repeatedBlankPollInterval;
         return true;
     }
 
-    std::vector<core::LaserPoint> fittedPatternPoints;
-    const std::vector<core::LaserPoint>* pointsToSend = &packetPoints;
-    if (packetPoints.size() > patternPointLimit) {
+    if (pointsToSend.size() > patternPointLimit) {
         if (isVerbose()) {
             logInfo("[LightSpaceNetController] source frame exceeds packet cap; fitting with blank travel tail",
                     "framePoints",
-                    packetPoints.size(),
+                    pointsToSend.size(),
                     "cap",
                     patternPointLimit);
         }
-        fittedPatternPoints = fitCurrentPatternToPointLimit(packetPoints, patternPointLimit);
-        pointsToSend = &fittedPatternPoints;
+        pointsToSend = fitCurrentPatternToPointLimit(pointsToSend, patternPointLimit);
+        padBlankPatternToPointLimit(pointsToSend, patternPointLimit);
     }
 
-    const auto packet = buildPointStreamPacket(*pointsToSend, coordinateOptions);
+    const bool patternBlank = patternPointsAreBlank(pointsToSend);
+    if (patternBlank && lastSentPatternWasBlank) {
+        // The device already retains and replays the previous blank pattern.
+        // Poll briefly for real content instead of filling the TCP queue with
+        // duplicate dark pattern uploads.
+        lastSentPacketBytes = 0;
+        nextPatternSendTime = now + repeatedBlankPollInterval;
+        return true;
+    }
+
+    const auto packet = buildPointStreamPacket(pointsToSend, coordinateOptions);
     if (packet.empty() ||
         packet.size() > LightSpaceNetConfig::MAX_CURRENT_PATTERN_PACKET_BYTES) {
         logError("[LightSpaceNetController] refusing oversized current-pattern packet",
                  "points",
-                 pointsToSend->size(),
+                 pointsToSend.size(),
                  "bytes",
                  packet.size(),
                  "maxBytes",
                  LightSpaceNetConfig::MAX_CURRENT_PATTERN_PACKET_BYTES);
-        lastSentPacketPointCount = 0;
         return true;
     }
 
@@ -894,26 +1011,33 @@ bool LightSpaceNetController::sendFramePattern() {
     const bool sent = sendPacket(packet, std::chrono::milliseconds(50));
     const auto sendDone = std::chrono::steady_clock::now();
     if (sent) {
-        lastPatternSentTime = sendDone;
-        lastSentPacketPointCount = pointsToSend->size();
+        const std::size_t sentPointCount = pointsToSend.size();
         lastSentPacketBytes = packet.size();
+        // The controller replays its current pattern, but current firmware can
+        // still backlog or drop the TCP session if we replace that pattern
+        // faster than it can process one scan's worth of points.
+        const auto transportPointCost = patternBlank
+            ? std::max(sentPointCount,
+                       minimumQueuedFramePointCountForReadiness())
+            : sentPointCount;
         const auto playbackDuration =
-            pointPlaybackDuration(lastSentPacketPointCount, activePointRate);
+            pointPlaybackDuration(transportPointCost, activePointRate);
         const auto minimumInterval =
             std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 patternUpdateInterval);
         nextPatternSendTime = sendDone + std::max(playbackDuration, minimumInterval);
-        currentPointIndex += lastSentPacketPointCount;
+        currentPointIndex += sentPointCount;
         recordLatencySample(sendDone - sendStart);
         estimatedWriteLead = smoothWriteLead(estimatedWriteLead, sendDone - sendStart);
         noteFrameTransportSubmissionBounded(
-            lastSentPacketPointCount,
-            request.estimatedFirstPointRenderTime,
+            transportPointCost,
+            estimatedFirstRenderTime,
             activePointRate,
             lastSubmittedPatternPoints);
-        lastSubmittedPatternPoints = lastSentPacketPointCount;
+        lastSubmittedPatternPoints = transportPointCost;
+        lastSentPatternWasBlank = patternBlank;
         recordTimingSample(
-            lastSentPacketPointCount,
+            sentPointCount,
             activePointRate);
     }
     return sent;

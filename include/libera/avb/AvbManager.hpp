@@ -33,6 +33,7 @@ public:
     std::vector<std::unique_ptr<core::ControllerInfo>> discover() override;
     std::string_view managedType() const override { return AvbControllerInfo::controllerType(); }
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info) override;
+    bool disconnectController(std::string_view id) override;
     void closeAll() override;
 
     static std::vector<AvbAudioDeviceInfo> availableDevices();

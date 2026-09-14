@@ -32,6 +32,7 @@ public:
     void attachController(std::uint32_t channelOffset,
                           const std::shared_ptr<AvbController>& controller);
     void detachController(std::uint32_t channelOffset);
+    bool hasAttachedControllers();
 
 private:
     struct BankState {

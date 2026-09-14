@@ -23,6 +23,13 @@ inline constexpr std::string_view stopCondition = "etherdream.stop_condition";
 inline constexpr std::string_view rebootRequired = "etherdream.reboot_required";
 } // namespace etherdream
 
+namespace idn {
+inline constexpr std::string_view discoveryStale = "idn.discovery_stale";
+inline constexpr std::string_view pingTimeout = "idn.ping_timeout";
+inline constexpr std::string_view pingFailed = "idn.ping_failed";
+inline constexpr std::string_view pingProtocolError = "idn.ping_protocol_error";
+} // namespace idn
+
 namespace usb {
 inline constexpr std::string_view connectFailed = "usb.connect_failed";
 inline constexpr std::string_view connectionLost = "usb.connection_lost";
@@ -57,6 +64,11 @@ inline constexpr std::string_view labelFor(std::string_view code) {
     if (code == etherdream::streamStarvation) return "Computer performance underrun";
     if (code == etherdream::stopCondition) return "Ether Dream stop condition";
     if (code == etherdream::rebootRequired) return "Ether Dream playback stuck - reboot DAC";
+
+    if (code == idn::discoveryStale) return "IDN controller no longer visible";
+    if (code == idn::pingTimeout) return "IDN ping timeout";
+    if (code == idn::pingFailed) return "IDN ping failed";
+    if (code == idn::pingProtocolError) return "IDN ping protocol error";
 
     if (code == usb::connectFailed) return "USB connect failed";
     if (code == usb::connectionLost) return "USB connection lost";

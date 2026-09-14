@@ -819,6 +819,13 @@ void HeliosManager::prepareExistingController(HeliosController& controller,
     controller.startThread();
 }
 
+void HeliosManager::disconnectControllerInstance(const std::string& key,
+                                                 HeliosController& controller) {
+    (void)key;
+    controller.stopThread();
+    controller.close();
+}
+
 void HeliosManager::closeController(const std::string& key,
                                     HeliosController& controller) {
     (void)key;

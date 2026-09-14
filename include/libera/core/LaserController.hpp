@@ -7,6 +7,7 @@
 #include <chrono>
 #include <mutex>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace libera::core {
@@ -151,6 +152,11 @@ protected:
         // submitted order without holding frames against per-frame `time`
         // gates that fight queue depth as the latency mechanism.
         bool advanceWhenAvailable = false;
+
+        // Current-pattern transports retain and replay the last accepted frame
+        // themselves. They can opt out of host-side replay so requestFrame()
+        // only returns actual updates and the eventual safety blank.
+        bool repeatCurrentFrameWhenIdle = true;
     };
 
     bool requestPoints(const PointFillRequest& request);
@@ -209,6 +215,26 @@ protected:
         std::chrono::steady_clock::time_point now,
         std::chrono::steady_clock::duration writeLead) const;
 
+    /**
+     * @brief Raise the readiness accounting cost of each queued frame.
+     *
+     * Current-pattern transports such as LS-Net spend one whole packet slot even
+     * for a tiny one-point blank frame. Keeping this at the default 1 preserves
+     * normal point-count backpressure for streaming DACs; raising it lets a
+     * frame-ingester backend avoid accepting thousands of tiny frames.
+     */
+    void setMinimumQueuedFramePointCountForReadiness(std::size_t pointCount);
+    std::size_t minimumQueuedFramePointCountForReadiness() const;
+
+    /**
+     * @brief Override the point budget used by isReadyForNewFrame().
+     *
+     * The default budget is derived from targetLatency() and frame size. A
+     * retaining current-pattern transport can set this to 0 so the common
+     * sendFrame() API accepts only one unsent frame update at a time.
+     */
+    void setQueuedFramePointBudgetOverride(std::optional<std::size_t> pointBudget);
+
 private:
     struct FrameTransportEstimate {
         std::size_t snapshotPoints = 0;
@@ -232,6 +258,9 @@ private:
     std::atomic<std::uint64_t> frameTransportSubmittedFrames{0};
     std::atomic<std::uint64_t> frameTransportSubmittedPoints{0};
     std::atomic<std::size_t> lastPointCallbackVirtualBufferTarget{0};
+    std::atomic<std::size_t> minimumQueuedFramePointCount{1};
+    std::atomic<std::size_t> queuedFramePointBudgetOverride{0};
+    std::atomic<bool> hasQueuedFramePointBudgetOverride{false};
     std::size_t queuedPointBudget() const;
 };
 

@@ -25,6 +25,13 @@ struct FramePullRequest {
     //     frame whose `time` is still in the future) is bypassed
     // For streaming/scheduled-time transports leave this false.
     bool advanceWhenAvailable = false;
+
+    // Most frame transports need the host to resend the current frame while
+    // waiting for a replacement because the hardware consumes each submission.
+    // Current-pattern transports retain and replay the last accepted frame
+    // internally, so they can opt out and receive only real frame changes plus
+    // the eventual safety blank when maxFrameHoldTime() expires.
+    bool repeatCurrentFrameWhenIdle = true;
 };
 
 class FrameScheduler {
@@ -33,11 +40,15 @@ public:
     ~FrameScheduler();
 
     bool enqueueFrame(Frame&& frame);
-    bool tryEnqueueFrameIfReady(Frame&& frame, std::size_t queuedPointBudget);
+    bool tryEnqueueFrameIfReady(Frame&& frame,
+                                std::size_t queuedPointBudget,
+                                std::size_t minimumQueuedPointsPerFrame = 1);
     void reset();
 
-    bool isReadyForNewFrame(std::size_t queuedPointBudget) const;
-    bool tryIsReadyForNewFrame(std::size_t queuedPointBudget) const;
+    bool isReadyForNewFrame(std::size_t queuedPointBudget,
+                            std::size_t minimumQueuedPointsPerFrame = 1) const;
+    bool tryIsReadyForNewFrame(std::size_t queuedPointBudget,
+                               std::size_t minimumQueuedPointsPerFrame = 1) const;
     std::size_t queuedFrameCount() const;
     std::size_t nominalFramePointCount() const;
 
@@ -55,7 +66,7 @@ public:
 private:
     struct State;
 
-    std::size_t queuedPointCountUnsafe() const;
+    std::size_t queuedPointCountUnsafe(std::size_t minimumQueuedPointsPerFrame = 1) const;
     void drainPendingFramesUnsafe();
     void appendBlankPoints(std::vector<LaserPoint>& buffer, std::size_t count) const;
     void generateTransitionPoints(const LaserPoint& from,

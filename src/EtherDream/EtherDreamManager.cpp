@@ -134,10 +134,10 @@ void EtherDreamManager::beforeCloseControllers() {
     running.store(false);
     if (socket) {
         socket->close();
-        socket.reset();
     }
     core::timedJoin(listener, listenerFinished, std::chrono::milliseconds(3000),
                     "EtherDreamManager::listener");
+    socket.reset();
 }
 
 void EtherDreamManager::afterCloseControllers() {

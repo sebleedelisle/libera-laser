@@ -75,9 +75,8 @@ bool isObservedNetworkLayout(const std::vector<std::uint8_t>& payload) {
         return false;
     }
 
-    // Some LS-Net firmware replies with:
-    // device id, firmware, IP, subnet mask, gateway, scan frequency/hardware byte.
-    // That differs from the public PDF, which lists hardware version and MAC.
+    // Current LS-Net broadcast replies use:
+    // device id, firmware, IP, subnet mask, gateway, scan frequency.
     return isLikelyIpv4Address(payload.data() + 6) &&
            isCommonSubnetMask(payload.data() + 10) &&
            isLikelyIpv4Address(payload.data() + 14);
@@ -113,8 +112,8 @@ std::optional<LightSpaceNetStatus> LightSpaceNetStatus::parseBroadcastResponse(
         return std::nullopt;
     }
 
-    constexpr std::size_t documentedFixedPayloadSize = 18;
-    if (packet->payload.size() < documentedFixedPayloadSize) {
+    constexpr std::size_t hardwareMacPayloadSize = 18;
+    if (packet->payload.size() < hardwareMacPayloadSize) {
         return std::nullopt;
     }
 
@@ -127,15 +126,17 @@ std::optional<LightSpaceNetStatus> LightSpaceNetStatus::parseBroadcastResponse(
         status.hardwareVersion = payload[18];
         status.ipAddress = makeIpString(payload + 6);
     } else {
+        // Older integration notes and fixtures use:
+        // device id, firmware, hardware, IP, MAC, optional name.
         status.hardwareVersion = readBe16(payload + 6);
         status.ipAddress = makeIpString(payload + 8);
         std::copy(payload + 12, payload + 18, status.macAddress.begin());
         status.macAddressString = makeHexString(status.macAddress.data(), status.macAddress.size());
 
-        if (packet->payload.size() > documentedFixedPayloadSize) {
+        if (packet->payload.size() > hardwareMacPayloadSize) {
             status.deviceName = sanitizeDeviceName(
-                std::string(reinterpret_cast<const char*>(payload + documentedFixedPayloadSize),
-                            packet->payload.size() - documentedFixedPayloadSize));
+                std::string(reinterpret_cast<const char*>(payload + hardwareMacPayloadSize),
+                            packet->payload.size() - hardwareMacPayloadSize));
         }
     }
 

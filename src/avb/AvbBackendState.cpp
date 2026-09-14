@@ -282,6 +282,49 @@ AvbBackendState::connectController(const AvbControllerInfo& info) {
     return controller;
 }
 
+bool AvbBackendState::disconnectController(const std::string& controllerId) {
+    if (controllerId.empty()) {
+        return false;
+    }
+
+    std::shared_ptr<AvbController> controller;
+    std::shared_ptr<AvbDeviceRuntime> runtime;
+    std::string deviceUid;
+    std::uint32_t channelOffset = 0;
+    {
+        std::lock_guard lock(mutex);
+        controller = activeControllers.take(controllerId);
+        if (!controller) {
+            return false;
+        }
+        deviceUid = controller->deviceUid();
+        channelOffset = controller->channelOffset();
+
+        auto runtimeIt = runtimesByDeviceUid.find(deviceUid);
+        if (runtimeIt != runtimesByDeviceUid.end()) {
+            runtime = runtimeIt->second;
+        }
+    }
+
+    if (runtime) {
+        runtime->detachController(channelOffset);
+    }
+
+    controller->stopThread();
+    controller->close();
+
+    if (runtime && !runtime->hasAttachedControllers()) {
+        runtime->close();
+        std::lock_guard lock(mutex);
+        auto runtimeIt = runtimesByDeviceUid.find(deviceUid);
+        if (runtimeIt != runtimesByDeviceUid.end() && runtimeIt->second == runtime) {
+            runtimesByDeviceUid.erase(runtimeIt);
+        }
+    }
+
+    return true;
+}
+
 void AvbBackendState::closeAll() {
     std::unordered_map<std::string, std::shared_ptr<AvbController>> controllers;
     std::vector<std::shared_ptr<AvbDeviceRuntime>> runtimes;

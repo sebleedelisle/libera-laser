@@ -32,6 +32,10 @@ AvbManager::connectController(const core::ControllerInfo& info) {
     return backendState().connectController(*avbInfo);
 }
 
+bool AvbManager::disconnectController(std::string_view id) {
+    return backendState().disconnectController(std::string(id));
+}
+
 void AvbManager::closeAll() {
     backendState().closeAll();
 }

@@ -80,7 +80,9 @@ bool FrameScheduler::enqueueFrame(Frame&& frame) {
     return true;
 }
 
-bool FrameScheduler::tryEnqueueFrameIfReady(Frame&& frame, std::size_t queuedPointBudget) {
+bool FrameScheduler::tryEnqueueFrameIfReady(Frame&& frame,
+                                            std::size_t queuedPointBudget,
+                                            std::size_t minimumQueuedPointsPerFrame) {
     if (frame.points.empty()) {
         return false;
     }
@@ -93,7 +95,7 @@ bool FrameScheduler::tryEnqueueFrameIfReady(Frame&& frame, std::size_t queuedPoi
     // Treat a busy/full scheduler as "not ready" for foreground callers. This
     // lets the app skip one submitted frame instead of waiting behind the DAC
     // worker thread.
-    if (queuedPointCountUnsafe() > queuedPointBudget) {
+    if (queuedPointCountUnsafe(minimumQueuedPointsPerFrame) > queuedPointBudget) {
         return false;
     }
 
@@ -110,18 +112,20 @@ void FrameScheduler::reset() {
     state->nominalFramePointCount = 1;
 }
 
-bool FrameScheduler::isReadyForNewFrame(std::size_t queuedPointBudget) const {
+bool FrameScheduler::isReadyForNewFrame(std::size_t queuedPointBudget,
+                                        std::size_t minimumQueuedPointsPerFrame) const {
     std::lock_guard<std::mutex> lock(state->mutex);
-    return queuedPointCountUnsafe() <= queuedPointBudget;
+    return queuedPointCountUnsafe(minimumQueuedPointsPerFrame) <= queuedPointBudget;
 }
 
-bool FrameScheduler::tryIsReadyForNewFrame(std::size_t queuedPointBudget) const {
+bool FrameScheduler::tryIsReadyForNewFrame(std::size_t queuedPointBudget,
+                                           std::size_t minimumQueuedPointsPerFrame) const {
     std::unique_lock<std::mutex> lock(state->mutex, std::try_to_lock);
     if (!lock.owns_lock()) {
         return false;
     }
 
-    return queuedPointCountUnsafe() <= queuedPointBudget;
+    return queuedPointCountUnsafe(minimumQueuedPointsPerFrame) <= queuedPointBudget;
 }
 
 std::size_t FrameScheduler::queuedFrameCount() const {
@@ -402,6 +406,10 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
                 }
             }
 
+            if (!request.repeatCurrentFrameWhenIdle) {
+                return;
+            }
+
             // No replacement frame is ready, so start a new logical loop of the
             // same frame on the next iteration. Oversized frames therefore span
             // multiple transport submissions, but short frames still pass through
@@ -449,12 +457,17 @@ void FrameScheduler::fillFrame(const FramePullRequest& request,
     }
 }
 
-std::size_t FrameScheduler::queuedPointCountUnsafe() const {
+std::size_t FrameScheduler::queuedPointCountUnsafe(std::size_t minimumQueuedPointsPerFrame) const {
     std::size_t queuedPoints = 0;
+    const auto framePointFloor = std::max<std::size_t>(minimumQueuedPointsPerFrame, 1);
 
     for (const auto& frame : state->pendingFrames) {
         if (frame) {
-            queuedPoints += frame->points.size();
+            const auto nextPoint = std::min(frame->nextPoint, frame->points.size());
+            const auto remainingPoints = frame->points.size() - nextPoint;
+            if (remainingPoints > 0) {
+                queuedPoints += std::max(remainingPoints, framePointFloor);
+            }
         }
     }
 
@@ -463,7 +476,10 @@ std::size_t FrameScheduler::queuedPointCountUnsafe() const {
             continue;
         }
         const auto nextPoint = std::min(frame->nextPoint, frame->points.size());
-        queuedPoints += (frame->points.size() - nextPoint);
+        const auto remainingPoints = frame->points.size() - nextPoint;
+        if (remainingPoints > 0) {
+            queuedPoints += std::max(remainingPoints, framePointFloor);
+        }
     }
 
     return queuedPoints;

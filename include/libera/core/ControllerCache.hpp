@@ -75,6 +75,19 @@ public:
         controllers.erase(key);
     }
 
+    std::shared_ptr<Controller> take(const Key& key) {
+        std::lock_guard lock(mutex);
+
+        auto it = controllers.find(key);
+        if (it == controllers.end()) {
+            return nullptr;
+        }
+
+        auto controller = it->second.lock();
+        controllers.erase(it);
+        return controller;
+    }
+
     Snapshot snapshot() {
         std::lock_guard lock(mutex);
         return snapshotLocked(false);

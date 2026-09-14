@@ -1,6 +1,8 @@
 #pragma once
 #include "libera/net/NetConfig.hpp"
 #include <chrono>
+#include <memory>
+#include <utility>
 #include "libera/net/Deadline.hpp"
 
 namespace libera::net {
@@ -18,6 +20,9 @@ namespace libera::net {
 class UdpSocket {
 public:
     explicit UdpSocket(asio::io_context& io) : sock(io) {}
+    explicit UdpSocket(std::shared_ptr<asio::io_context> io)
+    : ownedIoContext(std::move(io))
+    , sock(*ownedIoContext) {}
 
     std::error_code open_v4(bool logFailure = true) {
         std::error_code ec;
@@ -82,11 +87,20 @@ public:
     }
 
     udp::socket& raw() { return sock; }
-    void close() { std::error_code ignore; sock.close(ignore); }
+    void close() {
+        if(!sock.is_open()) {
+            return;
+        }
+        std::error_code ignore;
+        sock.cancel(ignore);
+        ignore.clear();
+        sock.close(ignore);
+    }
 
 private:
     void cancelNoThrow() { std::error_code ignore; sock.cancel(ignore); }
 
+    std::shared_ptr<asio::io_context> ownedIoContext;
     udp::socket sock;
 };
 

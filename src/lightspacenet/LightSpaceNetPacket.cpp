@@ -20,7 +20,7 @@ constexpr std::size_t minBlankTravelPointCount = 2;
 constexpr std::size_t maxBlankTravelPointCount = 128;
 
 std::int16_t encodeSigned16FromSignedUnit(float value) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = core::sanitizeSignedUnitValue(value);
     if (clamped <= -1.0f) {
         return static_cast<std::int16_t>(-32768);
     }
@@ -28,7 +28,7 @@ std::int16_t encodeSigned16FromSignedUnit(float value) {
 }
 
 std::int16_t encodeSignedRangeFromSignedUnit(float value, int negativeFullScale, int positiveFullScale) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = core::sanitizeSignedUnitValue(value);
     if (clamped <= -1.0f) {
         return static_cast<std::int16_t>(negativeFullScale);
     }
@@ -37,20 +37,20 @@ std::int16_t encodeSignedRangeFromSignedUnit(float value, int negativeFullScale,
 }
 
 std::uint16_t encodeUnsigned16FromSignedUnit(float value) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = core::sanitizeSignedUnitValue(value);
     const float normalized = (clamped * 0.5f) + 0.5f;
     return static_cast<std::uint16_t>(std::lround(normalized * 65535.0f));
 }
 
 std::uint16_t encodeUnsignedRangeFromSignedUnit(float value, int maxValue) {
-    const float clamped = std::clamp(value, -1.0f, 1.0f);
+    const float clamped = core::sanitizeSignedUnitValue(value);
     const float normalized = (clamped * 0.5f) + 0.5f;
     return static_cast<std::uint16_t>(
         std::lround(normalized * static_cast<float>(maxValue)));
 }
 
 std::uint8_t encodeUnsigned8FromUnit(float value) {
-    const float clamped = std::clamp(value, 0.0f, 1.0f);
+    const float clamped = core::sanitizeUnitValue(value);
     return static_cast<std::uint8_t>(std::lround(clamped * 255.0f));
 }
 
@@ -144,8 +144,6 @@ void appendCoordinate(std::vector<std::uint8_t>& payload,
         break;
     case LightSpaceNetCoordinateEncoding::Signed16:
     default:
-        // Signed mode is an implementation assumption: the LS-Net docs only
-        // say X/Y are two-byte fields, not the numeric coordinate range.
         encoded = static_cast<std::uint16_t>(encodeSigned16FromSignedUnit(value));
         break;
     }
@@ -241,7 +239,10 @@ std::vector<std::uint8_t> buildPacket(std::uint8_t packetType,
 std::vector<std::uint8_t> buildPacket(std::uint8_t packetType,
                                       std::uint8_t commandWord,
                                       const std::vector<std::uint8_t>& payload) {
-    return buildPacket(packetType, commandWord, payload.data(), payload.size());
+    return buildPacket(packetType,
+                       commandWord,
+                       payload.empty() ? nullptr : payload.data(),
+                       payload.size());
 }
 
 std::vector<std::uint8_t> buildBroadcastQueryPacket() {
@@ -394,6 +395,10 @@ std::optional<LightSpaceNetPacket> parsePacket(const std::uint8_t* data,
 
     LightSpaceNetPacket packet;
     packet.version = readBe16(data + 12);
+    if (packet.version != LightSpaceNetConfig::PROTOCOL_VERSION) {
+        return std::nullopt;
+    }
+
     packet.packetType = data[14];
     packet.commandWord = data[15];
     packet.payload.assign(data + 18, data + 18 + dataLength);

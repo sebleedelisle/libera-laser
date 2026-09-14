@@ -75,6 +75,17 @@ public:
         return controller;
     }
 
+    bool disconnectController(std::string_view id) final {
+        Key key{std::string(id)};
+        auto controller = liveControllerCache.take(key);
+        if (!controller) {
+            return false;
+        }
+
+        disconnectControllerInstance(key, *controller);
+        return true;
+    }
+
     void closeAll() final {
         beforeCloseControllers();
 
@@ -135,6 +146,11 @@ protected:
 
     virtual void stopController(Controller& controller) {
         controller.stopThread();
+    }
+
+    virtual void disconnectControllerInstance(const Key& key, Controller& controller) {
+        stopController(controller);
+        closeController(key, controller);
     }
 
     virtual void closeController(const Key& key, Controller& controller) {

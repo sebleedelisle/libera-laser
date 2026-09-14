@@ -11,6 +11,7 @@
 #include "libera/log/Log.hpp"
 
 #include <chrono>
+#include <utility>
 #include <vector>
 
 using namespace libera;
@@ -34,6 +35,9 @@ public:
     BudgetFixture() {
         setPointRate(30000);
     }
+
+    using LaserController::setMinimumQueuedFramePointCountForReadiness;
+    using LaserController::setQueuedFramePointBudgetOverride;
 
     // queuedPointBudget is private; isReadyForNewFrame() is the public hook
     // that consumes it. Test the floor by enqueueing frames of a known size
@@ -62,6 +66,16 @@ public:
                 return accepted;
             }
         }
+    }
+
+    bool requestRetainedFrame(Frame& output) {
+        FrameFillRequest request;
+        request.maximumPointsRequired = 1024;
+        request.blankFramePointCount = 700;
+        request.estimatedFirstPointRenderTime = std::chrono::steady_clock::now();
+        request.advanceWhenAvailable = true;
+        request.repeatCurrentFrameWhenIdle = false;
+        return LaserController::requestFrame(request, output);
     }
 
 protected:
@@ -132,6 +146,55 @@ void testZeroLatencySkipsFloor() {
               "zero-latency yields tight 2-accept budget (= 1 + boundary), no floor lift");
 }
 
+void testReadinessFrameFloorLimitsOnePointFrames() {
+    // Current-pattern transports spend a whole packet slot for each submitted
+    // frame, even when Liberation's blank frame only contains one point. The
+    // per-frame readiness floor models that transport cost and prevents
+    // thousands of one-point blank frames from being accepted.
+    BudgetFixture controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(150));
+    controller.setMinimumQueuedFramePointCountForReadiness(1200);
+    const std::size_t accepted = controller.framesAcceptedBeforeRejection(1);
+    ASSERT_EQ(accepted, static_cast<std::size_t>(5),
+              "one-point frames are limited by the per-frame readiness floor");
+}
+
+void testReadinessBudgetOverrideAllowsSinglePendingFrame() {
+    BudgetFixture controller;
+    LaserController::setTargetLatency(std::chrono::milliseconds(150));
+    controller.setMinimumQueuedFramePointCountForReadiness(700);
+    controller.setQueuedFramePointBudgetOverride(0);
+
+    controller.startFrameMode();
+    ASSERT_TRUE(controller.isReadyForNewFrame(),
+                "empty queue is ready with zero budget override");
+
+    Frame first;
+    first.points.resize(1);
+    first.points.front().r = 0.5f;
+    first.time = std::chrono::steady_clock::now();
+    ASSERT_TRUE(controller.sendFrame(std::move(first)),
+                "first frame is accepted into the single pending slot");
+
+    ASSERT_TRUE(!controller.isReadyForNewFrame(),
+                "one pending frame blocks further submissions with zero budget override");
+
+    Frame second;
+    second.points.resize(1);
+    second.points.front().r = 0.75f;
+    second.time = std::chrono::steady_clock::now();
+    ASSERT_TRUE(!controller.trySendFrame(std::move(second)),
+                "second frame is rejected while the single pending slot is full");
+
+    Frame output;
+    ASSERT_TRUE(controller.requestRetainedFrame(output),
+                "backend can consume the single pending frame");
+    ASSERT_EQ(output.points.size(), static_cast<std::size_t>(1),
+              "consumed frame keeps original point count");
+    ASSERT_TRUE(controller.isReadyForNewFrame(),
+                "readiness returns once the pending update has been consumed");
+}
+
 } // namespace
 
 int main() {
@@ -140,6 +203,8 @@ int main() {
     testVeryLongFrameBudgetHitsFloor();
     testLowLatencyShortFramesStillRespected();
     testZeroLatencySkipsFloor();
+    testReadinessFrameFloorLimitsOnePointFrames();
+    testReadinessBudgetOverrideAllowsSinglePendingFrame();
 
     if (g_failures == 0) {
         logInfo("test_core_queue_budget_floor: all tests passed");

@@ -70,6 +70,10 @@ public:
     virtual std::vector<std::unique_ptr<ControllerInfo>> discover() = 0;
     virtual std::string_view managedType() const = 0;
     virtual std::shared_ptr<LaserController> connectController(const ControllerInfo& info) = 0;
+    virtual bool disconnectController(std::string_view id) {
+        (void)id;
+        return false;
+    }
     virtual void closeAll() = 0;
 };
 
@@ -131,6 +135,7 @@ public:
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info);
+    bool disconnectController(std::string_view type, std::string_view id);
     void shutdown();
 
 private:
