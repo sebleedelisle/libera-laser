@@ -132,7 +132,10 @@ libera::gui::imgui::DrawPluginManagementPanel(state, callbacks, options);
 
 The caller still owns the window, native file picker, restart behavior, and
 styling. The shared panel owns the install/remove/list/status UI and renders
-plugin-wide settings. Controller UIs can use:
+plugin-wide settings. Settings are edited as drafts and applied only when the
+user presses **Apply settings**. A successful apply persists each changed value,
+updates a live plugin or controller when available, and requests the normal
+plugin rescan. Controller UIs can use:
 
 ```cpp
 libera::gui::imgui::DrawPluginControllerSettings(

@@ -124,6 +124,33 @@ void reportSettingResult(const plugin::SettingChangeResult& result,
     state.lastMessage = result.message;
 }
 
+std::string settingEditKey(const std::string& pluginType,
+                           const std::string& controllerId,
+                           const std::string& settingKey) {
+    return pluginType + "\n" + controllerId + "\n" + settingKey;
+}
+
+std::string& prepareSettingDraft(const plugin::Setting& setting,
+                                 const std::string& editKey,
+                                 PluginPanelState& state) {
+    auto [savedIt, savedInserted] = state.settingSavedValues.emplace(
+        editKey, setting.value);
+    auto [draftIt, draftInserted] = state.settingEditValues.emplace(
+        editKey, setting.value);
+    (void)draftInserted;
+
+    if (!savedInserted && savedIt->second != setting.value) {
+        // Preserve an in-progress edit, but keep untouched controls in sync
+        // when another view or a plugin refresh changes the stored value.
+        if (draftIt->second == savedIt->second) {
+            draftIt->second = setting.value;
+        }
+        savedIt->second = setting.value;
+    }
+
+    return draftIt->second;
+}
+
 std::string floatString(double value) {
     std::ostringstream output;
     output.imbue(std::locale::classic());
@@ -137,23 +164,17 @@ void drawSetting(const plugin::Setting& setting,
                  const std::string& controllerId,
                  PluginPanelState& state) {
     const auto& definition = setting.definition;
+    const auto editKey = settingEditKey(pluginType,
+                                        controllerId,
+                                        definition.key);
+    auto& editValue = prepareSettingDraft(setting, editKey, state);
     ImGui::PushID(definition.key.c_str());
-
-    auto apply = [&](const std::string& value) {
-        const auto result = controllerId.empty()
-            ? plugin::setPluginSetting(pluginType, definition.key, value)
-            : plugin::setControllerSetting(pluginType,
-                                           controllerId,
-                                           definition.key,
-                                           value);
-        reportSettingResult(result, state);
-    };
 
     switch (definition.type) {
         case plugin::SettingType::Bool: {
-            bool value = setting.value == "true";
+            bool value = editValue == "true";
             if (ImGui::Checkbox(definition.label.c_str(), &value)) {
-                apply(value ? "true" : "false");
+                editValue = value ? "true" : "false";
             }
             break;
         }
@@ -162,7 +183,7 @@ void drawSetting(const plugin::Setting& setting,
             std::int64_t value = 0;
             std::int64_t step = 1;
             try {
-                value = std::stoll(setting.value);
+                value = std::stoll(editValue);
                 if (definition.stepValue) {
                     step = std::stoll(*definition.stepValue);
                 }
@@ -174,7 +195,7 @@ void drawSetting(const plugin::Setting& setting,
                                    ImGuiDataType_S64,
                                    &value,
                                    &step)) {
-                apply(std::to_string(value));
+                editValue = std::to_string(value);
             }
             break;
         }
@@ -183,7 +204,7 @@ void drawSetting(const plugin::Setting& setting,
             double value = 0.0;
             double step = 0.0;
             try {
-                value = std::stod(setting.value);
+                value = std::stod(editValue);
                 if (definition.stepValue) {
                     step = std::stod(*definition.stepValue);
                 }
@@ -195,28 +216,18 @@ void drawSetting(const plugin::Setting& setting,
             if (ImGui::InputDouble(definition.label.c_str(),
                                    &value,
                                    stepPointer ? *stepPointer : 0.0)) {
-                apply(floatString(value));
+                editValue = floatString(value);
             }
             break;
         }
 
         case plugin::SettingType::String: {
-            const std::string editKey = pluginType + "\n" + controllerId +
-                                        "\n" + definition.key;
-            auto [it, inserted] = state.settingEditValues.emplace(
-                editKey, setting.value);
-            (void)inserted;
-
             std::vector<char> buffer(2048, '\0');
-            std::snprintf(buffer.data(), buffer.size(), "%s", it->second.c_str());
-            const bool enterPressed = ImGui::InputText(
-                definition.label.c_str(),
-                buffer.data(),
-                buffer.size(),
-                ImGuiInputTextFlags_EnterReturnsTrue);
-            it->second = buffer.data();
-            if (enterPressed || ImGui::IsItemDeactivatedAfterEdit()) {
-                apply(it->second);
+            std::snprintf(buffer.data(), buffer.size(), "%s", editValue.c_str());
+            if (ImGui::InputText(definition.label.c_str(),
+                                 buffer.data(),
+                                 buffer.size())) {
+                editValue = buffer.data();
             }
             break;
         }
@@ -226,16 +237,16 @@ void drawSetting(const plugin::Setting& setting,
                 definition.choices.begin(),
                 definition.choices.end(),
                 [&](const plugin::SettingChoice& choice) {
-                    return choice.value == setting.value;
+                    return choice.value == editValue;
                 });
             const char* preview = selected == definition.choices.end()
-                ? setting.value.c_str()
+                ? editValue.c_str()
                 : selected->label.c_str();
             if (ImGui::BeginCombo(definition.label.c_str(), preview)) {
                 for (const auto& choice : definition.choices) {
-                    const bool isSelected = choice.value == setting.value;
+                    const bool isSelected = choice.value == editValue;
                     if (ImGui::Selectable(choice.label.c_str(), isSelected)) {
-                        apply(choice.value);
+                        editValue = choice.value;
                     }
                     if (isSelected) {
                         ImGui::SetItemDefaultFocus();
@@ -253,6 +264,66 @@ void drawSetting(const plugin::Setting& setting,
     ImGui::PopID();
 }
 
+bool hasPendingSettings(const std::vector<plugin::Setting>& settings,
+                        const std::string& pluginType,
+                        const std::string& controllerId,
+                        PluginPanelState& state) {
+    return std::any_of(settings.begin(),
+                       settings.end(),
+                       [&](const plugin::Setting& setting) {
+        const auto editKey = settingEditKey(pluginType,
+                                            controllerId,
+                                            setting.definition.key);
+        const auto& draft = prepareSettingDraft(setting, editKey, state);
+        return draft != state.settingSavedValues.at(editKey);
+    });
+}
+
+void applyPendingSettings(const std::vector<plugin::Setting>& settings,
+                          const std::string& pluginType,
+                          const std::string& controllerId,
+                          PluginPanelState& state) {
+    std::size_t appliedCount = 0;
+    for (const auto& setting : settings) {
+        const auto editKey = settingEditKey(pluginType,
+                                            controllerId,
+                                            setting.definition.key);
+        const auto draftIt = state.settingEditValues.find(editKey);
+        const auto savedIt = state.settingSavedValues.find(editKey);
+        if (draftIt == state.settingEditValues.end() ||
+            savedIt == state.settingSavedValues.end() ||
+            draftIt->second == savedIt->second) {
+            continue;
+        }
+
+        const auto result = controllerId.empty()
+            ? plugin::setPluginSetting(pluginType,
+                                       setting.definition.key,
+                                       draftIt->second)
+            : plugin::setControllerSetting(pluginType,
+                                           controllerId,
+                                           setting.definition.key,
+                                           draftIt->second);
+        if (!result.success) {
+            reportSettingResult(
+                {false, setting.definition.label + ": " + result.message},
+                state);
+            return;
+        }
+
+        // Mark each successful value clean immediately. If a later setting is
+        // rejected, only the unapplied edits remain pending for another try.
+        savedIt->second = draftIt->second;
+        ++appliedCount;
+    }
+
+    if (appliedCount > 0) {
+        reportSettingResult(
+            {true, appliedCount == 1 ? "Setting applied" : "Settings applied"},
+            state);
+    }
+}
+
 void drawSettings(const std::vector<plugin::Setting>& settings,
                   const std::string& pluginType,
                   const std::string& controllerId,
@@ -260,6 +331,17 @@ void drawSettings(const std::vector<plugin::Setting>& settings,
     for (const auto& setting : settings) {
         drawSetting(setting, pluginType, controllerId, state);
     }
+
+    const bool hasPending = hasPendingSettings(settings,
+                                               pluginType,
+                                               controllerId,
+                                               state);
+    ImGui::Spacing();
+    ImGui::BeginDisabled(!hasPending);
+    if (ImGui::Button("Apply settings")) {
+        applyPendingSettings(settings, pluginType, controllerId, state);
+    }
+    ImGui::EndDisabled();
 }
 
 void drawPlugin(plugin::ManagedPluginInfo pluginInfo,

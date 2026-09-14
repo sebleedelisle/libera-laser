@@ -11,9 +11,12 @@ struct PluginPanelState {
     std::string lastMessage;
     bool lastMessageIsError = false;
     bool restartHintVisible = false;
-    // Text inputs need a stable edit buffer across frames. Numeric and choice
-    // widgets can render directly from their persisted setting value.
+    // Settings are edited as drafts so a user can review related changes before
+    // applying them to a live plugin or controller.
     std::unordered_map<std::string, std::string> settingEditValues;
+    // Remember the value each draft started from. This lets the shared panel
+    // detect pending edits and also absorb values changed outside this panel.
+    std::unordered_map<std::string, std::string> settingSavedValues;
 };
 
 struct PluginPanelCallbacks {
@@ -42,8 +45,9 @@ void DrawPluginManagementPanel(PluginPanelState& state,
 
 /*
  * Draw settings for one stable plugin controller identity. Applications can
- * place this beside their existing controller controls; offline edits are
- * saved and applied when the controller next connects.
+ * place this beside their existing controller controls. Edits remain local
+ * until the user presses Apply settings; offline values are then saved and
+ * applied when the controller next connects.
  */
 void DrawPluginControllerSettings(const std::string& pluginType,
                                   const std::string& controllerId,
