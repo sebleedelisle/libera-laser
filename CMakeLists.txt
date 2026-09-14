@@ -163,10 +163,11 @@ endif()
 
 # Windows needs Winsock2 for TCP and UDP symbols. Linux and macOS do not.
 # _WIN32_WINNT=0x0A00 targets Windows 10+, suppressing ASIO's version warnings
-# and enabling modern socket APIs.
+# and enabling modern socket APIs. NOMINMAX keeps windows.h from replacing
+# standard-library min/max calls with legacy macros.
 if (WIN32)
     target_link_libraries(libera-core PUBLIC ws2_32)
-    target_compile_definitions(libera-core PUBLIC _WIN32_WINNT=0x0A00)
+    target_compile_definitions(libera-core PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX)
 endif()
 
 if (WIN32)

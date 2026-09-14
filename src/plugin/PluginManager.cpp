@@ -271,6 +271,10 @@ PluginDelegateManager::discover() {
         return {};
     }
 
+    // Controller creation takes the cache lock before it may initialize the
+    // plugin backend. Snapshot in that same lock order to avoid discovery
+    // taking the backend lock and then trying to acquire the cache lock.
+    const auto activeSnapshot = liveControllers();
     std::lock_guard lifecycleLock(plugin->lifecycleMutex);
 
     if (plugin->api->rescan) {
@@ -299,7 +303,6 @@ PluginDelegateManager::discover() {
 
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
     results.reserve(ctx.infos.size());
-    const auto activeSnapshot = liveControllers();
 
     for (const auto& pluginInfo : ctx.infos) {
         auto info = std::make_unique<PluginControllerInfo>(
