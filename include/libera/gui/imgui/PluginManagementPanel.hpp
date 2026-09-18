@@ -49,7 +49,7 @@ void DrawPluginManagementPanel(PluginPanelState& state,
  * until the user presses Apply settings; offline values are then saved and
  * applied when the controller next connects.
  */
-void DrawPluginControllerSettings(const std::string& pluginType,
+void DrawPluginControllerSettings(const std::string& pluginId,
                                   const std::string& controllerId,
                                   PluginPanelState& state);
 

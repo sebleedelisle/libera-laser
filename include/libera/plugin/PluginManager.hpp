@@ -6,21 +6,30 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace libera::plugin {
 
 /*
- * Represents one loaded plugin shared library and its optional backend state.
+ * Represents one loaded native entrypoint and its optional backend state.
  */
 struct LoadedPlugin {
     void* libraryHandle = nullptr;
     const libera_plugin_api_t* api = nullptr;
     void* backendHandle = nullptr;
-    std::string typeName;
+    std::string pluginId;
+    std::string version;
+    std::string controllerType;
     std::string displayName;
-    std::string path;
+    std::string vendor;
+    std::string description;
+    std::string packageRoot;
+    std::string entrypointPath;
+    std::string packageSha256;
+    std::optional<std::string> readmePath;
+    std::optional<std::string> licensePath;
     bool initialised = false;
     // Serializes backend creation, destruction, discovery, and live
     // plugin-setting changes without blocking independent controller streams.
@@ -29,8 +38,8 @@ struct LoadedPlugin {
 
 /*
  * A ControllerManagerBase implementation that delegates to a single loaded
- * plugin.  One PluginDelegateManager is created per successfully loaded plugin
- * library and registered with the System.
+ * plugin. One PluginDelegateManager is created per successfully loaded package
+ * revision and registered with the System.
  */
 class PluginDelegateManager
     : public core::ControllerManagerBase<PluginControllerInfo,
@@ -54,8 +63,8 @@ private:
 };
 
 /*
- * Load all plugin shared libraries from a directory and register a
- * PluginDelegateManager for each one via AddControllerManager().
+ * Load active package revisions from a plugin store and register a delegate
+ * manager for each one via AddControllerManager().
  *
  * Call this once at startup before constructing libera::System.
  */

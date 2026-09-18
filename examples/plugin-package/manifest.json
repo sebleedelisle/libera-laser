@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "com.acme.usb-dac",
+  "version": "1.0.0",
+  "name": "Acme USB DAC",
+  "vendor": "Acme Laser Systems",
+  "description": "Example point and frame transport plugin.",
+  "controllerType": "AcmeUsbDac",
+  "libera": {
+    "abiVersion": 1
+  },
+  "entrypoints": [
+    {
+      "os": "macos",
+      "arch": "arm64",
+      "path": "bin/macos/arm64/acme-usb-dac.dylib"
+    },
+    {
+      "os": "windows",
+      "arch": "x86_64",
+      "path": "bin/windows/x86_64/acme-usb-dac.dll"
+    },
+    {
+      "os": "linux",
+      "arch": "x86_64",
+      "path": "bin/linux/x86_64/acme-usb-dac.so"
+    }
+  ],
+  "documents": {
+    "readme": "docs/README.md",
+    "license": "docs/LICENSE.txt"
+  }
+}

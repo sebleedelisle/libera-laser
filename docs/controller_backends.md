@@ -176,7 +176,7 @@ big-endian order. The `LIBERA_LIGHTSPACENET_COORDS`,
 hardware-validation overrides. They are not required for normal applications.
 
 Out-of-tree plugins can now mirror this frame-ingester shape too via the ABI
-v2 `get_frame_requirements()` + `send_frame()` callbacks.
+v1 `get_frame_requirements()` + `send_frame()` callbacks.
 
 For frame-ingester backends driven from a live point callback, Libera also
 maintains one shared virtual point backlog. That backlog combines:

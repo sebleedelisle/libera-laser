@@ -4,10 +4,15 @@
 #include "libera/plugin/PluginManagement.hpp"
 #include "libera/plugin/PluginRegistry.hpp"
 #include "libera/plugin/PluginSettings.hpp"
+#include "libera/plugin/libera_plugin.h"
+
+#include <miniz.h>
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -36,6 +41,89 @@ static int g_failures = 0;
     } } while(0)
 
 namespace {
+
+std::filesystem::path uniqueTempDirectory();
+
+const char* fixtureOs() {
+#ifdef _WIN32
+    return "windows";
+#elif defined(__APPLE__)
+    return "macos";
+#else
+    return "linux";
+#endif
+}
+
+const char* fixtureArch() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#else
+    return "x86";
+#endif
+}
+
+std::string makeFixturePackage(const std::string& binaryPath,
+                               const std::string& pluginId,
+                               const std::string& controllerType,
+                               const std::string& displayName) {
+    namespace fs = std::filesystem;
+    const fs::path directory = uniqueTempDirectory();
+    std::error_code ec;
+    fs::create_directories(directory, ec);
+    const fs::path package = directory / (pluginId + ".liberaplugin");
+    const std::string entrypoint = std::string("bin/") + fixtureOs() + "/" +
+        fixtureArch() + "/plugin" + fs::path(binaryPath).extension().string();
+    const std::string manifest =
+        "{\"schemaVersion\":1,\"id\":\"" + pluginId +
+        "\",\"version\":\"1.0.0\",\"name\":\"" + displayName +
+        "\",\"vendor\":\"Libera Tests\",\"description\":\"Fixture\","
+        "\"controllerType\":\"" + controllerType +
+        "\",\"libera\":{\"abiVersion\":" +
+        std::to_string(LIBERA_PLUGIN_API_VERSION) + "},\"entrypoints\":[{"
+        "\"os\":\"" + fixtureOs() + "\",\"arch\":\"" + fixtureArch() +
+        "\",\"path\":\"" + entrypoint + "\"}]}";
+
+    mz_zip_archive zip{};
+    ASSERT_TRUE(mz_zip_writer_init_file(&zip, package.string().c_str(), 0),
+                "fixture ZIP should open");
+    ASSERT_TRUE(mz_zip_writer_add_mem(&zip,
+                                      "manifest.json",
+                                      manifest.data(),
+                                      manifest.size(),
+                                      MZ_BEST_COMPRESSION),
+                "fixture manifest should be added");
+    ASSERT_TRUE(mz_zip_writer_add_file(&zip,
+                                       entrypoint.c_str(),
+                                       binaryPath.c_str(),
+                                       nullptr,
+                                       0,
+                                       MZ_BEST_COMPRESSION),
+                "fixture entrypoint should be added");
+    ASSERT_TRUE(mz_zip_writer_finalize_archive(&zip),
+                "fixture ZIP should finalize");
+    mz_zip_writer_end(&zip);
+    return package.string();
+}
+
+const std::string& validPackagePath() {
+    static const std::string path = makeFixturePackage(
+        TEST_VALID_PLUGIN_PATH,
+        "org.libera.test-valid",
+        "TestValidPlugin",
+        "Test Valid Plugin");
+    return path;
+}
+
+const std::string& missingTransportPackagePath() {
+    static const std::string path = makeFixturePackage(
+        TEST_MISSING_TRANSPORT_PLUGIN_PATH,
+        "org.libera.test-missing-transport",
+        "TestMissingTransportPlugin",
+        "Test Missing Transport Plugin");
+    return path;
+}
 
 std::string normalizedPathString(const std::filesystem::path& path) {
     namespace fs = std::filesystem;
@@ -101,18 +189,35 @@ bool waitForProperty(PluginController& controller,
 }
 
 void testValidationUsesRuntimeRules() {
-    const auto valid = validatePluginFile(TEST_VALID_PLUGIN_PATH);
+    const auto valid = validatePluginPackageForInstall(validPackagePath());
     ASSERT_TRUE(valid.success, "valid plugin should pass validation");
     ASSERT_TRUE(containsText(valid.message, "Test Valid Plugin"),
                 "valid plugin message should include display name");
 
-    const auto invalid =
-        validatePluginFile(TEST_MISSING_TRANSPORT_PLUGIN_PATH);
-    ASSERT_TRUE(!invalid.success,
-                "plugin without a transport should fail validation");
-    ASSERT_TRUE(containsText(invalid.message,
-                             "missing send_points() or get_frame_requirements()+send_frame()"),
-                "validation should report the missing transport callbacks");
+    const auto structurallyValid =
+        validatePluginPackageForInstall(missingTransportPackagePath());
+    ASSERT_TRUE(structurallyValid.success,
+                "package validation should not execute incoming native code");
+
+    const auto pluginDir = uniqueTempDirectory();
+    System::setPluginDirectory(pluginDir.string());
+    const auto install = installPlugin(missingTransportPackagePath());
+    ASSERT_TRUE(install.success, "invalid native fixture package should install safely");
+    System system;
+    const auto plugins = listManagedPlugins();
+    const auto failed = std::find_if(plugins.begin(), plugins.end(), [](const auto& info) {
+        return info.pluginId == "org.libera.test-missing-transport";
+    });
+    ASSERT_TRUE(failed != plugins.end(), "failed native fixture should be listed");
+    if (failed != plugins.end()) {
+        ASSERT_TRUE(failed->state == ManagedPluginState::FailedValidation,
+                    "missing transport should be rejected at restart/load");
+        ASSERT_TRUE(failed->loadError && containsText(
+                        *failed->loadError,
+                        "missing send_points() or get_frame_requirements()+send_frame()"),
+                    "deferred ABI validation should explain the missing transport");
+    }
+    system.shutdown();
 }
 
 void testPluginAndControllerSettings() {
@@ -124,14 +229,14 @@ void testPluginAndControllerSettings() {
     ASSERT_TRUE(!ec, "settings test plugin directory should be created");
 
     System::setPluginDirectory(pluginDir.string());
-    const auto install = installPlugin(TEST_VALID_PLUGIN_PATH);
+    const auto install = installPlugin(validPackagePath());
     ASSERT_TRUE(install.success, "settings fixture should install");
 
     {
         System system;
 
         const auto declaredPluginSettings =
-            pluginSettings("TestValidPlugin");
+            pluginSettings("org.libera.test-valid");
         ASSERT_TRUE(declaredPluginSettings.size() == 1,
                     "fixture should expose one plugin setting");
         if (!declaredPluginSettings.empty()) {
@@ -151,7 +256,7 @@ void testPluginAndControllerSettings() {
                          "default plugin setting should be applied before discovery");
 
         const auto offlineChange = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "gain", "8");
+            "org.libera.test-valid", "test-valid-001", "gain", "8");
         ASSERT_TRUE(offlineChange.success,
                     "offline controller setting should be persisted");
 
@@ -174,7 +279,7 @@ void testPluginAndControllerSettings() {
         }
 
         const auto pluginChange = setPluginSetting(
-            "TestValidPlugin", "discovery_label", "alternate");
+            "org.libera.test-valid", "discovery_label", "alternate");
         ASSERT_TRUE(pluginChange.success,
                     "live plugin setting should be accepted");
 
@@ -199,7 +304,7 @@ void testPluginAndControllerSettings() {
         }
 
         const auto liveControllerChange = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "gain", "9");
+            "org.libera.test-valid", "test-valid-001", "gain", "9");
         ASSERT_TRUE(liveControllerChange.success,
                     "live controller setting should be accepted");
         const auto liveGain = controller->getProperty("gain");
@@ -227,35 +332,35 @@ void testPluginAndControllerSettings() {
                     "persisted controller setting should be restored after reconnect");
 
         const auto invalidChange = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "gain", "11");
+            "org.libera.test-valid", "test-valid-001", "gain", "11");
         ASSERT_TRUE(!invalidChange.success,
                     "host should reject a controller value above its maximum");
 
         const auto invalidBool = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "invert_x", "1");
+            "org.libera.test-valid", "test-valid-001", "invert_x", "1");
         ASSERT_TRUE(!invalidBool.success,
                     "host should require canonical boolean values");
         const auto validBool = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "invert_x", "true");
+            "org.libera.test-valid", "test-valid-001", "invert_x", "true");
         ASSERT_TRUE(validBool.success,
                     "host should accept a canonical boolean value");
 
         const auto invalidFloat = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "scale", "2.5");
+            "org.libera.test-valid", "test-valid-001", "scale", "2.5");
         ASSERT_TRUE(!invalidFloat.success,
                     "host should enforce floating-point bounds");
         const auto validFloat = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "scale", "1.25");
+            "org.libera.test-valid", "test-valid-001", "scale", "1.25");
         ASSERT_TRUE(validFloat.success,
                     "host should accept a bounded floating-point value");
 
         const auto stringChange = setControllerSetting(
-            "TestValidPlugin", "test-valid-001", "nickname", "Test laser");
+            "org.libera.test-valid", "test-valid-001", "nickname", "Test laser");
         ASSERT_TRUE(stringChange.success,
                     "host should accept a string setting");
 
         const auto savedControllerSettings = controllerSettings(
-            "TestValidPlugin", "test-valid-001");
+            "org.libera.test-valid", "test-valid-001");
         ASSERT_TRUE(savedControllerSettings.size() == 4,
                     "fixture should expose all primitive controller settings");
         const auto* savedGain = findSetting(savedControllerSettings, "gain");
@@ -278,7 +383,7 @@ void testPluginAndControllerSettings() {
     // Switch the configured path away and back so the store must reload from
     // disk rather than satisfying this check from its in-memory map.
     System::setPluginDirectory((pluginDir / "unused").string());
-    (void)pluginSettings("TestValidPlugin");
+    (void)pluginSettings("org.libera.test-valid");
     System::setPluginDirectory(pluginDir.string());
 
     {
@@ -313,6 +418,44 @@ void testPluginAndControllerSettings() {
         restartedSystem.shutdown();
     }
 
+    // A cooperating Libera process may update the shared file after this
+    // process cached it. Mutations must merge the latest on-disk state while
+    // holding the interprocess store lock.
+    {
+        std::ofstream output(pluginSettingsFilePath(), std::ios::trunc);
+        output << "{\"schemaVersion\":1,\"values\":[{"
+                  "\"pluginId\":\"org.example.other\","
+                  "\"controllerId\":\"\",\"key\":\"mode\","
+                  "\"value\":\"external\"}]}\n";
+    }
+    const auto mergedChange = setPluginSetting(
+        "org.libera.test-valid", "discovery_label", "standard");
+    ASSERT_TRUE(mergedChange.success,
+                "setting mutation should merge current shared file contents");
+    {
+        std::ifstream input(pluginSettingsFilePath());
+        const std::string merged((std::istreambuf_iterator<char>(input)),
+                                 std::istreambuf_iterator<char>());
+        ASSERT_TRUE(containsText(merged, "org.example.other"),
+                    "setting mutation should retain another process's values");
+    }
+
+    {
+        std::ofstream output(pluginSettingsFilePath(), std::ios::trunc);
+        output << "{\"schemaVersion\":1,\"values\":[]} trailing-data\n";
+    }
+    const auto malformedChange = setPluginSetting(
+        "org.libera.test-valid", "discovery_label", "alternate");
+    ASSERT_TRUE(!malformedChange.success,
+                "setting mutation should refuse a malformed shared file");
+    {
+        std::ifstream input(pluginSettingsFilePath());
+        const std::string preserved((std::istreambuf_iterator<char>(input)),
+                                    std::istreambuf_iterator<char>());
+        ASSERT_TRUE(containsText(preserved, "trailing-data"),
+                    "failed setting mutation should preserve malformed data");
+    }
+
 #ifndef _WIN32
     // POSIX permits removal of a loaded shared-library file. Windows keeps the
     // test DLL locked until process exit, so its temporary directory is left
@@ -335,22 +478,24 @@ void testManagedPluginInstallListAndRemove() {
                      pluginDir.string(),
                      "management should use the configured user plugin directory");
 
-    auto externalRemoval = removePlugin(TEST_VALID_PLUGIN_PATH);
+    auto externalRemoval = removePlugin(validPackagePath());
     ASSERT_TRUE(!externalRemoval.success,
                 "removePlugin should reject files outside the user plugin directory");
 
-    auto install = installPlugin(TEST_VALID_PLUGIN_PATH);
+    auto install = installPlugin(validPackagePath());
     ASSERT_TRUE(install.success, "valid plugin should install");
-    ASSERT_STRING_EQ(fs::path(install.installedPath).parent_path().string(),
-                     pluginDir.string(),
-                     "plugin should install into the configured user directory");
+    ASSERT_TRUE(containsText(normalizedPathString(install.installedPath),
+                             normalizedPathString(pluginDir)),
+                "plugin should install into the configured user store");
 
-    const auto reinstall = installPlugin(install.installedPath);
+    const auto reinstall = installPlugin(validPackagePath());
     ASSERT_TRUE(reinstall.success,
                 "installing a plugin already in the user directory should validate without copy failure");
-    ASSERT_STRING_EQ(reinstall.installedPath,
+    ASSERT_TRUE(reinstall.restartRequired,
+                "a package not examined at startup should still require restart");
+    ASSERT_STRING_EQ(normalizedPathString(reinstall.installedPath),
                      normalizedPathString(install.installedPath),
-                     "same-path install should report the installed path");
+                     "same package revision should be reused");
 
     auto plugins = listManagedPlugins();
     const ManagedPluginInfo* pending =
@@ -367,18 +512,41 @@ void testManagedPluginInstallListAndRemove() {
                     "newly-installed plugin should require restart");
     }
 
+    std::string selectionError;
+    ASSERT_TRUE(selectControllerDriver("TestValidPlugin",
+                                       "org.libera.test-valid",
+                                       &selectionError),
+                "driver selection should persist in the package store");
+    const auto selections = selectedControllerDrivers();
+    const auto selected = selections.find("TestValidPlugin");
+    ASSERT_TRUE(selected != selections.end() &&
+                selected->second == "org.libera.test-valid",
+                "persisted driver selection should round-trip");
+
     const auto pendingRemoval = removePlugin(install.installedPath);
     ASSERT_TRUE(pendingRemoval.success,
                 "pending plugin file should be removable before restart");
     ASSERT_TRUE(!pendingRemoval.restartRequired,
                 "removing a never-loaded pending plugin should not require restart");
+    const auto removedSelections = selectedControllerDrivers();
+    ASSERT_TRUE(removedSelections.find("TestValidPlugin") ==
+                    removedSelections.end(),
+                "removing a plugin should clear driver selections that name it");
 
-    install = installPlugin(TEST_VALID_PLUGIN_PATH);
+    install = installPlugin(validPackagePath());
     ASSERT_TRUE(install.success, "valid plugin should reinstall after pending removal");
 
     PluginRegistry::instance().recordLoaded(normalizedPathString(install.installedPath),
+                                            "org.libera.test-valid",
+                                            "1.0.0",
                                             "TestValidPlugin",
                                             "Test Valid Plugin");
+
+    const auto activeReinstall = installPlugin(validPackagePath());
+    ASSERT_TRUE(activeReinstall.success,
+                "reinstalling the active revision should succeed");
+    ASSERT_TRUE(!activeReinstall.restartRequired,
+                "reinstalling an already examined revision should not request restart");
 
     plugins = listManagedPlugins();
     const ManagedPluginInfo* loaded =
@@ -416,11 +584,39 @@ void testManagedPluginInstallListAndRemove() {
     fs::remove_all(pluginDir, ec);
 }
 
+void testMalformedStateIsNotOverwritten() {
+    namespace fs = std::filesystem;
+
+    const fs::path pluginDir = uniqueTempDirectory();
+    std::error_code ec;
+    fs::create_directories(pluginDir, ec);
+    ASSERT_TRUE(!ec, "state test plugin directory should be created");
+    const fs::path statePath = pluginDir / "state.json";
+    {
+        std::ofstream output(statePath);
+        output << "{\"schemaVersion\":1,\"activePackages\":[],"
+                  "\"controllerDrivers\":{}}\n";
+    }
+
+    System::setPluginDirectory(pluginDir.string());
+    const auto install = installPlugin(validPackagePath());
+    ASSERT_TRUE(!install.success,
+                "install should refuse a malformed existing state file");
+    std::ifstream input(statePath);
+    const std::string preserved((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+    ASSERT_TRUE(containsText(preserved, "\"activePackages\":[]"),
+                "failed mutation should preserve the malformed state file");
+
+    fs::remove_all(pluginDir, ec);
+}
+
 } // namespace
 
 int main() {
     testValidationUsesRuntimeRules();
     testPluginAndControllerSettings();
     testManagedPluginInstallListAndRemove();
+    testMalformedStateIsNotOverwritten();
     return g_failures == 0 ? 0 : 1;
 }

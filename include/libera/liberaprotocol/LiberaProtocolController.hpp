@@ -50,6 +50,8 @@ private:
     bool readRecord(protocol::Record& record, std::chrono::milliseconds timeout);
     bool writeMessage(const std::vector<std::uint8_t>& bytes,
                       std::chrono::milliseconds timeout);
+    bool serviceHeartbeat();
+    bool drainInboundRecords();
     bool receiverHandlesScannerSync() const noexcept;
     bool syncScannerSyncIfNeeded();
     bool sendFrameRecord();
@@ -78,6 +80,9 @@ private:
     std::uint64_t nextFrameId = 1;
     std::uint64_t currentPointIndex = 0;
     std::chrono::steady_clock::time_point nextSendAt{};
+    std::chrono::steady_clock::time_point nextHeartbeatAt{};
+    std::chrono::steady_clock::time_point lastPongAt{};
+    bool heartbeatSent = false;
     bool scannerSyncSent = false;
     std::int64_t lastScannerSyncOffsetNs = 0;
     bool lastScannerSyncEnabled = false;

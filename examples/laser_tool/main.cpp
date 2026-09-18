@@ -111,6 +111,7 @@ struct ControllerEntry {
     std::string id;                // Unique controller identifier
     std::string label;             // Human-readable name (e.g. "LaserCube 1")
     std::string type;              // Controller type (e.g. "LaserCubeNet", "Helios")
+    std::string driverId;          // Built-in or plugin implementation that discovered it
     std::uint32_t maxPointRate = 0;
     bool enabled = false;          // Whether the user has enabled this controller
     bool connecting = false;       // True while an async connection is in progress
@@ -126,6 +127,7 @@ struct DiscoveredInfo {
     std::string id;
     std::string label;
     std::string type;
+    std::string driverId;
     std::uint32_t maxPointRate = 0;
 };
 
@@ -744,8 +746,13 @@ static void discoveryThreadFunc(AppState& state) {
             // Store results under lock for the main thread to consume
             std::lock_guard<std::mutex> lock(state.discoveredMutex);
             state.latestDiscovered.clear();
-            for (auto& d : discovered)
-                state.latestDiscovered.push_back({d->idValue(), d->labelValue(), d->type(), d->maxPointRate()});
+            for (auto& d : discovered) {
+                state.latestDiscovered.push_back({d->idValue(),
+                                                  d->labelValue(),
+                                                  d->type(),
+                                                  d->driverId(),
+                                                  d->maxPointRate()});
+            }
             state.discoveryResultReady.store(true);
         }
         // Wait ~2 seconds before next scan, but wake early if a rescan is requested
@@ -788,9 +795,10 @@ static void applyDiscoveryResults(AppState& state) {
             entry.id = d.id;
             entry.label = d.label;
             entry.type = d.type;
+            entry.driverId = d.driverId;
             entry.maxPointRate = d.maxPointRate;
             entry.hasPluginSettings =
-                !plugin::controllerSettings(d.type, d.id).empty();
+                !plugin::controllerSettings(d.driverId, d.id).empty();
             state.controllers.push_back(std::move(entry));
         }
     }
@@ -1437,7 +1445,7 @@ int main(int /*argc*/, char* argv[]) {
                     if (ImGui::TreeNodeEx("Controller settings",
                                           ImGuiTreeNodeFlags_SpanAvailWidth)) {
                         libera::gui::imgui::DrawPluginControllerSettings(
-                            entry.type,
+                            entry.driverId,
                             entry.id,
                             entry.pluginSettingsState);
 

@@ -61,8 +61,8 @@ If you like, you can instead include just the controllers you want to support:
 Only the built-in controller types you include will be discovered.
 
 Plugins are loaded separately from Libera's shared user plugin folder. In the
-normal case you can just construct `System` and install plugin libraries once
-for all Libera apps:
+normal case you can just construct `System` and install `.liberaplugin`
+packages once for all Libera apps:
 
 ```cpp
 libera::System liberaSystem;
@@ -91,12 +91,12 @@ controller ID. Values are restored automatically before discovery or streaming:
 #include "libera/plugin/PluginSettings.hpp"
 
 for (const auto& setting :
-     libera::plugin::pluginSettings("ExamplePlugin")) {
+     libera::plugin::pluginSettings("com.acme.usb-dac")) {
     std::cout << setting.definition.label << ": " << setting.value << "\n";
 }
 
 auto result = libera::plugin::setControllerSetting(
-    "ExamplePlugin", "device-001", "invert_x", "true");
+    "com.acme.usb-dac", "device-001", "invert_x", "true");
 ```
 
 Setting changes can be applied while controllers are connected. A successful

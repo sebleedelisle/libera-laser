@@ -7,9 +7,9 @@ set(LIBERA_UNIT_TESTS
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_scheduler.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_frame_advance.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_projected_render_time.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_plugin_directory.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_queue_budget_floor.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_core_single_controller_manager_base.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_core_controller_driver_selection.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_avb_backend_state.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_helios_timing.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/test_lasercubenet_buffer_target.cpp
@@ -44,7 +44,9 @@ set(LIBERA_HARDWARE_TESTS
 
 if (LIBERA_ENABLE_PLUGINS)
   list(APPEND LIBERA_UNIT_TESTS
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_management.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_core_plugin_directory.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_management.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_plugin_package.cpp)
 endif()
 
 foreach(test_source IN LISTS LIBERA_UNIT_TESTS)
@@ -65,6 +67,9 @@ foreach(test_source IN LISTS LIBERA_UNIT_TESTS)
 endforeach()
 
 if (LIBERA_ENABLE_PLUGINS)
+  target_link_libraries(test_plugin_package PRIVATE libera-miniz)
+  target_link_libraries(test_plugin_management PRIVATE libera-miniz)
+
   add_library(test_valid_libera_plugin SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/plugin_fixtures/valid_plugin.cpp)
   add_library(test_missing_transport_libera_plugin SHARED
@@ -72,7 +77,7 @@ if (LIBERA_ENABLE_PLUGINS)
 
   foreach(plugin_fixture IN ITEMS test_valid_libera_plugin test_missing_transport_libera_plugin)
     target_include_directories(${plugin_fixture} PRIVATE
-      ${CMAKE_SOURCE_DIR}/include)
+      ${CMAKE_CURRENT_SOURCE_DIR}/../include)
     libera_apply_warnings(${plugin_fixture})
     libera_apply_sanitizers(${plugin_fixture})
     set_target_properties(${plugin_fixture} PROPERTIES

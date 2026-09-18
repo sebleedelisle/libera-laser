@@ -16,10 +16,9 @@
  * plugin authors can compare the two shapes in one place. Current hosts prefer
  * the frame callbacks when both are present.
  *
- * Build as a shared library and place the output in Libera's shared user
- * plugin folder. Hosts can still override or extend the search path with
- * System::setPluginDirectory() / System::addPluginDirectory() when they want
- * custom locations:
+ * Build the native library, place it into the layout shown by
+ * examples/plugin-package/manifest.json, then create a .liberaplugin archive
+ * with tools/package_plugin.py:
  *
  *   # macOS
  *   c++ -shared -fPIC -std=c++17 -o example-plugin.dylib example_plugin.cpp \
@@ -31,6 +30,8 @@
  *
  *   # Windows (MSVC)
  *   cl /LD /std:c++17 /I ..\include example_plugin.cpp /Fe:example-plugin.dll
+ *
+ *   python3 ../tools/package_plugin.py plugin-package example.liberaplugin
  */
 
 #include "libera/plugin/libera_plugin.h"
@@ -84,7 +85,9 @@ void hostLog(ExampleBackend* backend,
     }
 }
 
-void* createBackend(const libera_host_services_t* host) {
+void* createBackend(const libera_host_services_t* host,
+                    const libera_plugin_environment_t* environment) {
+    (void)environment;
     auto* backend = new ExampleBackend;
     backend->host = host;
     hostLog(backend, LIBERA_LOG_INFO, "Acme example plugin backend created");
@@ -111,7 +114,7 @@ void discover(void* rawBackend,
 
     libera_controller_info_t info;
     // Use one naming scheme consistently:
-    // - type_name / display_name describe the Acme DAC family
+    // - controller_type / display_name describe the Acme DAC family
     // - id / label describe this one discovered controller instance
     libera_controller_info_init(&info,
                                 "acme-usb-001",
@@ -334,7 +337,9 @@ libera_status_t setControllerSetting(void* rawController,
 const libera_plugin_api_t examplePluginApi = {
     /* abi_version        */ LIBERA_PLUGIN_API_VERSION,
     /* struct_size        */ sizeof(libera_plugin_api_t),
-    /* type_name          */ "AcmeUsbDac",
+    /* plugin_id          */ "com.acme.usb-dac",
+    /* plugin_version     */ "1.0.0",
+    /* controller_type    */ "AcmeUsbDac",
     /* display_name       */ "Acme USB DAC",
     /* create_backend     */ &createBackend,
     /* destroy_backend    */ &destroyBackend,

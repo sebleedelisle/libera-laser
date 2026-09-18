@@ -60,6 +60,7 @@ public:
 inline core::ControllerManagerRegistry AvbManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.avb",
             std::string(AvbControllerInfo::controllerType()),
             "AVB",
             "Audio interface backed AVB controller outputs.",

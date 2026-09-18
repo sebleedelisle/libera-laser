@@ -42,7 +42,7 @@ public:
 
     // Settings use the stable discovery identity for persistence and the
     // opaque live handle only while applying a value to this connection.
-    const std::string& pluginType() const { return pluginTypeName; }
+    const std::string& pluginId() const { return pluginIdValue; }
     std::string controllerId() const { return controllerInfo.id; }
     libera_status_t applySetting(const std::string& key,
                                  const std::string& value);
@@ -70,7 +70,7 @@ private:
     void* backendHandle = nullptr;
     libera_controller_info_t controllerInfo{};
     std::string pluginPath;
-    std::string pluginTypeName;
+    std::string pluginIdValue;
     void* pluginHandle = nullptr;
     std::atomic<bool> connected{false};
 

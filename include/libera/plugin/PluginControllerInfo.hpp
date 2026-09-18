@@ -11,8 +11,8 @@ namespace libera::plugin {
 class PluginControllerInfo : public core::ControllerInfo {
 public:
     PluginControllerInfo(const libera_controller_info_t& pluginInfo,
-                         std::string pluginTypeName)
-    : ControllerInfo(std::move(pluginTypeName),
+                         std::string controllerType)
+    : ControllerInfo(std::move(controllerType),
                      pluginInfo.id,
                      pluginInfo.label,
                      pluginInfo.max_point_rate,

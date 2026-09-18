@@ -45,6 +45,7 @@ private:
 inline core::ControllerManagerRegistry IdnManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.idn",
             std::string(IdnControllerInfo::controllerType()),
             "IDN",
             "Helios IDN network controllers.",

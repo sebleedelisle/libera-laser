@@ -20,11 +20,19 @@ std::string validatePluginApi(const libera_plugin_api_t* api) {
     }
 
     if (api->struct_size < LIBERA_PLUGIN_API_BASE_SIZE) {
-        return "API table is smaller than the required v1 transport interface";
+        return "API table is smaller than the required transport interface";
     }
 
-    if (!api->type_name || !*api->type_name) {
-        return "missing type_name";
+    if (!api->plugin_id || !*api->plugin_id) {
+        return "missing plugin_id";
+    }
+
+    if (!api->plugin_version || !*api->plugin_version) {
+        return "missing plugin_version";
+    }
+
+    if (!api->controller_type || !*api->controller_type) {
+        return "missing controller_type";
     }
 
     if (!api->display_name || !*api->display_name) {

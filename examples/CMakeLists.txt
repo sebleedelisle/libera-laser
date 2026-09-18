@@ -28,7 +28,7 @@ target_link_libraries(lightspace-net-packet-limit-probe PRIVATE libera-core)
 libera_apply_warnings(lightspace-net-packet-limit-probe)
 libera_apply_sanitizers(lightspace-net-packet-limit-probe)
 
-# Example plugin — built as a shared library to demonstrate the plugin API.
+# Native entrypoint used by the package layout in plugin-package/.
 add_library(example-plugin SHARED ${CMAKE_CURRENT_SOURCE_DIR}/example_plugin.cpp)
 target_include_directories(example-plugin PRIVATE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>)

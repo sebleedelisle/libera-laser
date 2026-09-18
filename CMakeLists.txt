@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.15)
 
 # Project name and languages.
-project(libera-core LANGUAGES CXX)
+project(libera-core LANGUAGES C CXX)
 
 # Enable CTest and define BUILD_TESTING.
 include(CTest)
@@ -31,6 +31,63 @@ set(LIBERA_IMGUI_TARGET "imgui_lib" CACHE STRING
     "ImGui target linked by optional Libera ImGui widgets")
 set(LIBERA_PROTOCOL_SOURCE_DIR "" CACHE PATH
     "Optional path to a libera-protocol source tree. Defaults to libs/libera-protocol when present.")
+
+# Plugin packages use JSON manifests and ordinary ZIP archives. Pin both
+# dependencies to immutable commits so every host application sees the same
+# package parser and extraction behavior.
+if (LIBERA_ENABLE_PLUGINS)
+    include(FetchContent)
+
+    set(JSON_BuildTests OFF CACHE INTERNAL "" FORCE)
+    set(JSON_Install OFF CACHE INTERNAL "" FORCE)
+    FetchContent_Declare(
+        libera_nlohmann_json
+        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_TAG 65ee68451d8eb2b5f3a30b410476ab83deb3289b
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(libera_nlohmann_json)
+
+    # miniz's own CMake options use generic cache names that collide easily
+    # when Libera is embedded. Populate its sources and define a private target
+    # instead of adding the upstream project as a subdirectory.
+    if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
+        # Fetch the source without adding miniz's own CMake project. The
+        # deliberately absent subdirectory keeps its generic options and
+        # install rules out of embedding applications.
+        FetchContent_Declare(
+            libera_miniz_source
+            GIT_REPOSITORY https://github.com/richgel999/miniz.git
+            GIT_TAG d10b03cc73475af673df40f06e5cefd1d5f940d9
+            GIT_SHALLOW TRUE
+            SOURCE_SUBDIR libera-unused-cmake-subdirectory)
+        FetchContent_MakeAvailable(libera_miniz_source)
+    else()
+        FetchContent_Declare(
+            libera_miniz_source
+            GIT_REPOSITORY https://github.com/richgel999/miniz.git
+            GIT_TAG d10b03cc73475af673df40f06e5cefd1d5f940d9
+            GIT_SHALLOW TRUE)
+        FetchContent_GetProperties(libera_miniz_source)
+        if (NOT libera_miniz_source_POPULATED)
+            FetchContent_Populate(libera_miniz_source)
+        endif()
+    endif()
+    add_library(libera-miniz STATIC
+        ${libera_miniz_source_SOURCE_DIR}/miniz.c
+        ${libera_miniz_source_SOURCE_DIR}/miniz_zip.c
+        ${libera_miniz_source_SOURCE_DIR}/miniz_tinfl.c
+        ${libera_miniz_source_SOURCE_DIR}/miniz_tdef.c)
+    target_include_directories(libera-miniz
+        SYSTEM PUBLIC
+            ${libera_miniz_source_SOURCE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/miniz)
+    target_compile_definitions(libera-miniz PUBLIC MINIZ_STATIC_DEFINE)
+    if (MSVC)
+        target_compile_options(libera-miniz PRIVATE /W0)
+    else()
+        target_compile_options(libera-miniz PRIVATE -w)
+    endif()
+endif()
 
 # Optional: a few sensible warnings. Comment out if you prefer quiet builds.
 function(libera_apply_warnings target)
@@ -95,6 +152,10 @@ add_library(libera-core ${LIBERA_CORE_SOURCES})
 
 if (LIBERA_ENABLE_PLUGINS)
     target_compile_definitions(libera-core PUBLIC LIBERA_ENABLE_PLUGINS=1)
+    target_link_libraries(libera-core
+        PRIVATE
+            libera-miniz
+            nlohmann_json::nlohmann_json)
 endif()
 
 # Public include directories:

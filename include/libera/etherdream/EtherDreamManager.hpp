@@ -59,6 +59,7 @@ private:
 inline core::ControllerManagerRegistry EtherDreamManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.etherdream",
             std::string(EtherDreamControllerInfo::controllerType()),
             "Ether Dream",
             "Network DACs discovered from Ether Dream broadcasts.",

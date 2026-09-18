@@ -73,6 +73,7 @@ private:
 inline core::ControllerManagerRegistry HeliosManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.helios",
             std::string(HeliosControllerInfo::controllerType()),
             "Helios",
             "Helios USB controllers.",

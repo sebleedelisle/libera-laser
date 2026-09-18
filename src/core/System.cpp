@@ -5,25 +5,14 @@
 
 #if LIBERA_ENABLE_PLUGINS
 #include "libera/plugin/PluginManager.hpp"
+#include "libera/plugin/PluginManagement.hpp"
 #include <cstdlib>
 #include <filesystem>
-
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#elif defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
+#include <mutex>
+#include <set>
 #endif
 
 namespace libera::core {
-
-std::vector<ControllerManagerFactory>& getControllerManagerFactories() {
-    static std::vector<ControllerManagerFactory> factories;
-    return factories;
-}
 
 std::vector<ControllerManagerRegistration>& getControllerManagerRegistrations() {
     static std::vector<ControllerManagerRegistration> registrations;
@@ -39,30 +28,22 @@ ControllerManagerRegistration normalizeRegistration(ControllerManagerRegistratio
     return registration;
 }
 
-bool hasRegisteredManagerType(const std::string& type) {
-    if (type.empty()) {
+bool hasRegisteredDriverId(const std::string& driverId) {
+    if (driverId.empty()) {
         return false;
     }
     const auto& registrations = getControllerManagerRegistrations();
     return std::any_of(
         registrations.begin(), registrations.end(),
         [&](const ControllerManagerRegistration& registration) {
-            return registration.info.type == type;
+            return registration.info.driverId == driverId;
         });
 }
 
 } // namespace
 
-ControllerManagerRegistry::ControllerManagerRegistry(ControllerManagerFactory factory) {
-    getControllerManagerFactories().push_back(std::move(factory));
-}
-
 ControllerManagerRegistry::ControllerManagerRegistry(ControllerManagerRegistration registration) {
     AddControllerManager(std::move(registration));
-}
-
-void AddControllerManager(ControllerManagerFactory factory) {
-    getControllerManagerFactories().push_back(std::move(factory));
 }
 
 void AddControllerManager(ControllerManagerRegistration registration) {
@@ -70,7 +51,10 @@ void AddControllerManager(ControllerManagerRegistration registration) {
     if (!registration.factory) {
         return;
     }
-    if (hasRegisteredManagerType(registration.info.type)) {
+    if (registration.info.driverId.empty() || registration.info.type.empty()) {
+        return;
+    }
+    if (hasRegisteredDriverId(registration.info.driverId)) {
         return;
     }
     getControllerManagerRegistrations().push_back(std::move(registration));
@@ -98,54 +82,25 @@ namespace libera {
 
 namespace {
 
+#ifndef _WIN32
 std::string envValue(const char* name) {
     const char* value = std::getenv(name);
     return value ? std::string(value) : std::string{};
 }
-
-std::filesystem::path executableDirectory() {
-    namespace fs = std::filesystem;
-#ifdef __APPLE__
-    uint32_t size = 0;
-    _NSGetExecutablePath(nullptr, &size);
-    std::string buf(size, '\0');
-    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
-    std::error_code ec;
-    auto canonical = fs::weakly_canonical(fs::path(buf), ec);
-    return canonical.parent_path();
-#elif defined(_WIN32)
-    wchar_t buf[MAX_PATH];
-    DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    return fs::path(buf).parent_path();
-#else
-    std::error_code ec;
-    auto exe = fs::read_symlink("/proc/self/exe", ec);
-    if (ec) return {};
-    return exe.parent_path();
 #endif
-}
 
 std::string resolvePluginDirectory(const std::string& requested) {
     namespace fs = std::filesystem;
     if (requested.empty()) return requested;
 
-    fs::path p(requested);
+    const fs::path path = fs::u8path(requested);
     std::error_code ec;
-
-    // Absolute paths are used as-is.
-    if (p.is_absolute()) return requested;
-
-    // Try the executable's directory first — gives a self-contained bundle
-    // that works regardless of the caller's current working directory.
-    auto exeRelative = executableDirectory() / p;
-    if (fs::is_directory(exeRelative, ec)) {
-        return exeRelative.string();
+    auto absolute = path.is_absolute() ? path : fs::absolute(path, ec);
+    if (ec) {
+        absolute = path;
     }
-
-    // Fall back to the original path so explicit development/test overrides
-    // can still be relative to the current working directory.
-    return requested;
+    auto canonical = fs::weakly_canonical(absolute, ec);
+    return (ec ? absolute.lexically_normal() : canonical).u8string();
 }
 
 std::filesystem::path defaultUserPluginDirectory() {
@@ -153,12 +108,12 @@ std::filesystem::path defaultUserPluginDirectory() {
     fs::path baseDir;
 
 #ifdef _WIN32
-    const auto localAppData = envValue("LOCALAPPDATA");
-    if (!localAppData.empty()) {
+    const wchar_t* localAppData = _wgetenv(L"LOCALAPPDATA");
+    if (localAppData && *localAppData) {
         baseDir = localAppData;
     } else {
-        const auto userProfile = envValue("USERPROFILE");
-        if (!userProfile.empty()) {
+        const wchar_t* userProfile = _wgetenv(L"USERPROFILE");
+        if (userProfile && *userProfile) {
             baseDir = fs::path(userProfile) / "AppData" / "Local";
         }
     }
@@ -193,7 +148,7 @@ std::filesystem::path defaultUserPluginDirectory() {
 std::vector<std::string> defaultPluginDirectories() {
     // Libera apps share one user-level plugin folder so installing a plugin
     // once makes it available to every app in the Libera ecosystem.
-    return {defaultUserPluginDirectory().string()};
+    return {defaultUserPluginDirectory().u8string()};
 }
 
 std::vector<std::string>& pluginDirStorage() {
@@ -201,10 +156,27 @@ std::vector<std::string>& pluginDirStorage() {
     return dirs;
 }
 
+std::set<std::string>& attemptedPluginDirectories() {
+    static std::set<std::string> directories;
+    return directories;
+}
+
+std::recursive_mutex& pluginLoadMutex() {
+    static std::recursive_mutex mutex;
+    return mutex;
+}
+
 void loadConfiguredPluginDirectories() {
+    std::lock_guard lock(pluginLoadMutex());
     for (const auto& dir : System::pluginDirectories()) {
         if (dir.empty()) continue;
-        plugin::loadPluginsFromDirectory(resolvePluginDirectory(dir));
+        const auto resolved = resolvePluginDirectory(dir);
+        // Package activation is restart-based. Once a store has been examined
+        // in this process, later management changes remain pending rather than
+        // unexpectedly dlopen()ing code from an arbitrary UI query.
+        if (attemptedPluginDirectories().insert(resolved).second) {
+            plugin::loadPluginsFromDirectory(resolved);
+        }
     }
 }
 
@@ -261,33 +233,83 @@ System::System()
 System::System(SystemOptions options) {
     loadConfiguredPluginDirectories();
 
+    // Persisted UI choices provide the default, while an embedding
+    // application can still override any family for one System instance.
+    std::unordered_map<std::string, std::string> selectedDrivers;
+#if LIBERA_ENABLE_PLUGINS
+    selectedDrivers = plugin::selectedControllerDrivers();
+#endif
+    for (const auto& [type, driverId] : options.selectedControllerDrivers) {
+        selectedDrivers[type] = driverId;
+    }
+
     auto controllerTypeEnabled = [&](std::string_view type) {
         return type.empty() ||
                options.disabledControllerTypes.find(std::string(type)) ==
                    options.disabledControllerTypes.end();
     };
 
+    // Group registrations before constructing anything. Only one driver for a
+    // controller family should probe hardware; otherwise competing drivers can
+    // bind the same ports or present the same physical controller twice.
+    std::unordered_map<std::string,
+                       std::vector<const core::ControllerManagerRegistration*>>
+        registrationsByType;
     for (const auto& registration : core::getControllerManagerRegistrations()) {
-        if (!registration.factory) continue;
-        if (!controllerTypeEnabled(registration.info.type)) continue;
-        auto manager = registration.factory();
-        if (!manager) continue;
-        auto type = std::string(manager->managedType());
-        managerByType[type] = manager.get();
-        managers.emplace_back(std::move(manager));
-    }
-
-    for (const auto& factory : core::getControllerManagerFactories()) {
-        if (!factory) continue;
-        auto manager = factory();
-        if (!manager) continue;
-        auto type = std::string(manager->managedType());
-        if (!controllerTypeEnabled(type)) {
-            manager->closeAll();
+        if (!registration.factory || !controllerTypeEnabled(registration.info.type)) {
             continue;
         }
-        managerByType[type] = manager.get();
-        managers.emplace_back(std::move(manager));
+        registrationsByType[registration.info.type].push_back(&registration);
+    }
+
+    for (const auto& [type, registrations] : registrationsByType) {
+        const core::ControllerManagerRegistration* selected = nullptr;
+
+        const auto requested = selectedDrivers.find(type);
+        if (requested != selectedDrivers.end()) {
+            const auto found = std::find_if(
+                registrations.begin(), registrations.end(),
+                [&](const auto* registration) {
+                    return registration->info.driverId == requested->second;
+                });
+            if (found != registrations.end()) {
+                selected = *found;
+            }
+        }
+
+        // A newly installed plugin must not silently replace a built-in
+        // implementation. Keep the built-in selected until the host records a
+        // deliberate user choice.
+        if (!selected) {
+            const auto builtIn = std::find_if(
+                registrations.begin(), registrations.end(),
+                [](const auto* registration) {
+                    return registration->info.builtIn;
+                });
+            if (builtIn != registrations.end()) {
+                selected = *builtIn;
+            }
+        }
+
+        // A plugin-only controller type is unambiguous when exactly one plugin
+        // implements it. Multiple plugin-only implementations require an
+        // explicit choice and remain inactive until one is supplied.
+        if (!selected && registrations.size() == 1) {
+            selected = registrations.front();
+        }
+        if (!selected) {
+            continue;
+        }
+
+        auto manager = selected->factory();
+        if (!manager || manager->managedType() != type) {
+            if (manager) {
+                manager->closeAll();
+            }
+            continue;
+        }
+        managerByDriverId[selected->info.driverId] = manager.get();
+        managers.push_back({selected->info.driverId, std::move(manager)});
     }
 }
 
@@ -302,11 +324,14 @@ System::~System() {
 
 std::vector<std::unique_ptr<core::ControllerInfo>> System::discoverControllers() {
     std::vector<std::unique_ptr<core::ControllerInfo>> results;
-    for (auto& manager : managers) {
-        if (!manager) continue;
-        auto subset = manager->discover();
+    for (auto& active : managers) {
+        if (!active.manager) continue;
+        auto subset = active.manager->discover();
         results.reserve(results.size() + subset.size());
         for (auto& item : subset) {
+            if (item) {
+                item->setDriverId(active.driverId);
+            }
             results.emplace_back(std::move(item));
         }
     }
@@ -315,8 +340,8 @@ std::vector<std::unique_ptr<core::ControllerInfo>> System::discoverControllers()
 
 std::shared_ptr<core::LaserController>
 System::connectController(const core::ControllerInfo& info) {
-    auto it = managerByType.find(info.type());
-    if (it == managerByType.end() || !it->second) {
+    auto it = managerByDriverId.find(info.driverId());
+    if (it == managerByDriverId.end() || !it->second) {
         return nullptr;
     }
     auto controller = it->second->connectController(info);
@@ -326,9 +351,9 @@ System::connectController(const core::ControllerInfo& info) {
     return controller;
 }
 
-bool System::disconnectController(std::string_view type, std::string_view id) {
-    auto it = managerByType.find(std::string(type));
-    if (it == managerByType.end() || !it->second) {
+bool System::disconnectController(std::string_view driverId, std::string_view id) {
+    auto it = managerByDriverId.find(std::string(driverId));
+    if (it == managerByDriverId.end() || !it->second) {
         return false;
     }
 
@@ -341,11 +366,11 @@ void System::shutdown() {
     }
 
     for (auto it = managers.rbegin(); it != managers.rend(); ++it) {
-        if (*it) {
-            (*it)->closeAll();
+        if (it->manager) {
+            it->manager->closeAll();
         }
     }
-    managerByType.clear();
+    managerByDriverId.clear();
     managers.clear();
     shutdownComplete = true;
 }

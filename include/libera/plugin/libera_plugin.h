@@ -128,6 +128,22 @@ typedef struct {
                          const char* label);
 } libera_host_services_t;
 
+/*
+ * Immutable paths belonging to the installed package revision. This structure
+ * is valid only during create_backend(); the strings it points to remain valid
+ * until destroy_backend() returns. Plugins should resolve bundled data relative
+ * to package_root instead of the process working directory.
+ */
+typedef struct {
+    uint32_t struct_size;
+    const char* package_root;
+    const char* entrypoint_path;
+} libera_plugin_environment_t;
+
+#define LIBERA_PLUGIN_ENVIRONMENT_BASE_SIZE \
+    (offsetof(libera_plugin_environment_t, entrypoint_path) + \
+     sizeof(((libera_plugin_environment_t*)0)->entrypoint_path))
+
 #define LIBERA_PLUGIN_HOST_SERVICES_BASE_SIZE \
     (offsetof(libera_host_services_t, report_error) + \
      sizeof(((libera_host_services_t*)0)->report_error))
@@ -238,11 +254,13 @@ typedef struct {
     uint32_t struct_size;
 
     /*
-     * Stable backend identity.
-     * type_name matches the role of ControllerInfo::type() in built-in
-     * backends, for example "EtherDream" or "Helios".
+     * Stable package and backend identity. These values must exactly match
+     * manifest.json; the host rejects a package whose native entrypoint tells
+     * a different story from the archive metadata.
      */
-    const char* type_name;
+    const char* plugin_id;
+    const char* plugin_version;
+    const char* controller_type;
     const char* display_name;
 
     /*
@@ -253,7 +271,8 @@ typedef struct {
      *
      * If destroy_backend is NULL, Libera treats backend teardown as a no-op.
      */
-    void* (*create_backend)(const libera_host_services_t* host);
+    void* (*create_backend)(const libera_host_services_t* host,
+                            const libera_plugin_environment_t* environment);
     void  (*destroy_backend)(void* backend);
 
     /*
@@ -474,12 +493,22 @@ static inline void libera_frame_requirements_init(
     requirements->blank_frame_point_count = blankFramePointCount;
 }
 
+#if defined(_WIN32)
+#define LIBERA_PLUGIN_PUBLIC __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define LIBERA_PLUGIN_PUBLIC __attribute__((visibility("default")))
+#else
+#define LIBERA_PLUGIN_PUBLIC
+#endif
+
 #ifdef __cplusplus
 #define LIBERA_PLUGIN_EXPORT(API_VAR) \
-    extern "C" const libera_plugin_api_t* libera_plugin_get_api(void) { return &(API_VAR); }
+    extern "C" LIBERA_PLUGIN_PUBLIC const libera_plugin_api_t* \
+    libera_plugin_get_api(void) { return &(API_VAR); }
 #else
 #define LIBERA_PLUGIN_EXPORT(API_VAR) \
-    const libera_plugin_api_t* libera_plugin_get_api(void) { return &(API_VAR); }
+    LIBERA_PLUGIN_PUBLIC const libera_plugin_api_t* \
+    libera_plugin_get_api(void) { return &(API_VAR); }
 #endif
 
 #ifdef __cplusplus

@@ -76,6 +76,7 @@ private:
 inline core::ControllerManagerRegistry LightSpaceNetManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.lightspace-net",
             std::string(LightSpaceNetControllerInfo::controllerType()),
             "LightSpace Net",
             "LS-Net network controllers discovered by LightSpace broadcast.",

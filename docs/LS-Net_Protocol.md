@@ -169,7 +169,7 @@ For example:
 02 03   Presumably acknowledges Command Class / Set Scan Frequency
 ```
 
-The document calls this field the "Acknowledged Command Word", but it is two bytes and does not explicitly define the byte-level interpretation beyond the `0x0202` example.
+The document calls this field the "Acknowledged Command Word", but it is two bytes and does not explicitly define the byte-level interpretation apart from the `0x0202` example.
 
 ---
 
@@ -280,7 +280,7 @@ The official protocol does not define:
 - Whether X and Y are signed or unsigned.
 - The coordinate range.
 - Axis orientation or inversion.
-- Explicit blanking semantics beyond RGB values.
+- Explicit blanking semantics other than RGB values.
 - A frame number or sequence number.
 - A presentation timestamp.
 - A point-buffer fill level.

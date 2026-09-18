@@ -30,7 +30,7 @@ to create a new standard for laser control over a network.
 ## Non-goals for the first version
 
 - Hard real-time delivery over an unreliable network.
-- Vendor-specific hardware management beyond identity, status, streaming, and
+- Vendor-specific hardware management outside identity, status, streaming, and
   basic capability negotiation.
 - Compression. TCP message framing should be simple first.
 - Freezing unreleased wire layouts. Until a release is tagged, fields, enum
@@ -940,5 +940,5 @@ Core changes likely needed:
 - Whether user channels are purely numbered or typed by wavelength/function.
 - Whether intensity `i` is mandatory or negotiable.
 - Manufacturer ID format: ILDA-assigned, Libera registry, UUID, or reverse-DNS.
-- Whether custom messages need checksums beyond TCP and the record length.
+- Whether custom messages need checksums in addition to TCP and the record length.
 - Whether the first version needs authentication for shared show networks.

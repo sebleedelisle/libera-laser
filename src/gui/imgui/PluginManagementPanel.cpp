@@ -355,7 +355,7 @@ void drawPlugin(plugin::ManagedPluginInfo pluginInfo,
 
     const bool expanded = ImGui::TreeNodeEx(
         "plugin",
-        ImGuiTreeNodeFlags_SpanAvailWidth,
+        ImGuiTreeNodeFlags_None,
         "%s",
         pluginTitle(pluginInfo).c_str());
 
@@ -387,7 +387,7 @@ void drawPlugin(plugin::ManagedPluginInfo pluginInfo,
 
         if (canRemove) {
             if (ImGui::Button("Remove", ImVec2(removeWidth, 0.0f))) {
-                const auto result = plugin::removePlugin(pluginInfo.path);
+                const auto result = plugin::removePlugin(pluginInfo.pluginId);
                 state.lastMessageIsError = !result.success;
                 state.lastMessage = result.success
                     ? result.message
@@ -408,11 +408,28 @@ void drawPlugin(plugin::ManagedPluginInfo pluginInfo,
         ImGui::TextUnformatted(stateLabel(pluginInfo.state));
         ImGui::PopStyleColor();
 
-        if (!pluginInfo.typeName.empty()) {
-            drawLabelValue("Type:", pluginInfo.typeName);
-        }
-        drawLabelValue("File:", pluginInfo.filename);
+        drawLabelValue("Plugin ID:", pluginInfo.pluginId);
+        drawLabelValue("Version:", pluginInfo.version);
+        drawLabelValue("Publisher (unverified):", pluginInfo.vendor);
+        drawLabelValue("Controller type:", pluginInfo.typeName);
+        drawLabelValue("Package revision:", pluginInfo.packageSha256);
         drawLabelValue("Path:", pluginInfo.path);
+        if (!pluginInfo.description.empty()) {
+            ImGui::Spacing();
+            ImGui::TextWrapped("%s", pluginInfo.description.c_str());
+        }
+
+        if (callbacks.revealInFileBrowser &&
+            (pluginInfo.readmePath || pluginInfo.licensePath)) {
+            ImGui::Spacing();
+            if (pluginInfo.readmePath && ImGui::Button("README")) {
+                callbacks.revealInFileBrowser(*pluginInfo.readmePath);
+            }
+            if (pluginInfo.readmePath && pluginInfo.licensePath) ImGui::SameLine();
+            if (pluginInfo.licensePath && ImGui::Button("License")) {
+                callbacks.revealInFileBrowser(*pluginInfo.licensePath);
+            }
+        }
 
         if (pluginInfo.loadError) {
             ImGui::PushStyleColor(ImGuiCol_Text, failureColor);
@@ -427,12 +444,12 @@ void drawPlugin(plugin::ManagedPluginInfo pluginInfo,
         }
 
         if (pluginInfo.state == plugin::ManagedPluginState::Loaded &&
-            !pluginInfo.typeName.empty()) {
-            const auto settings = plugin::pluginSettings(pluginInfo.typeName);
+            !pluginInfo.pluginId.empty()) {
+            const auto settings = plugin::pluginSettings(pluginInfo.pluginId);
             if (!settings.empty()) {
                 ImGui::Spacing();
                 ImGui::TextDisabled("Settings");
-                drawSettings(settings, pluginInfo.typeName, {}, state);
+                drawSettings(settings, pluginInfo.pluginId, {}, state);
             }
         }
 
@@ -485,8 +502,13 @@ void DrawPluginManagementPanel(PluginPanelState& state,
     ImGui::TextDisabled("User plugin directory:");
     ImGui::SameLine();
     ImGui::TextWrapped("%s", plugin::userPluginDirectory().c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text, failureColor);
+    ImGui::TextWrapped(
+        "Plugins are unsigned native code with the same access as Libera. "
+        "Publisher names are unverified; only install packages you trust.");
+    ImGui::PopStyleColor();
     ImGui::TextDisabled(
-        "Plugins in this folder are loaded at startup. Install/remove changes require a restart.");
+        "Packages are loaded at startup. Install/remove/driver changes may require a restart.");
 
     if (state.restartHintVisible) {
         if (options.showRestartButton && callbacks.requestRestart) {
@@ -509,11 +531,8 @@ void DrawPluginManagementPanel(PluginPanelState& state,
                 const auto result = plugin::installPlugin(*picked);
                 state.lastMessageIsError = !result.success;
                 state.lastMessage = result.message;
-                if (result.success) {
+                if (result.restartRequired) {
                     state.restartHintVisible = true;
-                    if (!result.installedPath.empty()) {
-                        state.lastMessage += ". Restart to load it.";
-                    }
                 }
             }
         }
@@ -560,13 +579,13 @@ void DrawPluginManagementPanel(PluginPanelState& state,
     }
 }
 
-void DrawPluginControllerSettings(const std::string& pluginType,
+void DrawPluginControllerSettings(const std::string& pluginId,
                                   const std::string& controllerId,
                                   PluginPanelState& state) {
-    ImGui::PushID(pluginType.c_str());
+    ImGui::PushID(pluginId.c_str());
     ImGui::PushID(controllerId.c_str());
-    drawSettings(plugin::controllerSettings(pluginType, controllerId),
-                 pluginType,
+    drawSettings(plugin::controllerSettings(pluginId, controllerId),
+                 pluginId,
                  controllerId,
                  state);
     ImGui::PopID();

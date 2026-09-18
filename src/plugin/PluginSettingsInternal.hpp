@@ -25,7 +25,7 @@ bool validateSettingValue(const SettingDefinition& definition,
                           std::string* error = nullptr);
 
 void registerLoadedPlugin(const std::shared_ptr<LoadedPlugin>& plugin);
-void registerPluginController(const std::string& pluginType,
+void registerPluginController(const std::string& pluginId,
                               const std::string& controllerId,
                               const std::shared_ptr<PluginController>& controller);
 

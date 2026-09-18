@@ -7,6 +7,9 @@
 #include "libera/plugin/PluginRegistry.hpp"
 
 #include "PluginSettingsInternal.hpp"
+#include "PluginFileLock.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -31,16 +34,17 @@
 namespace libera::plugin {
 
 namespace fs = std::filesystem;
+using Json = nlohmann::json;
 
 namespace {
 
 struct SettingAddress {
-    std::string pluginType;
+    std::string pluginId;
     std::string controllerId;
     std::string key;
 
     bool operator==(const SettingAddress& other) const {
-        return pluginType == other.pluginType &&
+        return pluginId == other.pluginId &&
                controllerId == other.controllerId &&
                key == other.key;
     }
@@ -53,7 +57,7 @@ struct SettingAddressHash {
             return seed ^ (hashed + 0x9e3779b9u + (seed << 6u) + (seed >> 2u));
         };
 
-        std::size_t result = combine(0, address.pluginType);
+        std::size_t result = combine(0, address.pluginId);
         result = combine(result, address.controllerId);
         return combine(result, address.key);
     }
@@ -74,11 +78,34 @@ public:
              const std::string& value,
              std::string* error) {
         std::lock_guard lock(mutex);
-        ensureLoaded();
-
-        if (loadedPath.empty()) {
+        const std::string currentPath = pluginSettingsFilePath();
+        if (currentPath.empty()) {
             if (error) {
                 *error = "Plugin settings path is unavailable";
+            }
+            return false;
+        }
+
+        std::error_code ec;
+        const fs::path destination = fs::u8path(currentPath);
+        fs::create_directories(destination.parent_path(), ec);
+        if (ec) {
+            if (error) {
+                *error = "Failed to create settings directory: " + ec.message();
+            }
+            return false;
+        }
+        ExclusivePluginFileLock fileLock(
+            destination.parent_path() / ".store.lock");
+        if (!fileLock.locked()) {
+            if (error) *error = fileLock.error();
+            return false;
+        }
+
+        ensureLoaded(true);
+        if (!loadedFileValid) {
+            if (error) {
+                *error = "Plugin settings.json is invalid; refusing to overwrite it";
             }
             return false;
         }
@@ -105,38 +132,66 @@ public:
     }
 
 private:
-    void ensureLoaded() {
+    void ensureLoaded(bool force = false) {
         const std::string currentPath = pluginSettingsFilePath();
-        if (currentPath == loadedPath) {
+        if (!force && currentPath == loadedPath) {
             return;
         }
 
         loadedPath = currentPath;
         values.clear();
+        loadedFileValid = true;
         if (loadedPath.empty()) {
             return;
         }
 
-        std::ifstream input(loadedPath);
+        std::ifstream input{fs::u8path(loadedPath)};
         if (!input) {
             return;
         }
 
-        SettingAddress address;
-        std::string value;
-        while (input >> std::quoted(address.pluginType)
-                     >> std::quoted(address.controllerId)
-                     >> std::quoted(address.key)
-                     >> std::quoted(value)) {
-            if (!address.pluginType.empty() && !address.key.empty()) {
-                values[address] = value;
+        try {
+            Json document;
+            input >> document;
+            input >> std::ws;
+            if (!input.eof() || !document.is_object() ||
+                document.value("schemaVersion", 0) != 1 ||
+                !document.contains("values") ||
+                !document["values"].is_array()) {
+                loadedFileValid = false;
+                return;
             }
+            for (const auto& item : document["values"]) {
+                if (!item.is_object() ||
+                    !item.contains("pluginId") || !item["pluginId"].is_string() ||
+                    !item.contains("controllerId") ||
+                    !item["controllerId"].is_string() ||
+                    !item.contains("key") || !item["key"].is_string() ||
+                    !item.contains("value") || !item["value"].is_string()) {
+                    loadedFileValid = false;
+                    values.clear();
+                    return;
+                }
+                const auto pluginId = item.value("pluginId", std::string{});
+                const auto controllerId = item.value("controllerId", std::string{});
+                const auto key = item.value("key", std::string{});
+                const auto value = item.value("value", std::string{});
+                if (pluginId.empty() || key.empty()) {
+                    loadedFileValid = false;
+                    values.clear();
+                    return;
+                }
+                values[{pluginId, controllerId, key}] = value;
+            }
+        } catch (const std::exception&) {
+            values.clear();
+            loadedFileValid = false;
         }
     }
 
     bool writeFile(std::string* error) {
         std::error_code ec;
-        const fs::path destination = loadedPath;
+        const fs::path destination = fs::u8path(loadedPath);
         fs::create_directories(destination.parent_path(), ec);
         if (ec) {
             if (error) {
@@ -149,10 +204,10 @@ private:
             values.begin(), values.end());
         std::sort(sortedValues.begin(), sortedValues.end(),
                   [](const auto& a, const auto& b) {
-                      return std::tie(a.first.pluginType,
+                      return std::tie(a.first.pluginId,
                                       a.first.controllerId,
                                       a.first.key) <
-                             std::tie(b.first.pluginType,
+                             std::tie(b.first.pluginId,
                                       b.first.controllerId,
                                       b.first.key);
                   });
@@ -172,12 +227,19 @@ private:
                 return false;
             }
 
+            Json document = {
+                {"schemaVersion", 1},
+                {"values", Json::array()},
+            };
             for (const auto& [address, value] : sortedValues) {
-                output << std::quoted(address.pluginType) << ' '
-                       << std::quoted(address.controllerId) << ' '
-                       << std::quoted(address.key) << ' '
-                       << std::quoted(value) << '\n';
+                document["values"].push_back({
+                    {"pluginId", address.pluginId},
+                    {"controllerId", address.controllerId},
+                    {"key", address.key},
+                    {"value", value},
+                });
             }
+            output << document.dump(2) << '\n';
             output.flush();
             if (!output) {
                 if (error) {
@@ -214,6 +276,7 @@ private:
 
     std::mutex mutex;
     std::string loadedPath;
+    bool loadedFileValid = true;
     std::unordered_map<SettingAddress, std::string, SettingAddressHash> values;
 };
 
@@ -332,10 +395,10 @@ bool settingsApiAvailable(const libera_plugin_api_t* api) {
            LIBERA_PLUGIN_API_HAS_FIELD(api, get_setting_definition);
 }
 
-std::shared_ptr<LoadedPlugin> findPlugin(const std::string& pluginType) {
+std::shared_ptr<LoadedPlugin> findPlugin(const std::string& pluginId) {
     auto& state = runtimeState();
     std::lock_guard lock(state.mutex);
-    const auto it = state.plugins.find(pluginType);
+    const auto it = state.plugins.find(pluginId);
     if (it == state.plugins.end()) {
         return nullptr;
     }
@@ -343,11 +406,11 @@ std::shared_ptr<LoadedPlugin> findPlugin(const std::string& pluginType) {
 }
 
 std::shared_ptr<PluginController> findController(
-    const std::string& pluginType,
+    const std::string& pluginId,
     const std::string& controllerId) {
     auto& state = runtimeState();
     std::lock_guard lock(state.mutex);
-    const SettingAddress address{pluginType, controllerId, {}};
+    const SettingAddress address{pluginId, controllerId, {}};
     const auto it = state.controllers.find(address);
     if (it == state.controllers.end()) {
         return nullptr;
@@ -405,7 +468,7 @@ std::vector<Setting> settingsFor(const std::shared_ptr<LoadedPlugin>& plugin,
     auto definitions = readSettingDefinitions(plugin->api, scope, &schemaError);
     if (!schemaError.empty()) {
         PluginRegistry::instance().pushRuntimeError(
-            plugin->path, "settings.schema", schemaError);
+            plugin->entrypointPath, "settings.schema", schemaError);
         return {};
     }
 
@@ -413,7 +476,7 @@ std::vector<Setting> settingsFor(const std::shared_ptr<LoadedPlugin>& plugin,
     result.reserve(definitions.size());
     for (auto& definition : definitions) {
         SettingAddress address{
-            plugin->typeName,
+            plugin->pluginId,
             scope == SettingScope::Controller ? controllerId : std::string{},
             definition.key,
         };
@@ -672,27 +735,27 @@ bool validateSettingValue(const SettingDefinition& definition,
 }
 
 void registerLoadedPlugin(const std::shared_ptr<LoadedPlugin>& plugin) {
-    if (!plugin || plugin->typeName.empty()) {
+    if (!plugin || plugin->pluginId.empty()) {
         return;
     }
     auto& state = runtimeState();
     std::lock_guard lock(state.mutex);
-    const auto existing = state.plugins.find(plugin->typeName);
+    const auto existing = state.plugins.find(plugin->pluginId);
     if (existing == state.plugins.end() || existing->second.expired()) {
-        state.plugins[plugin->typeName] = plugin;
+        state.plugins[plugin->pluginId] = plugin;
     }
 }
 
 void registerPluginController(
-    const std::string& pluginType,
+    const std::string& pluginId,
     const std::string& controllerId,
     const std::shared_ptr<PluginController>& controller) {
-    if (pluginType.empty() || controllerId.empty() || !controller) {
+    if (pluginId.empty() || controllerId.empty() || !controller) {
         return;
     }
     auto& state = runtimeState();
     std::lock_guard lock(state.mutex);
-    state.controllers[{pluginType, controllerId, {}}] = controller;
+    state.controllers[{pluginId, controllerId, {}}] = controller;
 }
 
 bool applySavedPluginSettings(const std::shared_ptr<LoadedPlugin>& plugin,
@@ -729,7 +792,7 @@ bool applySavedPluginSettings(const std::shared_ptr<LoadedPlugin>& plugin,
     }
 
     for (const auto& definition : definitions) {
-        const SettingAddress address{plugin->typeName, {}, definition.key};
+        const SettingAddress address{plugin->pluginId, {}, definition.key};
         const std::string value = resolvedValue(definition, address);
         const auto status = plugin->api->set_plugin_setting(
             plugin->backendHandle, definition.key.c_str(), value.c_str());
@@ -749,7 +812,7 @@ bool applySavedControllerSettings(PluginController& controller,
     if (error) {
         error->clear();
     }
-    const auto plugin = findPlugin(controller.pluginType());
+    const auto plugin = findPlugin(controller.pluginId());
     if (!plugin || !plugin->api) {
         if (error) {
             *error = "Plugin is unavailable";
@@ -769,7 +832,7 @@ bool applySavedControllerSettings(PluginController& controller,
 
     for (const auto& definition : definitions) {
         const SettingAddress address{
-            controller.pluginType(), controller.controllerId(), definition.key};
+            controller.pluginId(), controller.controllerId(), definition.key};
         const std::string value = resolvedValue(definition, address);
         const auto status = controller.applySetting(definition.key, value);
         if (status != LIBERA_OK) {
@@ -783,24 +846,24 @@ bool applySavedControllerSettings(PluginController& controller,
     return true;
 }
 
-std::vector<Setting> pluginSettings(const std::string& pluginType) {
-    return settingsFor(findPlugin(pluginType), SettingScope::Plugin, {});
+std::vector<Setting> pluginSettings(const std::string& pluginId) {
+    return settingsFor(findPlugin(pluginId), SettingScope::Plugin, {});
 }
 
-std::vector<Setting> controllerSettings(const std::string& pluginType,
+std::vector<Setting> controllerSettings(const std::string& pluginId,
                                         const std::string& controllerId) {
     if (controllerId.empty()) {
         return {};
     }
-    return settingsFor(findPlugin(pluginType),
+    return settingsFor(findPlugin(pluginId),
                        SettingScope::Controller,
                        controllerId);
 }
 
-SettingChangeResult setPluginSetting(const std::string& pluginType,
+SettingChangeResult setPluginSetting(const std::string& pluginId,
                                      const std::string& key,
                                      const std::string& value) {
-    const auto plugin = findPlugin(pluginType);
+    const auto plugin = findPlugin(pluginId);
     if (!plugin || !plugin->api) {
         return {false, "Plugin is not loaded"};
     }
@@ -821,7 +884,7 @@ SettingChangeResult setPluginSetting(const std::string& pluginType,
         return {false, "Invalid value for " + key + ": " + validationError};
     }
 
-    const SettingAddress address{pluginType, {}, key};
+    const SettingAddress address{pluginId, {}, key};
     const std::string oldValue = resolvedValue(*definition, address);
     std::lock_guard lifecycleLock(plugin->lifecycleMutex);
 
@@ -852,11 +915,11 @@ SettingChangeResult setPluginSetting(const std::string& pluginType,
     return {true, "Setting updated"};
 }
 
-SettingChangeResult setControllerSetting(const std::string& pluginType,
+SettingChangeResult setControllerSetting(const std::string& pluginId,
                                          const std::string& controllerId,
                                          const std::string& key,
                                          const std::string& value) {
-    const auto plugin = findPlugin(pluginType);
+    const auto plugin = findPlugin(pluginId);
     if (!plugin || !plugin->api) {
         return {false, "Plugin is not loaded"};
     }
@@ -880,9 +943,9 @@ SettingChangeResult setControllerSetting(const std::string& pluginType,
         return {false, "Invalid value for " + key + ": " + validationError};
     }
 
-    const SettingAddress address{pluginType, controllerId, key};
+    const SettingAddress address{pluginId, controllerId, key};
     const std::string oldValue = resolvedValue(*definition, address);
-    const auto controller = findController(pluginType, controllerId);
+    const auto controller = findController(pluginId, controllerId);
     std::lock_guard lifecycleLock(plugin->lifecycleMutex);
 
     bool appliedLive = false;
@@ -915,7 +978,7 @@ std::string pluginSettingsFilePath() {
     if (directory.empty()) {
         return {};
     }
-    return (fs::path(directory) / "libera-plugin-settings.conf").string();
+    return (fs::u8path(directory) / "settings.json").u8string();
 }
 
 } // namespace libera::plugin

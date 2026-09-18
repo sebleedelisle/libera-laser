@@ -44,7 +44,7 @@ constexpr std::chrono::milliseconds ETHERDREAM_COMMAND_TIMEOUT{500};
 constexpr std::chrono::milliseconds ETHERDREAM_RECONNECT_INITIAL_DELAY{100};
 constexpr std::chrono::milliseconds ETHERDREAM_RECONNECT_BACKOFF_DELAY{250};
 constexpr std::chrono::milliseconds ETHERDREAM_RECONNECT_MAX_DELAY{1000};
-// If the replacement connection survives beyond a single command timeout,
+// If the replacement connection survives longer than a single command timeout,
 // treat later failures as intermittent rather than continuing an old
 // exponential backoff streak.
 constexpr std::chrono::seconds ETHERDREAM_RECONNECT_STABLE_RESET_TIME{1};

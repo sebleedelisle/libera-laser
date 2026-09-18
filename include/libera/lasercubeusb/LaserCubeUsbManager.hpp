@@ -33,6 +33,7 @@ private:
 inline core::ControllerManagerRegistry LaserCubeUsbManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.lasercube-usb",
             std::string(LaserCubeUsbControllerInfo::controllerType()),
             "LaserCube USB",
             "LaserCube controllers connected by USB.",

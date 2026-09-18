@@ -64,6 +64,7 @@ private:
 inline core::ControllerManagerRegistry LaserCubeNetManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.lasercube-net",
             std::string(LaserCubeNetControllerInfo::controllerType()),
             "LaserCube Net",
             "Network LaserCube controllers discovered by broadcast.",

@@ -24,7 +24,8 @@ struct TestController {
     std::string nickname;
 };
 
-void* createBackend(const libera_host_services_t*) {
+void* createBackend(const libera_host_services_t*,
+                    const libera_plugin_environment_t*) {
     return new TestBackend;
 }
 
@@ -288,7 +289,9 @@ libera_status_t setControllerSetting(void* rawController,
 const libera_plugin_api_t pluginApi = {
     /* abi_version        */ LIBERA_PLUGIN_API_VERSION,
     /* struct_size        */ sizeof(libera_plugin_api_t),
-    /* type_name          */ "TestValidPlugin",
+    /* plugin_id          */ "org.libera.test-valid",
+    /* plugin_version     */ "1.0.0",
+    /* controller_type    */ "TestValidPlugin",
     /* display_name       */ "Test Valid Plugin",
     /* create_backend     */ &createBackend,
     /* destroy_backend    */ &destroyBackend,

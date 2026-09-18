@@ -46,6 +46,8 @@ public:
     virtual ~ControllerInfo() = default;
 
     const std::string& type() const { return typeString; }
+    const std::string& driverId() const { return driverIdString; }
+    void setDriverId(std::string value) { driverIdString = std::move(value); }
     const std::string& idValue() const { return id; }
     const std::string& labelValue() const { return label; }
     std::uint32_t maxPointRate() const { return maxPointRateValue; }
@@ -56,6 +58,10 @@ public:
 
 protected:
     std::string typeString;
+    // The controller type describes the hardware family. The driver ID is
+    // stamped by System during discovery and identifies the exact manager that
+    // must receive later connect/disconnect calls.
+    std::string driverIdString;
     std::string id;
     std::string label;
     std::uint32_t maxPointRateValue = 0;
@@ -80,9 +86,11 @@ public:
 using ControllerManagerFactory = std::function<std::unique_ptr<AbstractControllerManager>()>;
 
 struct ControllerManagerInfo {
+    std::string driverId;
     std::string type;
     std::string displayName;
     std::string description;
+    bool builtIn = true;
 };
 
 struct ControllerManagerRegistration {
@@ -90,16 +98,13 @@ struct ControllerManagerRegistration {
     ControllerManagerFactory factory;
 };
 
-std::vector<ControllerManagerFactory>& getControllerManagerFactories();
 std::vector<ControllerManagerRegistration>& getControllerManagerRegistrations();
 std::vector<ControllerManagerInfo> registeredControllerManagers();
 
 struct ControllerManagerRegistry {
-    explicit ControllerManagerRegistry(ControllerManagerFactory factory);
     explicit ControllerManagerRegistry(ControllerManagerRegistration registration);
 };
 
-void AddControllerManager(ControllerManagerFactory factory);
 void AddControllerManager(ControllerManagerRegistration registration);
 
 } // namespace libera::core
@@ -108,6 +113,10 @@ namespace libera {
 
 struct SystemOptions {
     std::set<std::string> disabledControllerTypes;
+    // Select one concrete driver when more than one manager implements a
+    // controller type. Missing entries use the built-in driver, or the sole
+    // plugin driver when no built-in exists.
+    std::unordered_map<std::string, std::string> selectedControllerDrivers;
 };
 
 class System {
@@ -135,12 +144,17 @@ public:
 
     std::vector<std::unique_ptr<core::ControllerInfo>> discoverControllers();
     std::shared_ptr<core::LaserController> connectController(const core::ControllerInfo& info);
-    bool disconnectController(std::string_view type, std::string_view id);
+    bool disconnectController(std::string_view driverId, std::string_view id);
     void shutdown();
 
 private:
-    std::vector<std::unique_ptr<core::AbstractControllerManager>> managers;
-    std::unordered_map<std::string, core::AbstractControllerManager*> managerByType;
+    struct ActiveManager {
+        std::string driverId;
+        std::unique_ptr<core::AbstractControllerManager> manager;
+    };
+
+    std::vector<ActiveManager> managers;
+    std::unordered_map<std::string, core::AbstractControllerManager*> managerByDriverId;
     bool shutdownComplete = false;
 };
 

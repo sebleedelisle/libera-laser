@@ -96,7 +96,7 @@ PluginController::PluginController(const libera_plugin_api_t* api,
 , backendHandle(backendHandle)
 , controllerInfo(controllerInfo)
 , pluginPath(std::move(pluginPath))
-, pluginTypeName(api && api->type_name ? api->type_name : "") {}
+, pluginIdValue(api && api->plugin_id ? api->plugin_id : "") {}
 
 PluginController::~PluginController() {
     close();

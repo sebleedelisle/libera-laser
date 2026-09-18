@@ -36,6 +36,7 @@ private:
 inline core::ControllerManagerRegistry LiberaProtocolManager::registrar{
     core::ControllerManagerRegistration{
         core::ControllerManagerInfo{
+            "libera.builtin.libera-protocol",
             std::string(LiberaProtocolControllerInfo::controllerType()),
             "Libera Protocol",
             "Libera protocol receivers discovered by UDP advertisement.",

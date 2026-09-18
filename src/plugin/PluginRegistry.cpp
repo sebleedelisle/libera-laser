@@ -1,72 +1,11 @@
 #include "libera/plugin/PluginRegistry.hpp"
-#include "libera/plugin/libera_plugin.h"
-
-#include "PluginValidation.hpp"
 
 #include <algorithm>
 #include <filesystem>
-#include <system_error>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 namespace libera::plugin {
 
 namespace fs = std::filesystem;
-
-namespace {
-
-void* openLibraryRaw(const std::string& path) {
-#ifdef _WIN32
-    return static_cast<void*>(LoadLibraryA(path.c_str()));
-#else
-    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-#endif
-}
-
-void closeLibraryRaw(void* handle) {
-    if (!handle) {
-        return;
-    }
-#ifdef _WIN32
-    FreeLibrary(static_cast<HMODULE>(handle));
-#else
-    dlclose(handle);
-#endif
-}
-
-void* resolveSymbolRaw(void* handle, const char* name) {
-#ifdef _WIN32
-    return reinterpret_cast<void*>(
-        GetProcAddress(static_cast<HMODULE>(handle), name));
-#else
-    return dlsym(handle, name);
-#endif
-}
-
-std::string libraryErrorRaw() {
-#ifdef _WIN32
-    DWORD err = GetLastError();
-    if (err == 0) {
-        return {};
-    }
-    LPSTR buf = nullptr;
-    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-                   nullptr, err, 0, reinterpret_cast<LPSTR>(&buf), 0, nullptr);
-    std::string msg = buf ? buf : "unknown error";
-    LocalFree(buf);
-    return msg;
-#else
-    const char* msg = dlerror();
-    return msg ? msg : "unknown error";
-#endif
-}
-
-} // namespace
 
 PluginRegistry& PluginRegistry::instance() {
     static PluginRegistry registry;
@@ -82,7 +21,7 @@ PluginRegistry::Entry& PluginRegistry::entryLocked(const std::string& path) {
 
     Entry entry;
     entry.info.path = path;
-    entry.info.filename = fs::path(path).filename().string();
+    entry.info.filename = fs::u8path(path).filename().u8string();
     entries.push_back(std::move(entry));
     return entries.back();
 }
@@ -104,13 +43,29 @@ std::vector<PluginInfo> PluginRegistry::snapshot() const {
 }
 
 void PluginRegistry::recordLoaded(const std::string& path,
+                                  const std::string& pluginId,
+                                  const std::string& version,
                                   const std::string& typeName,
-                                  const std::string& displayName) {
+                                  const std::string& displayName,
+                                  const std::string& vendor,
+                                  const std::string& description,
+                                  const std::string& packageRoot,
+                                  const std::string& packageSha256,
+                                  const std::optional<std::string>& readmePath,
+                                  const std::optional<std::string>& licensePath) {
     std::lock_guard lock(mutex);
     auto& entry = entryLocked(path);
     entry.info.state = PluginState::Loaded;
+    entry.info.pluginId = pluginId;
+    entry.info.version = version;
     entry.info.typeName = typeName;
     entry.info.displayName = displayName;
+    entry.info.vendor = vendor;
+    entry.info.description = description;
+    entry.info.packageRoot = packageRoot;
+    entry.info.packageSha256 = packageSha256;
+    entry.info.readmePath = readmePath;
+    entry.info.licensePath = licensePath;
     entry.info.loadError.reset();
 }
 
@@ -118,7 +73,9 @@ void PluginRegistry::recordFailure(const std::string& path,
                                    PluginState state,
                                    const std::string& reason,
                                    const std::string& typeName,
-                                   const std::string& displayName) {
+                                   const std::string& displayName,
+                                   const std::string& pluginId,
+                                   const std::string& version) {
     std::lock_guard lock(mutex);
     auto& entry = entryLocked(path);
     entry.info.state = state;
@@ -128,6 +85,12 @@ void PluginRegistry::recordFailure(const std::string& path,
     }
     if (!displayName.empty()) {
         entry.info.displayName = displayName;
+    }
+    if (!pluginId.empty()) {
+        entry.info.pluginId = pluginId;
+    }
+    if (!version.empty()) {
+        entry.info.version = version;
     }
 }
 
@@ -145,94 +108,9 @@ void PluginRegistry::pushRuntimeError(const std::string& path,
     std::lock_guard lock(mutex);
     auto& entry = entryLocked(path);
     entry.errors.push_back({std::chrono::system_clock::now(), code, message});
-    while (entry.errors.size() > kMaxRuntimeErrors) {
+    while (entry.errors.size() > maximumRuntimeErrors) {
         entry.errors.pop_front();
     }
-}
-
-PluginInstallResult validatePluginFile(const std::string& sourcePath) {
-    PluginInstallResult result;
-    std::error_code ec;
-
-    if (!fs::is_regular_file(sourcePath, ec)) {
-        result.message = "Not a regular file";
-        return result;
-    }
-    if (!isSharedLibraryPath(sourcePath)) {
-        result.message = "File is not a shared library (.dylib/.so/.dll)";
-        return result;
-    }
-
-    void* handle = openLibraryRaw(sourcePath);
-    if (!handle) {
-        result.message = "Failed to load: " + libraryErrorRaw();
-        return result;
-    }
-
-    auto* getApiSym = resolveSymbolRaw(handle, "libera_plugin_get_api");
-    if (!getApiSym) {
-        closeLibraryRaw(handle);
-        result.message = "Not a Libera plugin (missing libera_plugin_get_api)";
-        return result;
-    }
-
-    using GetApiFn = const libera_plugin_api_t* (*)();
-    auto getApi = reinterpret_cast<GetApiFn>(getApiSym);
-    const libera_plugin_api_t* api = getApi();
-
-    const std::string validationError = validatePluginApi(api);
-    if (!validationError.empty()) {
-        closeLibraryRaw(handle);
-        result.message = validationError;
-        return result;
-    }
-
-    result.message = std::string("OK: ") + api->display_name;
-
-    closeLibraryRaw(handle);
-    result.success = true;
-    return result;
-}
-
-PluginInstallResult installPluginFile(const std::string& sourcePath,
-                                      const std::string& destDir) {
-    PluginInstallResult validated = validatePluginFile(sourcePath);
-    if (!validated.success) {
-        return validated;
-    }
-
-    std::error_code ec;
-    fs::create_directories(destDir, ec);
-    if (ec) {
-        return {false, {}, "Failed to create plugin directory: " + ec.message()};
-    }
-
-    fs::path destination = fs::path(destDir) / fs::path(sourcePath).filename();
-    fs::copy_file(sourcePath,
-                  destination,
-                  fs::copy_options::overwrite_existing,
-                  ec);
-    if (ec) {
-        return {false, {}, "Failed to copy plugin: " + ec.message()};
-    }
-
-    PluginInstallResult result;
-    result.success = true;
-    result.installedPath = destination.string();
-    result.message = validated.message;
-    return result;
-}
-
-bool removePluginFile(const std::string& path, std::string* error) {
-    std::error_code ec;
-    if (!fs::remove(path, ec)) {
-        if (error) {
-            *error = ec ? ec.message() : "File not found";
-        }
-        return false;
-    }
-
-    return true;
 }
 
 } // namespace libera::plugin

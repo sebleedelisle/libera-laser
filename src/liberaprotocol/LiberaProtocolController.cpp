@@ -25,6 +25,8 @@ constexpr std::uint32_t defaultMaxRecordPayloadBytes = 4u * 1024u * 1024u;
 constexpr std::size_t rawPointBatchSize = 4096;
 constexpr std::uint8_t maxLaserPointUserChannels = 2;
 constexpr double scannerSyncUnitNanoseconds = 100000.0;
+constexpr auto heartbeatInterval = 500ms;
+constexpr auto heartbeatTimeout = 2000ms;
 
 std::int16_t encodeSignedCoord(float value) {
     const float clamped = std::clamp(value, -1.0f, 1.0f);
@@ -113,6 +115,9 @@ LiberaProtocolController::connectToInfo(const LiberaProtocolControllerInfo& info
     nextFrameId = 1;
     currentPointIndex = 0;
     nextSendAt = {};
+    nextHeartbeatAt = std::chrono::steady_clock::now();
+    lastPongAt = std::chrono::steady_clock::now();
+    heartbeatSent = false;
     setEstimatedBufferCapacity(static_cast<int>(std::min<std::uint32_t>(
         session.maxFramePointCount,
         static_cast<std::uint32_t>(std::numeric_limits<int>::max()))));
@@ -191,6 +196,9 @@ bool LiberaProtocolController::performHandshake(const LiberaProtocolControllerIn
     session.featureFlags = accept.featureFlags;
     session.sessionStartedAt = std::chrono::steady_clock::now();
     scannerSyncSent = false;
+    nextHeartbeatAt = {};
+    lastPongAt = {};
+    heartbeatSent = false;
     sender.setUserChannelCount(session.userChannelCount);
     LaserControllerStreaming::setPointRate(std::clamp<std::uint32_t>(
         session.pointRate,
@@ -237,6 +245,9 @@ void LiberaProtocolController::close() {
     networkConnected.store(false, std::memory_order_relaxed);
     reconnectRequested.store(false, std::memory_order_relaxed);
     scannerSyncSent = false;
+    nextHeartbeatAt = {};
+    lastPongAt = {};
+    heartbeatSent = false;
     setScannerSyncPostProcessSuppressed(false);
     setConnectionState(false);
     clearEstimatedBufferState();
@@ -246,6 +257,9 @@ void LiberaProtocolController::markDisconnected() {
     networkConnected.store(false, std::memory_order_relaxed);
     reconnectRequested.store(true, std::memory_order_relaxed);
     scannerSyncSent = false;
+    nextHeartbeatAt = {};
+    lastPongAt = {};
+    heartbeatSent = false;
     setScannerSyncPostProcessSuppressed(false);
     setConnectionState(false);
     recordConnectionError(error_types::network::connectionLost);
@@ -300,6 +314,74 @@ bool LiberaProtocolController::writeMessage(const std::vector<std::uint8_t>& byt
         markDisconnected();
         return false;
     }
+    return true;
+}
+
+bool LiberaProtocolController::drainInboundRecords() {
+    if (!tcpClient || !tcpClient->is_connected()) {
+        return false;
+    }
+
+    while (networkConnected.load(std::memory_order_relaxed)) {
+        std::error_code ec;
+        const auto available = tcpClient->getSocket().available(ec);
+        if (ec) {
+            logError("[LiberaProtocolController] receive check failed", ec.message());
+            markDisconnected();
+            return false;
+        }
+        if (available < protocol::RECORD_HEADER_SIZE) {
+            return true;
+        }
+
+        protocol::Record record;
+        if (!readRecord(record, 500ms)) {
+            logError("[LiberaProtocolController] inbound record failed");
+            markDisconnected();
+            return false;
+        }
+
+        if (record.type == protocol::RecordType::Pong && record.payload.size() == 8) {
+            lastPongAt = std::chrono::steady_clock::now();
+            continue;
+        }
+        if (record.type == protocol::RecordType::Close) {
+            logInfo("[LiberaProtocolController] receiver closed session");
+            markDisconnected();
+            return false;
+        }
+        if (record.type == protocol::RecordType::Error) {
+            logError("[LiberaProtocolController] receiver reported protocol error");
+        }
+    }
+    return false;
+}
+
+bool LiberaProtocolController::serviceHeartbeat() {
+    if (!networkConnected.load(std::memory_order_relaxed) || !drainInboundRecords()) {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (heartbeatSent && lastPongAt != std::chrono::steady_clock::time_point{} &&
+        (now - lastPongAt) >= heartbeatTimeout) {
+        logError("[LiberaProtocolController] heartbeat timeout");
+        markDisconnected();
+        return false;
+    }
+    if (nextHeartbeatAt != std::chrono::steady_clock::time_point{} &&
+        now < nextHeartbeatAt) {
+        return true;
+    }
+
+    const auto timestamp = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now.time_since_epoch()).count());
+    if (!writeMessage(sender.makePing(timestamp), 250ms)) {
+        return false;
+    }
+    heartbeatSent = true;
+    nextHeartbeatAt = now + heartbeatInterval;
     return true;
 }
 
@@ -358,6 +440,11 @@ void LiberaProtocolController::run() {
                 std::this_thread::sleep_for(500ms);
                 continue;
             }
+        }
+
+        if (!serviceHeartbeat()) {
+            std::this_thread::sleep_for(2ms);
+            continue;
         }
 
         const auto now = std::chrono::steady_clock::now();

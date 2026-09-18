@@ -28,8 +28,16 @@ struct PluginInfo {
     std::string path;
     std::string filename;
     PluginState state = PluginState::FailedLoad;
+    std::string pluginId;
+    std::string version;
     std::string typeName;
     std::string displayName;
+    std::string vendor;
+    std::string description;
+    std::string packageRoot;
+    std::string packageSha256;
+    std::optional<std::string> readmePath;
+    std::optional<std::string> licensePath;
     std::optional<std::string> loadError;
     std::vector<PluginRuntimeError> runtimeErrors;
 };
@@ -41,20 +49,30 @@ public:
     std::vector<PluginInfo> snapshot() const;
 
     void recordLoaded(const std::string& path,
+                      const std::string& pluginId,
+                      const std::string& version,
                       const std::string& typeName,
-                      const std::string& displayName);
+                      const std::string& displayName,
+                      const std::string& vendor = {},
+                      const std::string& description = {},
+                      const std::string& packageRoot = {},
+                      const std::string& packageSha256 = {},
+                      const std::optional<std::string>& readmePath = std::nullopt,
+                      const std::optional<std::string>& licensePath = std::nullopt);
     void recordFailure(const std::string& path,
                        PluginState state,
                        const std::string& reason,
                        const std::string& typeName = {},
-                       const std::string& displayName = {});
+                       const std::string& displayName = {},
+                       const std::string& pluginId = {},
+                       const std::string& version = {});
     void forget(const std::string& path);
 
     void pushRuntimeError(const std::string& path,
                           const std::string& code,
                           const std::string& message);
 
-    static constexpr std::size_t kMaxRuntimeErrors = 100;
+    static constexpr std::size_t maximumRuntimeErrors = 100;
 
 private:
     struct Entry {
@@ -72,20 +90,9 @@ struct PluginInstallResult {
     bool success = false;
     std::string installedPath;
     std::string message;
+    bool restartRequired = false;
 };
 
-PluginInstallResult validatePluginFile(const std::string& sourcePath);
-
-PluginInstallResult installPluginFile(const std::string& sourcePath,
-                                      const std::string& destDir);
-
-/*
- * Remove a plugin file from disk.
- *
- * This does not unload native code or erase the registry entry. A loaded
- * plugin stays active until process restart, which lets management UIs report
- * the removed-but-still-loaded state accurately.
- */
-bool removePluginFile(const std::string& path, std::string* error = nullptr);
+PluginInstallResult validatePluginPackageForInstall(const std::string& sourcePath);
 
 } // namespace libera::plugin

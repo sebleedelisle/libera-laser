@@ -8,8 +8,11 @@ namespace libera::log {
 
 namespace {
 
+std::mutex defaultOutputMutex;
+
 LogHandler makeDefaultInfoSink() {
     return [](std::string_view message) {
+        std::lock_guard lock(defaultOutputMutex);
         std::cout << message;
         std::cout.flush();
     };
@@ -17,6 +20,7 @@ LogHandler makeDefaultInfoSink() {
 
 LogHandler makeDefaultErrorSink() {
     return [](std::string_view message) {
+        std::lock_guard lock(defaultOutputMutex);
         std::cerr << message;
         std::cerr.flush();
     };

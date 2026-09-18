@@ -8,14 +8,18 @@
 #include <mutex>
 #include <memory>
 #include <system_error>
+#include <type_traits>
+#include <utility>
 
 /**
  * @brief Run an async operation with a deadline enforced by an Asio timer.
  *
  * Pattern:
- * - Start an async operation and an `asio::steady_timer` on the same executor.
- * - Whichever completes first cancels the other and signals a condition
- *   variable so this call can return synchronously with a timeout.
+ * - Start an async operation and an `asio::steady_timer` together on the same
+ *   executor.
+ * - The operation cancels the timer on success. The timer cancels the
+ *   operation on expiry, then waits for that operation's completion before
+ *   returning so caller-owned buffers cannot outlive pending I/O.
  *
  * Why it is useful:
  * - Blocking APIs with timeouts are common in openFrameworks; in Asio the
@@ -33,6 +37,8 @@
  * Requirements:
  * - The associated `asio::io_context` must already be running while we block.
  *   Otherwise the wait would never complete.
+ * - Do not invoke this blocking helper from the only thread servicing that
+ *   executor.
  */
 namespace libera::net {
 
@@ -50,75 +56,113 @@ std::error_code with_deadline(
         std::mutex m;
         std::condition_variable cv;
         bool done = false;
+        bool timeoutRequested = false;
         std::error_code ec = asio::error::would_block;
     };
 
     auto st = std::make_shared<State>();
     auto timer = std::make_shared<asio::steady_timer>(ex);
+    auto startPtr = std::make_shared<std::decay_t<StartAsync>>(std::move(start_async));
+    auto cancelPtr = std::make_shared<std::decay_t<Cancel>>(std::move(cancel));
 
     // Completion of the user async op
     auto op_handler = [st, timer](const std::error_code& op_ec, auto&&... /*ignored*/) {
         {
             std::lock_guard<std::mutex> lk(st->m);
             if (st->done) return;           // another path already won
-            st->ec = op_ec;
+            st->ec = st->timeoutRequested ? asio::error::timed_out : op_ec;
             st->done = true;
         }
-        st->cv.notify_one();                // wake waiter first...
         try {
-            timer->cancel();                // ...then cancel timer behind a catch boundary.
+            timer->cancel();
         } catch (const std::exception& e) {
             logError("[with_deadline] timer cancel failed", e.what());
         } catch (...) {
             logError("[with_deadline] timer cancel failed", "unknown exception");
         }
+        st->cv.notify_one();
     };
 
-    // Kick off the async operation (it must call our op_handler).
+    // Set up both operations on their executor. This keeps timer setup,
+    // operation initiation, and their completion handlers serialized instead
+    // of racing when a fast operation completes immediately.
     try {
-        start_async(op_handler);
-    } catch (const std::system_error& e) {
-        logError("[with_deadline] async start failed", label, e.what());
-        return e.code();
-    } catch (const std::exception& e) {
-        logError("[with_deadline] async start failed", label, e.what());
-        return asio::error::operation_aborted;
-    } catch (...) {
-        logError("[with_deadline] async start failed", label, "unknown exception");
-        return asio::error::operation_aborted;
-    }
-
-    // Arm the deadline
-    timer->expires_after(timeout);
-    timer->async_wait([st, cancel, timer, timeout, label, logTimeout](const std::error_code& tec){
-        if (tec == asio::error::operation_aborted) {
-            // Cancelled because the operation finished first, so nothing to do.
-            return;
-        }
-        bool notify = false;
-        {
-            std::lock_guard<std::mutex> lk(st->m);
-            if (st->done) {
-                return; // operation already completed; no need to cancel
+        asio::post(ex, [st,
+                        timer,
+                        startPtr,
+                        cancelPtr,
+                        op_handler,
+                        timeout,
+                        label,
+                        logTimeout]() mutable {
+            try {
+                timer->expires_after(timeout);
+                timer->async_wait(
+                    [st, cancelPtr, timer, timeout, label, logTimeout](
+                        const std::error_code& tec) {
+                        if (tec == asio::error::operation_aborted) {
+                            return;
+                        }
+                        {
+                            std::lock_guard<std::mutex> lk(st->m);
+                            if (st->done) {
+                                return;
+                            }
+                            st->timeoutRequested = true;
+                        }
+                        if (logTimeout) {
+                            logInfo("[with_deadline] timeout fired after",
+                                    timeout.count(),
+                                    "ms",
+                                    label);
+                        }
+                        try {
+                            (*cancelPtr)();
+                        } catch (const std::exception& e) {
+                            logError("[with_deadline] cancel failed", label, e.what());
+                        } catch (...) {
+                            logError("[with_deadline] cancel failed", label, "unknown exception");
+                        }
+                    });
+                (*startPtr)(op_handler);
+                return;
+            } catch (const std::system_error& e) {
+                logError("[with_deadline] async start failed", label, e.what());
+                std::lock_guard<std::mutex> lk(st->m);
+                st->ec = e.code();
+            } catch (const std::exception& e) {
+                logError("[with_deadline] async start failed", label, e.what());
+                std::lock_guard<std::mutex> lk(st->m);
+                st->ec = asio::error::operation_aborted;
+            } catch (...) {
+                logError("[with_deadline] async start failed", label, "unknown exception");
+                std::lock_guard<std::mutex> lk(st->m);
+                st->ec = asio::error::operation_aborted;
             }
-            st->ec = asio::error::timed_out;
-            st->done = true;
-            notify = true;
-        }
-        if (notify) {
-            if (logTimeout) {
-                logInfo("[with_deadline] timeout fired after", timeout.count(), "ms", label);
+
+            {
+                std::lock_guard<std::mutex> lk(st->m);
+                st->done = true;
             }
             try {
-                cancel();
+                timer->cancel();
             } catch (const std::exception& e) {
-                logError("[with_deadline] cancel failed", label, e.what());
+                logError("[with_deadline] timer cancel failed", e.what());
             } catch (...) {
-                logError("[with_deadline] cancel failed", label, "unknown exception");
+                logError("[with_deadline] timer cancel failed", "unknown exception");
             }
             st->cv.notify_one();
-        }
-    });
+        });
+    } catch (const std::system_error& e) {
+        logError("[with_deadline] dispatch failed", label, e.what());
+        return e.code();
+    } catch (const std::exception& e) {
+        logError("[with_deadline] dispatch failed", label, e.what());
+        return asio::error::operation_aborted;
+    } catch (...) {
+        logError("[with_deadline] dispatch failed", label, "unknown exception");
+        return asio::error::operation_aborted;
+    }
 
     // Wait until either branch completes
     std::unique_lock<std::mutex> lk(st->m);
