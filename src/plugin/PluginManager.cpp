@@ -217,7 +217,7 @@ std::shared_ptr<LoadedPlugin> loadPlugin(
         return nullptr;
     }
 
-    auto getApi = resolveSymbol<decltype(&libera_plugin_get_api)>(
+    auto getApi = resolveSymbol<libera_plugin_get_api_fn>(
         handle, "libera_plugin_get_api");
     if (!getApi) {
         closeLibrary(handle);

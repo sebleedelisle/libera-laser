@@ -410,9 +410,10 @@ typedef struct {
      sizeof(((libera_setting_def_t*)0)->choice_count))
 
 /*
- * Single export every plugin must provide.
+ * Signature of the single export every plugin must provide. Hosts use this
+ * function-pointer type when resolving the symbol from a loaded library.
  */
-const libera_plugin_api_t* libera_plugin_get_api(void);
+typedef const libera_plugin_api_t* (*libera_plugin_get_api_fn)(void);
 
 /* ------------------------------------------------------------------ */
 /* Helper utilities                                                    */
