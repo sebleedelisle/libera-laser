@@ -60,6 +60,7 @@ public:
     unsigned int controllerIndex() const { return index.load(std::memory_order_relaxed); }
     void setHealthEndpoint(HealthEndpoint endpoint);
     void noteDiscoverySeen();
+    void noteDiscoveryMissed();
     void startHealthMonitoring();
     void stopHealthMonitoring();
     HealthSnapshot healthSnapshot() const;
@@ -112,6 +113,7 @@ private:
     std::atomic<int> lastPingResultValue{static_cast<int>(HealthProbeResult::Unknown)};
     std::atomic<int> consecutivePingFailures{0};
     std::atomic<bool> pingEverSucceededValue{false};
+    std::atomic<unsigned> missedDiscoveries{0};
 
     std::optional<HealthEndpoint> healthEndpointSnapshot() const;
     void healthLoop();

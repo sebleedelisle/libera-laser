@@ -1,6 +1,6 @@
 [submodule "libs/helios_dac"]
 	path = libs/helios_dac
-	url = https://github.com/Grix/helios_dac.git
+	url = https://github.com/sebleedelisle/helios_dac.git
 [submodule "libs/libera-protocol"]
 	path = libs/libera-protocol
 	url = https://github.com/sebleedelisle/libera-protocol.git

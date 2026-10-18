@@ -1,4 +1,5 @@
 #include "libera/idn/IdnController.hpp"
+#include "libera/idn/IdnReachability.hpp"
 
 #include "libera/core/ControllerErrorTypes.hpp"
 #include "libera/core/ThreadUtils.hpp"
@@ -275,7 +276,13 @@ void IdnController::close() {
 }
 
 bool IdnController::isConnected() const {
-    return sdk && sdk->GetIsClosed(index.load(std::memory_order_relaxed)) == 0;
+    const auto lastSeen = lastDiscoverySeenTick.load(std::memory_order_relaxed);
+    const bool stale = lastSeen != 0 &&
+        std::chrono::steady_clock::now() - timePointFromTick(lastSeen) >= std::chrono::seconds(75);
+    return sdk && sdk->GetIsClosed(index.load(std::memory_order_relaxed)) == 0 &&
+        endpointReachable(missedDiscoveries.load(std::memory_order_relaxed),
+                          consecutivePingFailures.load(std::memory_order_relaxed),
+                          pingEverSucceededValue.load(std::memory_order_relaxed), stale);
 }
 
 void IdnController::setHealthEndpoint(HealthEndpoint endpoint) {
@@ -295,6 +302,16 @@ IdnController::healthEndpointSnapshot() const {
 
 void IdnController::noteDiscoverySeen() {
     lastDiscoverySeenTick.store(steadyTickNow(), std::memory_order_relaxed);
+    missedDiscoveries.store(0, std::memory_order_relaxed);
+    consecutivePingFailures.store(0, std::memory_order_relaxed);
+}
+
+void IdnController::noteDiscoveryMissed() {
+    // Saturation avoids overflow during long offline periods.
+    const auto misses = missedDiscoveries.load(std::memory_order_relaxed);
+    if (misses < reachabilityFailureThreshold) {
+        missedDiscoveries.store(misses + 1, std::memory_order_relaxed);
+    }
 }
 
 void IdnController::startHealthMonitoring() {
@@ -541,9 +558,12 @@ void IdnController::run() {
 
     while (running) {
         const unsigned int sdkIndex = index.load(std::memory_order_relaxed);
-        const bool backendConnected = sdk && (sdk->GetIsClosed(sdkIndex) == 0);
+        const bool backendConnected = isConnected();
         if (!backendConnected) {
             if (wasConnected) {
+                // Stop the SDK's queued/repeating output without closing its
+                // slot; discovery and health monitoring can recover it in place.
+                sdk->Stop(sdkIndex);
                 recordConnectionError(error_types::usb::connectionLost);
             }
             setConnectionState(false);

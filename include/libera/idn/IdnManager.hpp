@@ -22,13 +22,14 @@ public:
 
 private:
     void openIfNeeded();
-    std::size_t refreshControllerCount(bool allowRescan);
+    std::size_t refreshControllerCount(bool preserveExisting);
 
     std::shared_ptr<HeliosDac> sdk;
     bool opened = false;
     std::size_t controllerCount = 0;
     std::size_t emptySdkDiagnosticCountdown = 0;
     bool reportedSdkSlotsWithoutResults = false;
+    std::unordered_map<unsigned int, unsigned> missedDiscoveriesByIndex;
     std::unordered_map<unsigned int, std::string> stableUnitIdByIndex;
     std::unordered_map<unsigned int, std::string> stableControllerIdByIndex;
 

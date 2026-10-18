@@ -1,4 +1,5 @@
 #include "libera/idn/IdnManager.hpp"
+#include "libera/idn/IdnReachability.hpp"
 
 #include "libera/log/Log.hpp"
 
@@ -79,7 +80,24 @@ std::string makeDisplayServiceLabel(const IDNSL_SERVER_INFO& serverInfo,
     if (!serviceName.empty()) {
         return serviceName;
     }
-    return fallbackLabel;
+    // Unnamed devices still have a useful ID. Display the IDN category and
+    // identifier, omitting the length byte and padding. Keep controller keys
+    // unchanged so saved DAC assignments continue to resolve.
+    const unsigned int unitIdLength = serverInfo.unitID[0];
+    if (unitIdLength < 2 || unitIdLength >= IDNSL_UNITID_LENGTH) {
+        return fallbackLabel;
+    }
+    static constexpr char hexDigits[] = "0123456789ABCDEF";
+    std::string displayId;
+    for (unsigned int i = 1; i <= unitIdLength; ++i) {
+        if (i == 2) {
+            displayId.push_back('-');
+        }
+        const auto byte = serverInfo.unitID[i];
+        displayId.push_back(hexDigits[(byte >> 4) & 0x0F]);
+        displayId.push_back(hexDigits[byte & 0x0F]);
+    }
+    return displayId;
 }
 
 IdnController::HealthEndpoint makeHealthEndpoint(
@@ -231,18 +249,14 @@ void IdnManager::openIfNeeded() {
     controllerCount = count > 0 ? static_cast<std::size_t>(count) : 0;
 }
 
-std::size_t IdnManager::refreshControllerCount(bool allowRescan) {
+std::size_t IdnManager::refreshControllerCount(bool preserveExisting) {
     openIfNeeded();
     if (!sdk) {
         controllerCount = 0;
         return controllerCount;
     }
 
-    if (!allowRescan) {
-        return controllerCount;
-    }
-
-    const int count = sdk->ReScanDevicesOnlyNetwork();
+    const int count = sdk->ReScanDevicesOnlyNetwork(preserveExisting);
     if (count > 0) {
         controllerCount = static_cast<std::size_t>(count);
     }
@@ -254,21 +268,9 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
 
     const auto activeSnapshot = liveControllers();
     const bool hasActive = !activeSnapshot.empty();
-    bool hasDisconnectedActive = false;
-    for (const auto& [controllerId, controller] : activeSnapshot) {
-        (void)controllerId;
-        if (controller && !controller->isConnected()) {
-            hasDisconnectedActive = true;
-            break;
-        }
-    }
-
-    // Re-scan policy:
-    // keep SDK indices stable during steady-state playback, but allow a rescan
-    // once an active controller has already dropped. That gives the manager a
-    // chance to reopen IDN devices and remap the stable service ID to whichever
-    // transient SDK index it came back on.
-    const auto count = refreshControllerCount(!hasActive || hasDisconnectedActive);
+    // Reachability is separate from SDK slot lifetime. Even an offline
+    // controller may still have a worker using its slot: never replace it here.
+    const auto count = refreshControllerCount(hasActive);
     if (!sdk || count == 0) {
         if (emptySdkDiagnosticCountdown == 0) {
             const auto rawDiscoverySnapshot = discoverIdnServices();
@@ -317,7 +319,13 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
         }
         std::string label = sdkLabel;
 
-        const int firmware = sdk->GetFirmwareVersion(index);
+        // Firmware discovery is a Helios vendor extension, not part of IDN.
+        // A standards-compliant server such as Parsec may advertise many IDN
+        // services without answering it. The SDK waits 700 ms for every
+        // unanswered service, so probing here can hold the shared discovery
+        // lock for several seconds and make reconnect actions appear frozen.
+        // Keep generic IDN discovery protocol-only and report unknown firmware.
+        const int firmware = 0;
         const auto stableUnitIdIt = stableUnitIdByIndex.find(index);
         const auto stableControllerIdIt = stableControllerIdByIndex.find(index);
         const std::string* preferredControllerId =
@@ -391,7 +399,17 @@ std::vector<std::unique_ptr<core::ControllerInfo>> IdnManager::discover() {
             }
             if (matchedService) {
                 activeIt->second->noteDiscoverySeen();
+            } else {
+                activeIt->second->noteDiscoveryMissed();
             }
+        }
+
+        // Keep cached identity and the SDK slot, but stop advertising services
+        // that repeatedly disappear from real discovery replies.
+        auto& misses = missedDiscoveriesByIndex[index];
+        misses = matchedService ? 0 : std::min(misses + 1, reachabilityFailureThreshold);
+        if (misses >= reachabilityFailureThreshold) {
+            continue;
         }
 
         if (!networkInfo && sdkLabel.rfind(idnIpPrefix, 0) == 0 && sdkLabel.size() > 5) {
@@ -501,6 +519,7 @@ void IdnManager::afterCloseControllers() {
     controllerCount = 0;
     emptySdkDiagnosticCountdown = 0;
     reportedSdkSlotsWithoutResults = false;
+    missedDiscoveriesByIndex.clear();
     stableUnitIdByIndex.clear();
     stableControllerIdByIndex.clear();
 }
