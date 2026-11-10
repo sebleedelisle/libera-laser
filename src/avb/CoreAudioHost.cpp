@@ -537,6 +537,18 @@ rtAudioDeviceWasProbed(const DeviceInfo&) {
     return true;
 }
 
+// Discovery constructs and probes ASIO drivers too. Share the stream gate so
+// enumeration cannot create a second driver instance beside an active stream.
+std::mutex& globalAsioStreamMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+int& activeAsioStreamCount() {
+    static int count = 0;
+    return count;
+}
+
 class RtAudioStream final : public AudioOutputStream {
 public:
     RtAudioStream(std::uint32_t deviceId,
@@ -652,16 +664,6 @@ public:
     }
 
 private:
-    static std::mutex& globalAsioStreamMutex() {
-        static std::mutex mutex;
-        return mutex;
-    }
-
-    static int& activeAsioStreamCount() {
-        static int count = 0;
-        return count;
-    }
-
     static int audioCallback(void* outputBuffer,
                              void* inputBuffer,
                              unsigned int frameCount,
@@ -715,6 +717,14 @@ public:
             return devices;
         }
 
+        // Keep this lock until the temporary RtAudio instance is destroyed.
+        // Retaining the last snapshot while streaming also prevents discovery
+        // from making the connected output disappear merely because it is busy.
+        std::lock_guard probeLock(globalAsioStreamMutex());
+        if (activeAsioStreamCount() > 0) {
+            return cachedDevices;
+        }
+
         try {
             RtAudio audio(RtAudio::WINDOWS_ASIO);
             audio.showWarnings(false);
@@ -757,6 +767,7 @@ public:
             return {};
         }
 
+        cachedDevices = devices;
         return devices;
     }
 
@@ -774,6 +785,9 @@ public:
             device.outputChannels,
             std::move(callback));
     }
+
+private:
+    std::vector<AudioOutputDeviceInfo> cachedDevices;
 };
 
 } // namespace
